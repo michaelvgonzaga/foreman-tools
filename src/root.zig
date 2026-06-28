@@ -186,6 +186,75 @@ pub fn computeGhUser(gpa: std.mem.Allocator, io: std.Io) !GhUserResult {
     return .{ .authenticated = true, .login = login };
 }
 
+// --- release-info subcommand ---
+
+pub const ReleaseInfoResult = struct {
+    latestTag: ?[]const u8, // null if no tags; owned by caller
+    suggestedNext: []const u8, // owned by caller
+    commitsSince: u32,
+    isDirty: bool,
+};
+
+pub fn computeReleaseInfo(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8) !ReleaseInfoResult {
+    const head = runGit(gpa, io, repo_path, &.{ "rev-parse", "HEAD" }) catch
+        return error.NotAGitRepo;
+    gpa.free(head);
+
+    const tag_raw = runGit(gpa, io, repo_path, &.{ "describe", "--tags", "--abbrev=0" }) catch null;
+    defer if (tag_raw) |r| gpa.free(r);
+
+    const latest_tag: ?[]const u8 = if (tag_raw) |r|
+        try gpa.dupe(u8, std.mem.trimEnd(u8, r, " \n\r"))
+    else
+        null;
+    errdefer if (latest_tag) |t| gpa.free(t);
+
+    const commits_since: u32 = blk: {
+        if (latest_tag) |tag| {
+            const range = try std.fmt.allocPrint(gpa, "{s}..HEAD", .{tag});
+            defer gpa.free(range);
+            const count_raw = runGit(gpa, io, repo_path, &.{ "rev-list", "--count", range }) catch break :blk 0;
+            defer gpa.free(count_raw);
+            break :blk std.fmt.parseInt(u32, std.mem.trim(u8, count_raw, " \n\r"), 10) catch 0;
+        } else {
+            const count_raw = runGit(gpa, io, repo_path, &.{ "rev-list", "--count", "HEAD" }) catch break :blk 0;
+            defer gpa.free(count_raw);
+            break :blk std.fmt.parseInt(u32, std.mem.trim(u8, count_raw, " \n\r"), 10) catch 0;
+        }
+    };
+
+    const status_raw = runGit(gpa, io, repo_path, &.{ "status", "--porcelain" }) catch null;
+    defer if (status_raw) |r| gpa.free(r);
+    const is_dirty = if (status_raw) |r| r.len > 0 else false;
+
+    const suggested_next: []const u8 = blk: {
+        if (latest_tag) |tag| {
+            const v = if (tag.len > 0 and tag[0] == 'v') tag[1..] else tag;
+            var parts = std.mem.splitScalar(u8, v, '.');
+            const major_str = parts.next() orelse break :blk try std.fmt.allocPrint(gpa, "{s}-next", .{tag});
+            const minor_str = parts.next() orelse break :blk try std.fmt.allocPrint(gpa, "{s}-next", .{tag});
+            const patch_str_raw = parts.next() orelse break :blk try std.fmt.allocPrint(gpa, "{s}-next", .{tag});
+            var patch_end: usize = 0;
+            while (patch_end < patch_str_raw.len and std.ascii.isDigit(patch_str_raw[patch_end])) patch_end += 1;
+            const patch_str = patch_str_raw[0..patch_end];
+            const major = std.fmt.parseInt(u32, major_str, 10) catch break :blk try std.fmt.allocPrint(gpa, "{s}-next", .{tag});
+            const minor = std.fmt.parseInt(u32, minor_str, 10) catch break :blk try std.fmt.allocPrint(gpa, "{s}-next", .{tag});
+            const patch = std.fmt.parseInt(u32, patch_str, 10) catch break :blk try std.fmt.allocPrint(gpa, "{s}-next", .{tag});
+            break :blk try std.fmt.allocPrint(gpa, "v{d}.{d}.{d}", .{ major, minor, patch + 1 });
+        } else {
+            break :blk try gpa.dupe(u8, "v0.1.0");
+        }
+    };
+    errdefer gpa.free(suggested_next);
+
+    return .{
+        .latestTag = latest_tag,
+        .suggestedNext = suggested_next,
+        .commitsSince = commits_since,
+        .isDirty = is_dirty,
+    };
+}
+
 pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -237,6 +306,14 @@ test "GhUserResult fields" {
     const r = GhUserResult{ .authenticated = true, .login = "octocat" };
     try std.testing.expect(r.authenticated);
     try std.testing.expectEqualStrings("octocat", r.login);
+}
+
+test "ReleaseInfoResult fields" {
+    const r = ReleaseInfoResult{ .latestTag = "v1.2.3", .suggestedNext = "v1.2.4", .commitsSince = 5, .isDirty = false };
+    try std.testing.expectEqualStrings("v1.2.3", r.latestTag.?);
+    try std.testing.expectEqualStrings("v1.2.4", r.suggestedNext);
+    try std.testing.expectEqual(@as(u32, 5), r.commitsSince);
+    try std.testing.expect(!r.isDirty);
 }
 
 test "allocJsonEscape: escapes special chars" {

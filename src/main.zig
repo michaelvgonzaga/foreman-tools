@@ -20,6 +20,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  status <workspace-path>\n", .{});
         try err.print("  commits <repo-path> [since-tag]\n", .{});
         try err.print("  gh-user\n", .{});
+        try err.print("  release-info <repo-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -94,6 +95,42 @@ pub fn main(init: std.process.Init) !void {
         try out.print(
             "{{\n  \"authenticated\": {s},\n  \"login\": \"{s}\"\n}}\n",
             .{ if (result.authenticated) "true" else "false", escaped_login },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "release-info")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools release-info <repo-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeReleaseInfo(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.NotAGitRepo => try err.print("error: not a git repository: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            if (result.latestTag) |t| gpa.free(t);
+            gpa.free(result.suggestedNext);
+        }
+
+        const escaped_next = try root.allocJsonEscape(gpa, result.suggestedNext);
+        defer gpa.free(escaped_next);
+
+        try out.writeAll("{\n");
+        if (result.latestTag) |tag| {
+            const escaped_tag = try root.allocJsonEscape(gpa, tag);
+            defer gpa.free(escaped_tag);
+            try out.print("  \"latestTag\": \"{s}\",\n", .{escaped_tag});
+        } else {
+            try out.writeAll("  \"latestTag\": null,\n");
+        }
+        try out.print(
+            "  \"suggestedNext\": \"{s}\",\n  \"commitsSince\": {d},\n  \"isDirty\": {s}\n}}\n",
+            .{ escaped_next, result.commitsSince, if (result.isDirty) "true" else "false" },
         );
         try out.flush();
     } else {
