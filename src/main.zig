@@ -177,7 +177,10 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const result = root.computeTagExists(gpa, io, args[2], args[3]) catch |e| {
-            try err.print("error: {}\n", .{e});
+            switch (e) {
+                error.NotAGitRepo => try err.print("error: not a git repository: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
             try err.flush();
             std.process.exit(1);
         };

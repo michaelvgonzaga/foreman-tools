@@ -264,7 +264,7 @@ pub const TagExistsResult = struct {
 
 pub fn computeTagExists(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8, version: []const u8) !TagExistsResult {
     const raw = runGit(gpa, io, repo_path, &.{ "tag", "-l", version }) catch
-        return error.GitFailed;
+        return error.NotAGitRepo;
     defer gpa.free(raw);
     const trimmed = std.mem.trim(u8, raw, " \n\r");
     return .{
