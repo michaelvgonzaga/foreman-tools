@@ -43,7 +43,7 @@ See `spec.md` for the full spec. Key facts:
 ## Tools & Resources
 
 - **Repo:** https://github.com/michaelvgonzaga/foreman-tools
-- **Platform / runtime:** Zig 0.14 — single binary, macOS arm64 + amd64 universal
+- **Platform / runtime:** Zig 0.16 — single binary, macOS arm64 + amd64 universal
 - **Key tools & services:** System `git` binary (subprocess), system `gh` binary (subprocess for repos subcommand — v2 only)
 - **Data & storage:** None — stateless, reads from git refs and filesystem
 - **Domain-specific requirements:** None
@@ -54,7 +54,7 @@ See `spec.md` for the full spec. Key facts:
 
 ```bash
 # setup
-brew install zig   # or download from ziglang.org — pin to 0.14
+brew install zig   # or download from ziglang.org — pin to 0.16
 
 # build
 zig build -Doptimize=ReleaseSafe
@@ -82,6 +82,6 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-28 | Single binary, multiple subcommands | Simpler distribution — one install, one PATH entry |
 | 2026-06-28 | JSON to stdout only, errors to stderr | Claude reads stdout; mixing output formats breaks parsing |
 | 2026-06-28 | Optional dependency with graceful fallback | Foreman must work without it; foreman-tools is an optimization, not a requirement |
-| 2026-06-28 | Zig 0.14, macOS only for v1 | Zig pre-1.0 stability; macOS is the only current target platform |
+| 2026-06-28 | Zig 0.16, macOS only for v1 | Zig pre-1.0 stability; macOS is the only current target platform |
 | 2026-06-28 | Distributed via homebrew-foreman tap | No new tap; installs alongside foreman-ai in one step |
 | 2026-06-28 | status reads already-fetched refs, does not git fetch | Latency: fetch adds 200-500ms on every session open; ref reads are instant |

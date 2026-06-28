@@ -36,7 +36,7 @@ A single binary with two subcommands. `status` runs on every session open — th
 
 ## Risks
 
-- **Zig API instability** — Zig is pre-1.0; breaking changes between 0.13 and 0.14 are real. Pin a specific Zig version in the build and document it explicitly.
+- **Zig API instability** — Zig is pre-1.0; breaking changes between minor versions are real. Pin a specific Zig version in the build and document it explicitly.
 - **git subprocess reliability** — foreman-tools calls git via subprocess. If git isn't in PATH or the workspace isn't a git repo, it must fail clearly to stderr and exit 1, not silently return bad JSON.
 - **Fallback gap** — Foreman commands must detect foreman-tools absence and fall back gracefully. If the fallback path diverges from the foreman-tools path, they'll produce inconsistent results. Both paths must be tested.
 - **Universal binary complexity** — macOS arm64 + amd64 `lipo` merge adds a build step. If CI isn't set up, cross-compilation may require a workaround.
@@ -48,7 +48,7 @@ A single binary with two subcommands. `status` runs on every session open — th
 - [x] Single binary, multiple subcommands (not separate per-operation binaries)
 - [x] JSON to stdout, errors to stderr, exit 1 on failure — no other output modes
 - [x] Optional dependency: Foreman commands check `command -v foreman-tools`; if absent, fall back to existing inline bash
-- [x] Zig 0.14 (current stable at time of writing)
+- [x] Zig 0.16 (pinned in build.zig.zon)
 - [x] Distributed via the existing `homebrew-foreman` tap alongside `foreman-ai` — no separate tap
 - [x] macOS only for v1 (arm64 + amd64 universal binary)
 
