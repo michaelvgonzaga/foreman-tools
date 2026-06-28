@@ -21,6 +21,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  commits <repo-path> [since-tag]\n", .{});
         try err.print("  gh-user\n", .{});
         try err.print("  release-info <repo-path>\n", .{});
+        try err.print("  repo-info <repo-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -131,6 +132,40 @@ pub fn main(init: std.process.Init) !void {
         try out.print(
             "  \"suggestedNext\": \"{s}\",\n  \"commitsSince\": {d},\n  \"isDirty\": {s}\n}}\n",
             .{ escaped_next, result.commitsSince, if (result.isDirty) "true" else "false" },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "repo-info")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools repo-info <repo-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeRepoInfo(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.NoRemote => try err.print("error: no remote 'origin' in: {s}\n", .{args[2]}),
+                error.UnparsableRemote => try err.print("error: could not parse remote URL in: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            gpa.free(result.owner);
+            gpa.free(result.repo);
+            gpa.free(result.url);
+        }
+
+        const escaped_owner = try root.allocJsonEscape(gpa, result.owner);
+        defer gpa.free(escaped_owner);
+        const escaped_repo = try root.allocJsonEscape(gpa, result.repo);
+        defer gpa.free(escaped_repo);
+        const escaped_url = try root.allocJsonEscape(gpa, result.url);
+        defer gpa.free(escaped_url);
+
+        try out.print(
+            "{{\n  \"owner\": \"{s}\",\n  \"repo\": \"{s}\",\n  \"url\": \"{s}\"\n}}\n",
+            .{ escaped_owner, escaped_repo, escaped_url },
         );
         try out.flush();
     } else {
