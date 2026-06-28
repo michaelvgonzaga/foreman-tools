@@ -19,6 +19,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("subcommands:\n", .{});
         try err.print("  status <workspace-path>\n", .{});
         try err.print("  commits <repo-path> [since-tag]\n", .{});
+        try err.print("  gh-user\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -82,6 +83,18 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.writeAll("]\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "gh-user")) {
+        const result = try root.computeGhUser(gpa, io);
+        defer gpa.free(result.login);
+
+        const escaped_login = try root.allocJsonEscape(gpa, result.login);
+        defer gpa.free(escaped_login);
+
+        try out.print(
+            "{{\n  \"authenticated\": {s},\n  \"login\": \"{s}\"\n}}\n",
+            .{ if (result.authenticated) "true" else "false", escaped_login },
+        );
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

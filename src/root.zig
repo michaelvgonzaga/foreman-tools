@@ -146,6 +146,46 @@ pub fn computeCommits(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8,
     return entries.toOwnedSlice(gpa);
 }
 
+// --- gh-user subcommand ---
+
+pub const GhUserResult = struct {
+    authenticated: bool,
+    login: []const u8, // owned by caller
+};
+
+pub fn computeGhUser(gpa: std.mem.Allocator, io: std.Io) !GhUserResult {
+    // Check gh is reachable and authenticated (exit 0 = yes)
+    const auth = std.process.run(gpa, io, .{
+        .argv = &.{ "gh", "auth", "status" },
+    }) catch return .{ .authenticated = false, .login = try gpa.dupe(u8, "") };
+    gpa.free(auth.stdout);
+    gpa.free(auth.stderr);
+    switch (auth.term) {
+        .exited => |code| if (code != 0) return .{ .authenticated = false, .login = try gpa.dupe(u8, "") },
+        else => return .{ .authenticated = false, .login = try gpa.dupe(u8, "") },
+    }
+
+    // Fetch login name
+    const user = std.process.run(gpa, io, .{
+        .argv = &.{ "gh", "api", "user", "--jq", ".login" },
+    }) catch return .{ .authenticated = true, .login = try gpa.dupe(u8, "") };
+    defer gpa.free(user.stderr);
+    switch (user.term) {
+        .exited => |code| if (code != 0) {
+            gpa.free(user.stdout);
+            return .{ .authenticated = true, .login = try gpa.dupe(u8, "") };
+        },
+        else => {
+            gpa.free(user.stdout);
+            return .{ .authenticated = true, .login = try gpa.dupe(u8, "") };
+        },
+    }
+
+    const login = try gpa.dupe(u8, std.mem.trim(u8, user.stdout, " \n\r"));
+    gpa.free(user.stdout);
+    return .{ .authenticated = true, .login = login };
+}
+
 pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -191,6 +231,12 @@ test "categorize" {
     try std.testing.expectEqualStrings("improvement", categorize("refactor runGit helper"));
     try std.testing.expectEqualStrings("improvement", categorize("bump zig to 0.16"));
     try std.testing.expectEqualStrings("other", categorize("initial commit"));
+}
+
+test "GhUserResult fields" {
+    const r = GhUserResult{ .authenticated = true, .login = "octocat" };
+    try std.testing.expect(r.authenticated);
+    try std.testing.expectEqualStrings("octocat", r.login);
 }
 
 test "allocJsonEscape: escapes special chars" {
