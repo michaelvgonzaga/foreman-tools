@@ -86,3 +86,4 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-28 | Distributed via homebrew-foreman tap | No new tap; installs alongside foreman-ai in one step |
 | 2026-06-28 | status reads already-fetched refs, does not git fetch | Latency: fetch adds 200-500ms on every session open; ref reads are instant |
 | 2026-06-28 | Added M4 gh-user, M5 release-info, M6 repo-info to spec | Audit of 14 command/skill files found these patterns repeated across 3–5 files each; one JSON read replaces 2–3 shell calls + Claude parsing |
+| 2026-06-28 | Added M7 tag-exists to spec | foreman-tools audit found `git tag \| grep "^v<version>$"` in both `/release` and `/brew-release` Step 2 pre-flight — candidate promoted per repetition rule |

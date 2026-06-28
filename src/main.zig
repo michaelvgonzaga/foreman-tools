@@ -22,6 +22,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  gh-user\n", .{});
         try err.print("  release-info <repo-path>\n", .{});
         try err.print("  repo-info <repo-path>\n", .{});
+        try err.print("  tag-exists <repo-path> <version>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -166,6 +167,28 @@ pub fn main(init: std.process.Init) !void {
         try out.print(
             "{{\n  \"owner\": \"{s}\",\n  \"repo\": \"{s}\",\n  \"url\": \"{s}\"\n}}\n",
             .{ escaped_owner, escaped_repo, escaped_url },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "tag-exists")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools tag-exists <repo-path> <version>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeTagExists(gpa, io, args[2], args[3]) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.tag);
+
+        const escaped_tag = try root.allocJsonEscape(gpa, result.tag);
+        defer gpa.free(escaped_tag);
+
+        try out.print(
+            "{{\n  \"exists\": {s},\n  \"tag\": \"{s}\"\n}}\n",
+            .{ if (result.exists) "true" else "false", escaped_tag },
         );
         try out.flush();
     } else {

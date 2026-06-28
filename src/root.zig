@@ -255,6 +255,24 @@ pub fn computeReleaseInfo(gpa: std.mem.Allocator, io: std.Io, repo_path: []const
     };
 }
 
+// --- tag-exists subcommand ---
+
+pub const TagExistsResult = struct {
+    exists: bool,
+    tag: []const u8, // owned by caller
+};
+
+pub fn computeTagExists(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8, version: []const u8) !TagExistsResult {
+    const raw = runGit(gpa, io, repo_path, &.{ "tag", "-l", version }) catch
+        return error.GitFailed;
+    defer gpa.free(raw);
+    const trimmed = std.mem.trim(u8, raw, " \n\r");
+    return .{
+        .exists = std.mem.eql(u8, trimmed, version),
+        .tag = try gpa.dupe(u8, version),
+    };
+}
+
 // --- repo-info subcommand ---
 
 pub const RepoInfoResult = struct {
@@ -366,6 +384,12 @@ test "computeRepoInfo: parses SSH remote" {
     try std.testing.expectEqualStrings("octocat", r.owner);
     try std.testing.expectEqualStrings("hello-world", r.repo);
     try std.testing.expectEqualStrings("https://github.com/octocat/hello-world", r.url);
+}
+
+test "TagExistsResult fields" {
+    const r = TagExistsResult{ .exists = true, .tag = "v1.0.0" };
+    try std.testing.expect(r.exists);
+    try std.testing.expectEqualStrings("v1.0.0", r.tag);
 }
 
 test "ReleaseInfoResult fields" {
