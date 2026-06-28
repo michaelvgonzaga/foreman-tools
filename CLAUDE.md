@@ -42,6 +42,7 @@ See `spec.md` for the full spec. Key facts:
 
 ## Tools & Resources
 
+- **Repo:** https://github.com/michaelvgonzaga/foreman-tools
 - **Platform / runtime:** Zig 0.14 — single binary, macOS arm64 + amd64 universal
 - **Key tools & services:** System `git` binary (subprocess), system `gh` binary (subprocess for repos subcommand — v2 only)
 - **Data & storage:** None — stateless, reads from git refs and filesystem
