@@ -45,12 +45,12 @@ A single binary with two subcommands. `status` runs on every session open — th
 
 ## Key decisions — requires explicit sign-off
 
-- [ ] Single binary, multiple subcommands (not separate per-operation binaries)
-- [ ] JSON to stdout, errors to stderr, exit 1 on failure — no other output modes
-- [ ] Optional dependency: Foreman commands check `command -v foreman-tools`; if absent, fall back to existing inline bash
-- [ ] Zig 0.14 (current stable at time of writing)
-- [ ] Distributed via the existing `homebrew-foreman` tap alongside `foreman-ai` — no separate tap
-- [ ] macOS only for v1 (arm64 + amd64 universal binary)
+- [x] Single binary, multiple subcommands (not separate per-operation binaries)
+- [x] JSON to stdout, errors to stderr, exit 1 on failure — no other output modes
+- [x] Optional dependency: Foreman commands check `command -v foreman-tools`; if absent, fall back to existing inline bash
+- [x] Zig 0.14 (current stable at time of writing)
+- [x] Distributed via the existing `homebrew-foreman` tap alongside `foreman-ai` — no separate tap
+- [x] macOS only for v1 (arm64 + amd64 universal binary)
 
 ---
 
