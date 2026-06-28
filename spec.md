@@ -23,7 +23,7 @@
 **Out (explicitly):**
 - `foreman-tools repos` (GitHub repo scanning for `/restore-projects`) — v2
 - `foreman-tools sha <url>` (tarball SHA256 for `/brew-release`) — v2
-- Linux / Windows builds — v1 is macOS only (arm64 + amd64)
+- Linux / Windows builds — macOS only through v2
 - Interactive mode, colored output, human-readable formatting — JSON only, always
 
 ---
@@ -57,6 +57,7 @@ A single binary with two subcommands. `status` runs on every session open — th
 ## Open questions
 
 - Should `status` do the actual `git fetch` or just read the already-fetched `origin/main` ref? Fetching adds latency on every session open; reading the ref is instant but stale if fetch hasn't run. Lean toward read-only for speed, let the self-update skill decide whether to fetch.
+- `gh-user` calls `gh` as a subprocess — `gh` may not be in PATH on all installs. Exit 0 with `{"authenticated": false, "login": ""}` or exit 1? Lean toward exit 0 with unauthenticated state so callers don't need to handle the error case differently.
 
 ---
 
@@ -64,6 +65,11 @@ A single binary with two subcommands. `status` runs on every session open — th
 
 | Milestone | What a user can do | Done when... |
 |-----------|-------------------|--------------|
+| Milestone | What a user can do | Done when... |
+|-----------|-------------------|--------------|
 | M1 — status subcommand | Session-start check outputs JSON in <10ms | `foreman-tools status ~/foreman` exits 0 and returns valid JSON with all four fields: `upToDate`, `behindBy`, `firstRun`, `projectsFileExists` |
 | M2 — commits subcommand | Release workflow hands Claude categorized JSON | `foreman-tools commits ~/foreman/myproject v1.2.0` returns JSON array of commits since that tag, each with `hash`, `category`, `message`; categories are one of `new`, `improvement`, `fix`, `docs`, `other` |
 | M3 — Homebrew distribution + Foreman integration | foreman-tools installs alongside foreman-ai; all relevant Foreman commands use it when present | `brew install foreman-ai` installs foreman-tools binary; `/self-update` and `/release` use foreman-tools when available, fall back cleanly when not; token savings verified against baseline |
+| M4 — gh-user subcommand | GitHub auth check + username in one call | `foreman-tools gh-user` exits 0 and returns `{"authenticated": bool, "login": "string"}`; exits 0 with `authenticated: false` when `gh` is absent or not logged in; `/first-run`, `/restore-projects`, `/sync-memory`, `/setup-automation`, and `github-repo` skill use it when available |
+| M5 — release-info subcommand | Release pre-flight in one call | `foreman-tools release-info <path>` returns `{"latestTag": "string\|null", "suggestedNext": "string", "commitsSince": N, "isDirty": bool}`; `/release`, `/release-notes`, and `/brew-release` use it when available |
+| M6 — repo-info subcommand | Remote URL parsed to owner/repo in one call | `foreman-tools repo-info <path>` returns `{"owner": "string", "repo": "string", "url": "string"}`; eliminates SSH-vs-HTTPS parsing in `/release`, `/brew-release`, and `/sync-memory` |
