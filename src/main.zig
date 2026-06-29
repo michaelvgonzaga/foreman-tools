@@ -29,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  diff-dirs <path1> <path2>\n", .{});
         try err.print("  grep <root-path> <pattern> [ext-filter]\n", .{});
         try err.print("  parse-stack\n", .{});
+        try err.print("  find-files <root-path> <glob>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -432,6 +433,42 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.writeAll("]\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "find-files")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools find-files <root-path> <glob>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeFindFiles(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.RootNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.files) |p| gpa.free(p);
+            gpa.free(result.files);
+        }
+
+        const escaped_pattern = try root.allocJsonEscape(gpa, result.pattern);
+        defer gpa.free(escaped_pattern);
+
+        try out.print(
+            "{{\n  \"pattern\": \"{s}\",\n  \"count\": {d},\n  \"capped\": {s},\n  \"files\": [\n",
+            .{ escaped_pattern, result.count, if (result.capped) "true" else "false" },
+        );
+        for (result.files, 0..) |p, i| {
+            const escaped = try root.allocJsonEscape(gpa, p);
+            defer gpa.free(escaped);
+            try out.print("    \"{s}\"", .{escaped});
+            if (i + 1 < result.files.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.10.0";
+pub const VERSION = "0.11.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1167,6 +1167,95 @@ pub fn computeParseStack(gpa: std.mem.Allocator, input: []const u8) !ParseStackR
     return .{ .frames = try frames.toOwnedSlice(gpa) };
 }
 
+// --- find-files ---
+
+pub const FindFilesResult = struct { pattern: []const u8, count: u32, capped: bool, files: [][]u8 };
+
+const FIND_MAX_RESULTS: u32 = 2000;
+
+// Returns true if name matches glob pattern. Supports leading '*', trailing '*',
+// '*' on both sides (contains), exact match, and plain '*.ext' suffix match.
+fn globMatch(pattern: []const u8, name: []const u8) bool {
+    if (std.mem.eql(u8, pattern, "*")) return true;
+    const star_start = std.mem.startsWith(u8, pattern, "*");
+    const star_end = std.mem.endsWith(u8, pattern, "*");
+    if (star_start and star_end and pattern.len > 2) {
+        // *contains*
+        const inner = pattern[1 .. pattern.len - 1];
+        return std.mem.indexOf(u8, name, inner) != null;
+    }
+    if (star_start) {
+        // *suffix
+        const suffix = pattern[1..];
+        return std.mem.endsWith(u8, name, suffix);
+    }
+    if (star_end) {
+        // prefix*
+        const prefix = pattern[0 .. pattern.len - 1];
+        return std.mem.startsWith(u8, name, prefix);
+    }
+    return std.mem.eql(u8, pattern, name);
+}
+
+fn walkFindFiles(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    rel_prefix: []const u8,
+    pattern: []const u8,
+    results: *std.ArrayList([]u8),
+) !bool {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (results.items.len >= FIND_MAX_RESULTS) return true;
+        if (entry.kind == .file) {
+            if (globMatch(pattern, entry.name)) {
+                const path: []u8 = if (rel_prefix.len == 0)
+                    try gpa.dupe(u8, entry.name)
+                else
+                    try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+                try results.append(gpa, path);
+                if (results.items.len >= FIND_MAX_RESULTS) return true;
+            }
+        } else if (entry.kind == .directory) {
+            if (shouldSkipScanDir(entry.name)) continue;
+            const sub_prefix: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(sub_prefix);
+            var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            const capped = try walkFindFiles(gpa, io, sub, sub_prefix, pattern, results);
+            if (capped) return true;
+        }
+    }
+    return false;
+}
+
+pub fn computeFindFiles(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    pattern: []const u8,
+) !FindFilesResult {
+    var dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch
+        return error.RootNotFound;
+    defer dir.close(io);
+    var results: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (results.items) |p| gpa.free(p);
+        results.deinit(gpa);
+    }
+    const capped = try walkFindFiles(gpa, io, dir, "", pattern, &results);
+    return .{
+        .pattern = pattern,
+        .count = @intCast(results.items.len),
+        .capped = capped,
+        .files = try results.toOwnedSlice(gpa),
+    };
+}
+
 // --- Tests ---
 
 test "DoctorResult fields" {
@@ -1362,5 +1451,35 @@ test "computeParseStack: mixed trace" {
     try std.testing.expectEqual(@as(usize, 2), result.frames.len);
     try std.testing.expectEqualStrings("src/a.js", result.frames[0].file);
     try std.testing.expectEqualStrings("src/b.js", result.frames[1].file);
+}
+
+test "globMatch: exact" {
+    try std.testing.expect(globMatch("CLAUDE.md", "CLAUDE.md"));
+    try std.testing.expect(!globMatch("CLAUDE.md", "claude.md"));
+    try std.testing.expect(!globMatch("CLAUDE.md", "README.md"));
+}
+
+test "globMatch: suffix *.ext" {
+    try std.testing.expect(globMatch("*.go", "main.go"));
+    try std.testing.expect(globMatch("*.go", "foo_test.go"));
+    try std.testing.expect(!globMatch("*.go", "main.ts"));
+    try std.testing.expect(!globMatch("*.go", "go"));
+}
+
+test "globMatch: prefix*" {
+    try std.testing.expect(globMatch("Makefile*", "Makefile"));
+    try std.testing.expect(globMatch("Makefile*", "Makefile.win"));
+    try std.testing.expect(!globMatch("Makefile*", "makefile"));
+}
+
+test "globMatch: *contains*" {
+    try std.testing.expect(globMatch("*test*", "foo_test.go"));
+    try std.testing.expect(globMatch("*test*", "test_helpers.py"));
+    try std.testing.expect(!globMatch("*test*", "main.go"));
+}
+
+test "globMatch: wildcard *" {
+    try std.testing.expect(globMatch("*", "anything.txt"));
+    try std.testing.expect(globMatch("*", ""));
 }
 
