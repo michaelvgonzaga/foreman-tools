@@ -50,6 +50,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
+        try err.print("  outline <file-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1218,6 +1219,40 @@ pub fn main(init: std.process.Init) !void {
                 .{ esc_path, esc_key },
             );
         }
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "outline")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools outline <file-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeOutline(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.symbols) |s| gpa.free(s.name);
+            gpa.free(result.symbols);
+            gpa.free(result.path);
+        }
+
+        const esc_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(esc_path);
+
+        try out.print("{{\n  \"path\": \"{s}\",\n  \"lang\": \"{s}\",\n  \"symbols\": [", .{ esc_path, result.lang });
+        for (result.symbols, 0..) |sym, i| {
+            const esc_name = try root.allocJsonEscape(gpa, sym.name);
+            defer gpa.free(esc_name);
+            if (i > 0) try out.print(",", .{});
+            try out.print("\n    {{\"name\": \"{s}\", \"kind\": \"{s}\", \"line\": {d}}}", .{ esc_name, sym.kind, sym.line });
+        }
+        if (result.symbols.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

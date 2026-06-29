@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.27.0";
+pub const VERSION = "0.28.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -2922,6 +2922,356 @@ pub fn computeContextEvidence(gpa: std.mem.Allocator, io: std.Io, file_path: []c
         .fileBytes  = file_bytes,
         .matchCount = match_count,
         .chunks     = chunks,
+    };
+}
+
+// --- outline subcommand ---
+
+pub const Symbol = struct {
+    name: []u8,          // owned
+    kind: []const u8,    // static: "function"|"method"|"class"|"struct"|"enum"|"trait"|"interface"|"type"|"module"|"impl"
+    line: u32,           // 1-based
+};
+
+pub const OutlineResult = struct {
+    path: []u8,          // owned
+    lang: []const u8,    // static
+    symbols: []Symbol,   // owned slice; each name is owned
+};
+
+const OUTLINE_MAX: usize = 200;
+
+fn outlineDetectLang(path: []const u8) []const u8 {
+    const dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return "unknown";
+    const ext = path[dot..];
+    if (std.mem.eql(u8, ext, ".go"))                                         return "go";
+    if (std.mem.eql(u8, ext, ".py"))                                         return "python";
+    if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".mjs") or
+        std.mem.eql(u8, ext, ".cjs"))                                        return "javascript";
+    if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+        std.mem.eql(u8, ext, ".jsx"))                                        return "typescript";
+    if (std.mem.eql(u8, ext, ".rb"))                                         return "ruby";
+    if (std.mem.eql(u8, ext, ".rs"))                                         return "rust";
+    if (std.mem.eql(u8, ext, ".zig"))                                        return "zig";
+    if (std.mem.eql(u8, ext, ".java"))                                       return "java";
+    if (std.mem.eql(u8, ext, ".kt") or std.mem.eql(u8, ext, ".kts"))        return "kotlin";
+    if (std.mem.eql(u8, ext, ".php"))                                        return "php";
+    if (std.mem.eql(u8, ext, ".swift"))                                      return "swift";
+    if (std.mem.eql(u8, ext, ".cs"))                                         return "csharp";
+    return "unknown";
+}
+
+// Extract leading identifier chars ([a-zA-Z0-9_])
+fn outlineIdent(s: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+              (c >= '0' and c <= '9') or c == '_')) break;
+    }
+    return s[0..i];
+}
+
+// Consume a prefix keyword and optional following space; return rest or null if not present
+fn outlineKw(s: []const u8, kw: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, s, kw)) return null;
+    const rest = s[kw.len..];
+    // Keyword must be followed by space/tab or end of string (not part of a longer identifier)
+    if (rest.len > 0 and ((rest[0] >= 'a' and rest[0] <= 'z') or
+        (rest[0] >= 'A' and rest[0] <= 'Z') or rest[0] == '_' or
+        (rest[0] >= '0' and rest[0] <= '9'))) return null;
+    return std.mem.trimStart(u8, rest, " \t");
+}
+
+const SymHit = struct { name: []const u8, kind: []const u8 };
+
+fn outlineGo(s: []const u8) ?SymHit {
+    var rest = outlineKw(s, "func") orelse return null;
+    // Optional receiver: (type)
+    if (rest.len > 0 and rest[0] == '(') {
+        rest = rest[(std.mem.indexOfScalar(u8, rest, ')') orelse return null) + 1..];
+        rest = std.mem.trimStart(u8, rest, " \t");
+    }
+    const name = outlineIdent(rest);
+    if (name.len == 0) return null;
+    return .{ .name = name, .kind = "function" };
+}
+
+fn outlinePython(s: []const u8) ?SymHit {
+    var rest = s;
+    if (std.mem.startsWith(u8, rest, "async ")) rest = std.mem.trimStart(u8, rest[6..], " \t");
+    if (outlineKw(rest, "def")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    if (outlineKw(rest, "class")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "class" };
+    }
+    return null;
+}
+
+fn outlineJS(s: []const u8) ?SymHit {
+    var rest = s;
+    // Strip export modifiers
+    if (outlineKw(rest, "export")) |a| {
+        rest = a;
+        if (outlineKw(rest, "default")) |b| rest = b;
+    }
+    if (std.mem.startsWith(u8, rest, "async ")) rest = std.mem.trimStart(u8, rest[6..], " \t");
+    if (outlineKw(rest, "function")) |after| {
+        // skip optional * (generator)
+        var a2 = after;
+        if (a2.len > 0 and a2[0] == '*') a2 = std.mem.trimStart(u8, a2[1..], " \t");
+        const name = outlineIdent(a2);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    if (outlineKw(rest, "class")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "class" };
+    }
+    return null;
+}
+
+fn outlineTS(s: []const u8) ?SymHit {
+    if (outlineJS(s)) |h| return h;
+    var rest = s;
+    if (outlineKw(rest, "export")) |a| rest = a;
+    if (outlineKw(rest, "interface")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "interface" };
+    }
+    if (outlineKw(rest, "type")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "type" };
+    }
+    if (outlineKw(rest, "enum")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "enum" };
+    }
+    return null;
+}
+
+fn outlineRust(s: []const u8) ?SymHit {
+    var rest = s;
+    if (outlineKw(rest, "pub")) |a| rest = a;
+    // pub(crate) / pub(super) etc.
+    if (rest.len > 0 and rest[0] == '(') {
+        rest = rest[(std.mem.indexOfScalar(u8, rest, ')') orelse return null) + 1..];
+        rest = std.mem.trimStart(u8, rest, " \t");
+    }
+    if (std.mem.startsWith(u8, rest, "async ")) rest = std.mem.trimStart(u8, rest[6..], " \t");
+    if (std.mem.startsWith(u8, rest, "unsafe ")) rest = std.mem.trimStart(u8, rest[7..], " \t");
+    if (outlineKw(rest, "fn")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    if (outlineKw(rest, "struct")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "struct" };
+    }
+    if (outlineKw(rest, "enum")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "enum" };
+    }
+    if (outlineKw(rest, "trait")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "trait" };
+    }
+    if (outlineKw(rest, "impl")) |after| {
+        // impl may have generic params; grab first ident
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "impl" };
+    }
+    return null;
+}
+
+fn outlineZig(s: []const u8) ?SymHit {
+    var rest = s;
+    if (outlineKw(rest, "pub")) |a| rest = a;
+    if (outlineKw(rest, "fn")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    // pub const Name = struct/enum/union
+    if (outlineKw(rest, "const")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        // Check rhs contains struct/enum/union keyword
+        const eq = std.mem.indexOfScalar(u8, after, '=') orelse return null;
+        const rhs = std.mem.trimStart(u8, after[eq + 1..], " \t");
+        if (std.mem.startsWith(u8, rhs, "struct") or
+            std.mem.startsWith(u8, rhs, "enum") or
+            std.mem.startsWith(u8, rhs, "union"))
+        {
+            return .{ .name = name, .kind = "struct" };
+        }
+        return null;
+    }
+    return null;
+}
+
+fn outlineRuby(s: []const u8) ?SymHit {
+    if (outlineKw(s, "def")) |after| {
+        // Ruby method names can end with ?, !, =
+        var i: usize = 0;
+        while (i < after.len) : (i += 1) {
+            const c = after[i];
+            if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                  (c >= '0' and c <= '9') or c == '_')) break;
+        }
+        if (i < after.len and (after[i] == '?' or after[i] == '!' or after[i] == '=')) i += 1;
+        const name = after[0..i];
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    if (outlineKw(s, "class")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "class" };
+    }
+    if (outlineKw(s, "module")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "module" };
+    }
+    return null;
+}
+
+fn outlineJavaLike(s: []const u8) ?SymHit {
+    var rest = s;
+    // Strip visibility/modifiers (public/private/protected/static/abstract/final/override/sealed)
+    const mods = [_][]const u8{ "public ", "private ", "protected ", "static ", "abstract ", "final ", "override ", "sealed ", "partial ", "internal " };
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (mods) |m| {
+            if (std.mem.startsWith(u8, rest, m)) { rest = rest[m.len..]; changed = true; }
+        }
+    }
+    if (outlineKw(rest, "class")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "class" };
+    }
+    if (outlineKw(rest, "interface")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "interface" };
+    }
+    if (outlineKw(rest, "enum")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "enum" };
+    }
+    if (outlineKw(rest, "fun ")) |after| { // Kotlin
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    if (outlineKw(rest, "func ")) |after| { // Swift
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    return null;
+}
+
+fn outlinePHP(s: []const u8) ?SymHit {
+    var rest = s;
+    if (outlineKw(rest, "public")) |a| rest = a;
+    if (outlineKw(rest, "private")) |a| rest = a;
+    if (outlineKw(rest, "protected")) |a| rest = a;
+    if (outlineKw(rest, "static")) |a| rest = a;
+    if (std.mem.startsWith(u8, rest, "async ")) rest = rest[6..];
+    if (outlineKw(rest, "function")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "function" };
+    }
+    if (outlineKw(rest, "class")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "class" };
+    }
+    if (outlineKw(rest, "interface")) |after| {
+        const name = outlineIdent(after);
+        if (name.len == 0) return null;
+        return .{ .name = name, .kind = "interface" };
+    }
+    return null;
+}
+
+fn outlineExtract(s: []const u8, lang: []const u8) ?SymHit {
+    if (std.mem.eql(u8, lang, "go"))                                          return outlineGo(s);
+    if (std.mem.eql(u8, lang, "python"))                                      return outlinePython(s);
+    if (std.mem.eql(u8, lang, "javascript"))                                  return outlineJS(s);
+    if (std.mem.eql(u8, lang, "typescript"))                                  return outlineTS(s);
+    if (std.mem.eql(u8, lang, "rust"))                                        return outlineRust(s);
+    if (std.mem.eql(u8, lang, "zig"))                                         return outlineZig(s);
+    if (std.mem.eql(u8, lang, "ruby"))                                        return outlineRuby(s);
+    if (std.mem.eql(u8, lang, "java") or std.mem.eql(u8, lang, "kotlin") or
+        std.mem.eql(u8, lang, "csharp") or std.mem.eql(u8, lang, "swift"))   return outlineJavaLike(s);
+    if (std.mem.eql(u8, lang, "php"))                                         return outlinePHP(s);
+    return null;
+}
+
+pub fn computeOutline(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+) !OutlineResult {
+    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch return error.FileNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+    defer gpa.free(content);
+
+    const lang = outlineDetectLang(file_path);
+
+    // Allocate max-size symbol buffer; shrink to actual count after scanning
+    const sym_buf = try gpa.alloc(Symbol, OUTLINE_MAX);
+    var count: usize = 0;
+    errdefer {
+        for (sym_buf[0..count]) |s| gpa.free(s.name);
+        gpa.free(sym_buf);
+    }
+
+    var line_num: u32 = 1;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| : (line_num += 1) {
+        if (count >= OUTLINE_MAX) break;
+        const trimmed = std.mem.trim(u8, raw, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#' or trimmed[0] == '/' or trimmed[0] == '*') continue;
+        const hit = outlineExtract(trimmed, lang) orelse continue;
+        sym_buf[count] = .{
+            .name = try gpa.dupe(u8, hit.name),
+            .kind = hit.kind,
+            .line = line_num,
+        };
+        count += 1;
+    }
+
+    // Shrink to actual count
+    const symbols = try gpa.realloc(sym_buf, count);
+    return .{
+        .path = try gpa.dupe(u8, file_path),
+        .lang = lang,
+        .symbols = symbols,
     };
 }
 

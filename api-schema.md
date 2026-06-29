@@ -739,6 +739,41 @@ Miss:
 
 ---
 
+## outline
+
+`foreman-tools outline <file-path>`
+
+```json
+{
+  "path": "/Users/me/project/src/main.py",
+  "lang": "python",
+  "symbols": [
+    {"name": "UserService", "kind": "class",    "line": 1},
+    {"name": "__init__",    "kind": "function", "line": 2},
+    {"name": "get_user",    "kind": "function", "line": 5},
+    {"name": "create_user", "kind": "function", "line": 8},
+    {"name": "handle_request", "kind": "function", "line": 11}
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `path` | string | absolute file path (echoed from input) |
+| `lang` | string | detected language: `"go"`, `"python"`, `"javascript"`, `"typescript"`, `"rust"`, `"zig"`, `"ruby"`, `"java"`, `"kotlin"`, `"kotlin"`, `"csharp"`, `"swift"`, `"php"`, or `"unknown"` |
+| `symbols` | array | extracted symbols, in source order |
+| `symbols[].name` | string | symbol identifier |
+| `symbols[].kind` | string | one of: `"function"`, `"class"`, `"struct"`, `"enum"`, `"trait"`, `"interface"`, `"type"`, `"module"`, `"impl"` |
+| `symbols[].line` | int | 1-based line number |
+
+**Constraints:** Line-by-line pattern matching; no full AST. Top-level and nested definitions both appear (no indentation-based filtering). Capped at 200 symbols. Inline/comment lines skipped. File cap: 10 MB.
+
+**Languages:** Go (`func`), Python (`def`/`class`), JavaScript (`function`/`class`), TypeScript (adds `interface`/`type`/`enum`), Rust (`fn`/`struct`/`enum`/`trait`/`impl`), Zig (`fn`/`const … = struct|enum`), Ruby (`def`/`class`/`module`), Java, Kotlin, C#, Swift, PHP. Returns `"unknown"` lang with empty `symbols` for unsupported extensions.
+
+**Errors:** `FileNotFound`
+
+---
+
 ## Schema change policy
 
 Any modification to an existing subcommand's output shape (field rename, type change, enum value addition/removal, field removal) requires:
