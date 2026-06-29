@@ -584,6 +584,39 @@ Miss:
 
 ---
 
+## context-rank
+
+`foreman-tools context-rank <root-path> <query>`
+
+```json
+{
+  "root": "/abs/path",
+  "query": "cache invalidation",
+  "fileCount": 70,
+  "ranked": [
+    {"path": "src/cache.zig", "score": 321, "hits": 4, "nameMatch": true, "kind": "source", "bytes": 8192},
+    {"path": "CHANGELOG.md", "score": 21, "hits": 4, "nameMatch": false, "kind": "docs", "bytes": 6655}
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `fileCount` | int | total files scanned (before top-15 cap) |
+| `ranked` | array | top 15 files by score, descending |
+| `ranked[].score` | int | composite: `hits×5 + nameMatch×300 + kind_bonus(1–2)` |
+| `ranked[].hits` | int | total occurrences of all query terms (case-insensitive) in first 8 KB of file |
+| `ranked[].nameMatch` | bool | any query term appears in the file path |
+| `ranked[].kind` | enum | `"source"` `"test"` `"config"` `"docs"` `"other"` |
+
+**Query:** split on spaces; each word is searched independently; up to 8 terms. Case-insensitive literal match.
+
+**Constraints:** `<root-path>` must be absolute. File content read capped at 8 KB per file (content past 8 KB is not scored). `.DS_Store`, binary files, and build artifacts are excluded.
+
+**Errors:** exit 1 if `<root-path>` is not found or not a directory.
+
+---
+
 ## context-changed
 
 `foreman-tools context-changed <repo-path> [ref]`

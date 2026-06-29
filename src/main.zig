@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
         try err.print("  file-hash <file-path>\n", .{});
         try err.print("  context-scan <path>\n", .{});
+        try err.print("  context-rank <root-path> <query>\n", .{});
         try err.print("  context-changed <repo-path> [ref]\n", .{});
         try err.print("  context-evidence <file-path> <pattern>\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
@@ -944,6 +945,49 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\"{s}\"", .{esc});
         }
         try out.writeAll("]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-rank")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools context-rank <root-path> <query>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeContextRank(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            gpa.free(result.root);
+            gpa.free(result.query);
+            for (result.ranked) |f| gpa.free(f.path);
+            gpa.free(result.ranked);
+        }
+
+        const esc_root = try root.allocJsonEscape(gpa, result.root);
+        defer gpa.free(esc_root);
+        const esc_query = try root.allocJsonEscape(gpa, result.query);
+        defer gpa.free(esc_query);
+
+        try out.print(
+            "{{\n  \"root\": \"{s}\",\n  \"query\": \"{s}\",\n  \"fileCount\": {d},\n  \"ranked\": [\n",
+            .{ esc_root, esc_query, result.fileCount },
+        );
+        for (result.ranked, 0..) |f, i| {
+            const esc_path = try root.allocJsonEscape(gpa, f.path);
+            defer gpa.free(esc_path);
+            try out.print(
+                "    {{\"path\": \"{s}\", \"score\": {d}, \"hits\": {d}, \"nameMatch\": {s}, \"kind\": \"{s}\", \"bytes\": {d}}}",
+                .{ esc_path, f.score, f.hits, if (f.nameMatch) "true" else "false", f.kind, f.bytes },
+            );
+            if (i + 1 < result.ranked.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "context-changed")) {
         if (args.len < 3) {

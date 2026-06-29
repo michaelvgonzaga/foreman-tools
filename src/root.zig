@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.25.0";
+pub const VERSION = "0.26.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -488,6 +488,16 @@ fn shouldSkipScanDir(name: []const u8) bool {
     return SKIP_DIR_SET.has(name);
 }
 
+const SKIP_FILE_SET = std.StaticStringMap(void).initComptime(&.{
+    .{ ".DS_Store", {} }, .{ "Thumbs.db", {} }, .{ ".localized", {} },
+});
+
+fn shouldSkipScanFile(name: []const u8) bool {
+    if (SKIP_FILE_SET.has(name)) return true;
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return false;
+    return BINARY_EXT_SET.has(name[dot..]);
+}
+
 const BINARY_EXT_SET = std.StaticStringMap(void).initComptime(&.{
     .{ ".png", {} }, .{ ".jpg", {} }, .{ ".jpeg", {} }, .{ ".gif", {} }, .{ ".webp", {} },
     .{ ".ico", {} }, .{ ".bmp", {} }, .{ ".tiff", {} },
@@ -622,6 +632,7 @@ fn walkScanFiles(
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         if (entry.kind == .file) {
+            if (shouldSkipScanFile(entry.name)) continue;
             const rel_path: []u8 = if (rel_prefix.len == 0)
                 try gpa.dupe(u8, entry.name)
             else
@@ -2316,6 +2327,161 @@ pub fn computeCacheFetch(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
         .subKey = try gpa.dupe(u8, sub_key),
         .hit = true,
         .value = try gpa.dupe(u8, stored_value),
+    };
+}
+
+// --- context-rank subcommand ---
+
+pub const RankedFile = struct {
+    path: []u8,         // owned
+    score: u32,
+    hits: u32,
+    nameMatch: bool,
+    kind: []const u8,   // static string literal — do not free
+    bytes: u64,
+};
+
+pub const ContextRankResult = struct {
+    root: []u8,           // owned
+    query: []u8,          // owned
+    fileCount: u32,
+    ranked: []RankedFile, // owned; each .path is owned
+};
+
+const RANK_MAX_RESULTS: usize = 15;
+const RANK_FILE_READ_CAP: usize = 8 * 1024;
+const RANK_MAX_TERMS: usize = 8;
+
+fn countOccurrences(haystack: []const u8, needle: []const u8) u32 {
+    if (needle.len == 0 or needle.len > haystack.len) return 0;
+    var count: u32 = 0;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) {
+        var match = true;
+        for (needle, 0..) |c, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(c)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            count += 1;
+            i += needle.len;
+        } else {
+            i += 1;
+        }
+    }
+    return count;
+}
+
+pub fn computeContextRank(gpa: std.mem.Allocator, io: std.Io, root_path: []const u8, query: []const u8) !ContextRankResult {
+    const scan = try computeScan(gpa, io, root_path);
+    defer {
+        for (scan.keyFiles) |f| gpa.free(f);
+        gpa.free(scan.keyFiles);
+        for (scan.dirMap) |d| gpa.free(d);
+        gpa.free(scan.dirMap);
+        if (scan.entryPoint) |ep| gpa.free(ep);
+        for (scan.files) |f| gpa.free(f.path);
+        gpa.free(scan.files);
+    }
+
+    // Extract query terms (slices into query — valid for this function's lifetime)
+    var terms: [RANK_MAX_TERMS][]const u8 = undefined;
+    var term_count: usize = 0;
+    {
+        var it = std.mem.splitScalar(u8, query, ' ');
+        while (it.next()) |part| {
+            const t = std.mem.trim(u8, part, " \t");
+            if (t.len > 0 and term_count < RANK_MAX_TERMS) {
+                terms[term_count] = t;
+                term_count += 1;
+            }
+        }
+    }
+    const query_terms = terms[0..term_count];
+
+    // Score each file; maintain top RANK_MAX_RESULTS by insertion into fixed array
+    const TopEntry = struct { idx: usize, score: u32, hits: u32, nameMatch: bool };
+    var top: [RANK_MAX_RESULTS]TopEntry = undefined;
+    var top_count: usize = 0;
+    var top_min: u32 = 0;
+
+    for (scan.files, 0..) |file, idx| {
+        // Check filename/path for term match
+        var name_match = false;
+        for (query_terms) |term| {
+            if (containsInsensitive(file.path, term)) { name_match = true; break; }
+        }
+
+        // Read file for content hits (cap at RANK_FILE_READ_CAP)
+        var hits: u32 = 0;
+        if (query_terms.len > 0) {
+            const abs_path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ root_path, file.path }) catch null;
+            if (abs_path) |ap| {
+                defer gpa.free(ap);
+                const cf = std.Io.Dir.openFileAbsolute(io, ap, .{}) catch null;
+                if (cf) |f| {
+                    defer f.close(io);
+                    var rbuf: [4096]u8 = undefined;
+                    var r = f.reader(io, &rbuf);
+                    const content = r.interface.allocRemaining(gpa, .limited(RANK_FILE_READ_CAP)) catch null;
+                    if (content) |c| {
+                        defer gpa.free(c);
+                        for (query_terms) |term| hits += countOccurrences(c, term);
+                    }
+                }
+            }
+        }
+
+        const kind_bonus: u32 = if (std.mem.eql(u8, file.kind, "source") or std.mem.eql(u8, file.kind, "test")) 2 else 1;
+        const score: u32 = hits * 5 + (if (name_match) @as(u32, 300) else 0) + kind_bonus;
+        const entry = TopEntry{ .idx = idx, .score = score, .hits = hits, .nameMatch = name_match };
+
+        if (top_count < RANK_MAX_RESULTS) {
+            top[top_count] = entry;
+            top_count += 1;
+            top_min = top[0].score;
+            for (1..top_count) |i| if (top[i].score < top_min) { top_min = top[i].score; };
+        } else if (score > top_min) {
+            var min_i: usize = 0;
+            for (1..top_count) |i| if (top[i].score < top[min_i].score) { min_i = i; };
+            top[min_i] = entry;
+            top_min = top[0].score;
+            for (1..top_count) |i| if (top[i].score < top_min) { top_min = top[i].score; };
+        }
+    }
+
+    // Insertion-sort top[0..top_count] by score descending
+    {
+        var i: usize = 1;
+        while (i < top_count) : (i += 1) {
+            const val = top[i];
+            var j: usize = i;
+            while (j > 0 and top[j - 1].score < val.score) : (j -= 1) top[j] = top[j - 1];
+            top[j] = val;
+        }
+    }
+
+    // Build result
+    const ranked = try gpa.alloc(RankedFile, top_count);
+    for (top[0..top_count], 0..) |entry, i| {
+        const f = scan.files[entry.idx];
+        ranked[i] = .{
+            .path      = try gpa.dupe(u8, f.path),
+            .score     = entry.score,
+            .hits      = entry.hits,
+            .nameMatch = entry.nameMatch,
+            .kind      = f.kind,
+            .bytes     = f.bytes,
+        };
+    }
+
+    return .{
+        .root      = try gpa.dupe(u8, root_path),
+        .query     = try gpa.dupe(u8, query),
+        .fileCount = scan.fileCount,
+        .ranked    = ranked,
     };
 }
 
