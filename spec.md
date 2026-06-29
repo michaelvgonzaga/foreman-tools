@@ -56,6 +56,7 @@ A single binary with two subcommands. `status` runs on every session open — th
 - [ ] M12: kind classification rules — test: `*.test.*`, `*.spec.*`, `*_test.*`, `test_*`, files in `test/` or `tests/` dirs; config: existing KNOWN_CONFIG_FILES list; docs: `*.md`, `*.txt`, files in `docs/`; source: everything else
 - [ ] M12: entry point detection order — `main.go`, `cmd/*/main.go`, `index.js`, `index.ts`, `src/index.js`, `src/index.ts`, `src/main.*`, `app.py`, `main.py`, `bin/<repo-name>` (from repo dirname); first match wins, null if none found
 - [ ] M13: `diff-dirs` is structural only — compares paths and byte sizes, no file content; `same: bool` is derived from equal byte counts (not a real content hash)
+- [ ] M17: `gh-release` shells out to `gh` (not a native GitHub API call) — keeps auth delegation to `gh` the same as today; notes file is a temp file written by Claude, read by foreman-tools, deleted after the call
 
 ---
 
@@ -88,3 +89,4 @@ A single binary with two subcommands. `status` runs on every session open — th
 | M14 — tarball-sha subcommand | GitHub tarball SHA256 in one call with retry | `foreman-tools tarball-sha <owner> <repo> <tag>` fetches `https://github.com/<owner>/<repo>/archive/refs/tags/<tag>.tar.gz`, computes SHA256, retries once after 10s if the empty-file hash is returned (`e3b0c44...`); returns `{"sha256": "string", "url": "string"}`; `/brew-release` uses it instead of `curl \| shasum -a 256` |
 | M15 — formula-info subcommand | Homebrew formula fields in one call | `foreman-tools formula-info <tap-path> <formula-name>` reads the `.rb` file, parses `url`, `sha256`, `version` fields; returns `{"formulaPath": "string", "url": "string", "sha256": "string", "version": "string"}`; `/brew-release` uses it instead of manual Ruby file parsing |
 | M16 — validate-hooks subcommand | Claude Code Stop hooks check in one call | `foreman-tools validate-hooks` reads `~/.claude/settings.json`, checks that both Stop hooks (memory-sync + auto-push) exist by `statusMessage`; returns `{"memorySync": bool, "autoPush": bool}`; `/setup-automation` and `/first-run` use it instead of `jq` traversal |
+| M17 — gh-release subcommand | GitHub release creation without shell escaping | `foreman-tools gh-release <owner> <repo> <tag> <title> <notes-file>` reads release notes from a file (avoiding heredoc/quote escaping), calls `gh release create`; returns `{"url": "string"}`; `/release` and `/brew-release` use it instead of inline `gh release create --notes "..."` |
