@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.8.0";
+pub const VERSION = "0.9.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -438,51 +438,54 @@ pub const ScanResult = struct {
     files: []FileEntry,    // owned by caller
 };
 
-const FRAMEWORK_INDICATORS = [_]struct { file: []const u8, fw: []const u8 }{
-    .{ .file = "package.json",    .fw = "Node.js" },
-    .{ .file = "go.mod",          .fw = "Go" },
-    .{ .file = "build.zig",       .fw = "Zig" },
-    .{ .file = "Cargo.toml",      .fw = "Rust" },
-    .{ .file = "pyproject.toml",  .fw = "Python" },
-    .{ .file = "requirements.txt",.fw = "Python" },
-    .{ .file = "setup.py",        .fw = "Python" },
-    .{ .file = "Gemfile",         .fw = "Ruby" },
-    .{ .file = "composer.json",   .fw = "PHP" },
-    .{ .file = "pom.xml",         .fw = "Java (Maven)" },
-    .{ .file = "build.gradle",    .fw = "Java (Gradle)" },
-    .{ .file = "pubspec.yaml",    .fw = "Flutter/Dart" },
-    .{ .file = "mix.exs",         .fw = "Elixir" },
-};
+// Comptime hash maps — O(1) lookups replacing O(n) linear scans.
+// StaticStringMap uses binary search on a sorted comptime-generated array,
+// which is faster than linear scan for any set larger than ~4 entries.
 
-const KNOWN_CONFIG_FILES = [_][]const u8{
-    "package.json", "package-lock.json", "yarn.lock",       "pnpm-lock.yaml",
-    "pyproject.toml", "requirements.txt", "setup.py",       "setup.cfg",
-    "go.mod", "go.sum",
-    "build.zig", "build.zig.zon",
-    "Cargo.toml", "Cargo.lock",
-    "Gemfile", "Gemfile.lock",
-    "composer.json", "composer.lock",
-    "pom.xml", "build.gradle", "build.gradle.kts",
-    "pubspec.yaml", "mix.exs",
-    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
-    ".env.example", ".env.sample",
-    "tsconfig.json", "jsconfig.json",
-    ".eslintrc.json", ".eslintrc.js",
-    ".prettierrc", ".prettierrc.json",
-    "Makefile", "justfile", "Taskfile.yml",
-    "netlify.toml", "vercel.json",
-};
+const FRAMEWORK_MAP = std.StaticStringMap([]const u8).initComptime(&.{
+    .{ "package.json",    "Node.js" },
+    .{ "go.mod",          "Go" },
+    .{ "build.zig",       "Zig" },
+    .{ "Cargo.toml",      "Rust" },
+    .{ "pyproject.toml",  "Python" },
+    .{ "requirements.txt","Python" },
+    .{ "setup.py",        "Python" },
+    .{ "Gemfile",         "Ruby" },
+    .{ "composer.json",   "PHP" },
+    .{ "pom.xml",         "Java (Maven)" },
+    .{ "build.gradle",    "Java (Gradle)" },
+    .{ "pubspec.yaml",    "Flutter/Dart" },
+    .{ "mix.exs",         "Elixir" },
+});
 
-const SCAN_SKIP_DIRS = [_][]const u8{
-    "node_modules", ".git",    "vendor",  "__pycache__",
-    ".next",        "dist",    "target",  "zig-out",
-    ".zig-cache",   ".cache",  "coverage", ".venv",
-    "venv",         ".tox",    "tmp",     "temp",
-};
+const CONFIG_FILE_MAP = std.StaticStringMap(void).initComptime(&.{
+    .{ "package.json", {} },    .{ "package-lock.json", {} }, .{ "yarn.lock", {} },     .{ "pnpm-lock.yaml", {} },
+    .{ "pyproject.toml", {} },  .{ "requirements.txt", {} },  .{ "setup.py", {} },      .{ "setup.cfg", {} },
+    .{ "go.mod", {} },          .{ "go.sum", {} },
+    .{ "build.zig", {} },       .{ "build.zig.zon", {} },
+    .{ "Cargo.toml", {} },      .{ "Cargo.lock", {} },
+    .{ "Gemfile", {} },         .{ "Gemfile.lock", {} },
+    .{ "composer.json", {} },   .{ "composer.lock", {} },
+    .{ "pom.xml", {} },         .{ "build.gradle", {} },      .{ "build.gradle.kts", {} },
+    .{ "pubspec.yaml", {} },    .{ "mix.exs", {} },
+    .{ "Dockerfile", {} },      .{ "docker-compose.yml", {} }, .{ "docker-compose.yaml", {} },
+    .{ ".env.example", {} },    .{ ".env.sample", {} },
+    .{ "tsconfig.json", {} },   .{ "jsconfig.json", {} },
+    .{ ".eslintrc.json", {} },  .{ ".eslintrc.js", {} },
+    .{ ".prettierrc", {} },     .{ ".prettierrc.json", {} },
+    .{ "Makefile", {} },        .{ "justfile", {} },           .{ "Taskfile.yml", {} },
+    .{ "netlify.toml", {} },    .{ "vercel.json", {} },
+});
+
+const SKIP_DIR_SET = std.StaticStringMap(void).initComptime(&.{
+    .{ "node_modules", {} }, .{ ".git", {} },      .{ "vendor", {} },    .{ "__pycache__", {} },
+    .{ ".next", {} },        .{ "dist", {} },       .{ "target", {} },    .{ "zig-out", {} },
+    .{ ".zig-cache", {} },   .{ ".cache", {} },     .{ "coverage", {} },  .{ ".venv", {} },
+    .{ "venv", {} },         .{ ".tox", {} },       .{ "tmp", {} },       .{ "temp", {} },
+});
 
 fn shouldSkipScanDir(name: []const u8) bool {
-    for (SCAN_SKIP_DIRS) |s| if (std.mem.eql(u8, name, s)) return true;
-    return false;
+    return SKIP_DIR_SET.has(name);
 }
 
 fn readFileScan(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8) !?[]u8 {
@@ -585,9 +588,7 @@ fn classifyFile(path: []const u8) []const u8 {
         std.mem.endsWith(u8, name, ".txt") or
         std.mem.endsWith(u8, name, ".rst")) return "docs";
     // config files
-    for (KNOWN_CONFIG_FILES) |known| {
-        if (std.mem.eql(u8, name, known)) return "config";
-    }
+    if (CONFIG_FILE_MAP.has(name)) return "config";
     return "source";
 }
 
@@ -681,15 +682,10 @@ pub fn computeScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ScanRe
         while (try it.next(io)) |entry| {
             if (entry.kind != .file) continue;
             if (std.mem.eql(u8, framework, "unknown")) {
-                for (FRAMEWORK_INDICATORS) |ind| {
-                    if (std.mem.eql(u8, entry.name, ind.file)) { framework = ind.fw; break; }
-                }
+                if (FRAMEWORK_MAP.get(entry.name)) |fw| framework = fw;
             }
-            for (KNOWN_CONFIG_FILES) |known| {
-                if (std.mem.eql(u8, entry.name, known)) {
-                    try key_files.append(gpa, try gpa.dupe(u8, entry.name));
-                    break;
-                }
+            if (CONFIG_FILE_MAP.has(entry.name)) {
+                try key_files.append(gpa, try gpa.dupe(u8, entry.name));
             }
         }
     }
