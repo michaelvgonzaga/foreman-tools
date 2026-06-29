@@ -396,6 +396,20 @@ Same shape as `json-query`. `type` and `value` use the same enums and raw JSON e
 
 ---
 
+## yaml-query
+
+`foreman-tools yaml-query <file-path> <dot-path>`
+
+Same shape as `json-query` and `toml-query`.
+
+**Constraints:** Indentation-based block-style parser. Handles: nested mappings, sequences (numeric index), inline sequence items (`- key: value`). Does NOT handle: anchors/aliases, multi-line block scalars (`|` / `>`), flow-style collections (`{a: 1}`). Covers GitHub Actions (`.yml`), docker-compose, k8s manifests, Rails config, and similar block-style YAML. File cap: 10 MB.
+
+**Booleans:** `true`/`yes`/`on` → `true`; `false`/`no`/`off` → `false`. `null`/`~`/empty → `null`.
+
+**Errors:** `FileNotFound`
+
+---
+
 ## list-projects
 
 `foreman-tools list-projects <foreman-root>`

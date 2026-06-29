@@ -36,6 +36,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  file-stats <file-path>\n", .{});
         try err.print("  env-scan <root-path>\n", .{});
         try err.print("  toml-query <file-path> <dot-path>\n", .{});
+        try err.print("  yaml-query <file-path> <dot-path>\n", .{});
         try err.print("  list-projects <foreman-root>\n", .{});
         try err.print("  tarball-sha <owner> <repo> <tag>\n", .{});
         try err.print("  formula-info <tap-path> <formula-name>\n", .{});
@@ -686,6 +687,38 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const result = root.computeTomlQuery(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer if (result.value_json) |v| gpa.free(v);
+
+        const escaped_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(escaped_path);
+
+        if (result.found) {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"found\": true,\n  \"type\": \"{s}\",\n  \"value\": {s}\n}}\n",
+                .{ escaped_path, result.type_name, result.value_json.? },
+            );
+        } else {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"found\": false,\n  \"type\": null,\n  \"value\": null\n}}\n",
+                .{escaped_path},
+            );
+        }
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "yaml-query")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools yaml-query <file-path> <dot-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeYamlQuery(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
                 else               => try err.print("error: {}\n", .{e}),

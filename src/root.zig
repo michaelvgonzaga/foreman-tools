@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.26.0";
+pub const VERSION = "0.27.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1741,6 +1741,151 @@ pub fn computeTomlQuery(
     const scalar = try extractTOMLValue(gpa, content, key_path);
     if (scalar) |s| {
         return .{ .path = key_path, .found = true, .type_name = s.type_name, .value_json = s.json };
+    }
+    return .{ .path = key_path, .found = false, .type_name = "null", .value_json = null };
+}
+
+// --- yaml-query ---
+
+fn yamlIndent(s: []const u8) usize {
+    var n: usize = 0;
+    while (n < s.len and s[n] == ' ') n += 1;
+    return n;
+}
+
+fn yamlStripQuotes(s: []const u8) []const u8 {
+    const v = std.mem.trim(u8, s, " \t\r");
+    if (v.len >= 2 and ((v[0] == '"' and v[v.len - 1] == '"') or
+        (v[0] == '\'' and v[v.len - 1] == '\'')))
+        return v[1 .. v.len - 1];
+    return v;
+}
+
+// Returns value part of "key: value" if content starts with key+colon; null otherwise.
+// Rejects partial matches: "runs-on:" does not match key "runs".
+fn yamlKeyVal(content: []const u8, key: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, content, key)) return null;
+    const rest = content[key.len..];
+    if (rest.len == 0 or rest[0] != ':') return null;
+    if (rest.len > 1 and rest[1] != ' ' and rest[1] != '\t' and
+        rest[1] != '\r' and rest[1] != '\n') return null;
+    return std.mem.trimStart(u8,rest[1..], " \t");
+}
+
+fn yamlFindChildIndent(lines: []const []const u8, from: usize, parent_indent: usize) usize {
+    var j = from;
+    while (j < lines.len) : (j += 1) {
+        const raw = lines[j];
+        const ind = yamlIndent(raw);
+        const c = std.mem.trimEnd(u8, raw[ind..], "\r\n");
+        if (c.len == 0 or c[0] == '#') continue;
+        if (ind > parent_indent) return ind;
+        break;
+    }
+    return parent_indent + 2;
+}
+
+// Navigate YAML lines by path segments; returns a slice into lines[] (no allocation).
+fn yamlNav(
+    lines: []const []const u8,
+    segs: []const []const u8,
+    from: usize,
+    at_indent: usize,
+) ?[]const u8 {
+    if (segs.len == 0) return null;
+    const seg = segs[0];
+    const rest = segs[1..];
+    const is_last = rest.len == 0;
+    const as_idx: ?usize = std.fmt.parseInt(usize, seg, 10) catch null;
+
+    var i = from;
+    var seq_n: usize = 0;
+
+    while (i < lines.len) : (i += 1) {
+        const raw = lines[i];
+        const ind = yamlIndent(raw);
+        const c = std.mem.trimEnd(u8, raw[ind..], "\r\n");
+        if (c.len == 0 or c[0] == '#') continue;
+        if (ind < at_indent) break;
+        if (ind > at_indent) continue;
+
+        if (as_idx) |target| {
+            if (c[0] == '-') {
+                if (seq_n == target) {
+                    const inline_part = std.mem.trimStart(u8,c[1..], " \t");
+                    if (is_last) return yamlStripQuotes(inline_part);
+                    // Inline key check: handles "- uses: actions/checkout@v2"
+                    if (rest.len >= 1) {
+                        if (yamlKeyVal(inline_part, rest[0])) |val| {
+                            if (rest.len == 1) return yamlStripQuotes(val);
+                        }
+                    }
+                    const ci = yamlFindChildIndent(lines, i + 1, at_indent);
+                    return yamlNav(lines, rest, i + 1, ci);
+                }
+                seq_n += 1;
+            }
+        } else {
+            if (yamlKeyVal(c, seg)) |val| {
+                if (is_last) return yamlStripQuotes(val);
+                const ci = yamlFindChildIndent(lines, i + 1, at_indent);
+                return yamlNav(lines, rest, i + 1, ci);
+            }
+        }
+    }
+    return null;
+}
+
+fn parseYamlScalar(gpa: std.mem.Allocator, raw: []const u8) !TOMLScalar {
+    const v = std.mem.trim(u8, raw, " \t\r\n");
+    if (v.len == 0 or std.mem.eql(u8, v, "null") or std.mem.eql(u8, v, "~"))
+        return .{ .type_name = "null", .json = try gpa.dupe(u8, "null") };
+    if (std.mem.eql(u8, v, "true") or std.mem.eql(u8, v, "yes") or std.mem.eql(u8, v, "on"))
+        return .{ .type_name = "bool", .json = try gpa.dupe(u8, "true") };
+    if (std.mem.eql(u8, v, "false") or std.mem.eql(u8, v, "no") or std.mem.eql(u8, v, "off"))
+        return .{ .type_name = "bool", .json = try gpa.dupe(u8, "false") };
+    if (std.fmt.parseInt(i64, v, 10)) |_| {
+        return .{ .type_name = "number", .json = try gpa.dupe(u8, v) };
+    } else |_| {}
+    if (std.fmt.parseFloat(f64, v)) |_| {
+        return .{ .type_name = "number", .json = try gpa.dupe(u8, v) };
+    } else |_| {}
+    const escaped = try allocJsonEscape(gpa, v);
+    defer gpa.free(escaped);
+    return .{ .type_name = "string", .json = try std.fmt.allocPrint(gpa, "\"{s}\"", .{escaped}) };
+}
+
+pub fn computeYamlQuery(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    key_path: []const u8,
+) !JsonQueryResult {
+    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch return error.FileNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+    defer gpa.free(content);
+
+    // Two-pass line split (no ArrayList needed)
+    var lc: usize = 0;
+    { var it = std.mem.splitScalar(u8, content, '\n'); while (it.next() != null) : (lc += 1) {} }
+    const lines = try gpa.alloc([]const u8, lc);
+    defer gpa.free(lines);
+    { var it = std.mem.splitScalar(u8, content, '\n'); var li: usize = 0; while (it.next()) |ln| : (li += 1) { lines[li] = ln; } }
+
+    // Two-pass segment split
+    var sc: usize = 0;
+    { var it = std.mem.splitScalar(u8, key_path, '.'); while (it.next() != null) : (sc += 1) {} }
+    const segs = try gpa.alloc([]const u8, sc);
+    defer gpa.free(segs);
+    { var it = std.mem.splitScalar(u8, key_path, '.'); var si: usize = 0; while (it.next()) |s| : (si += 1) { segs[si] = s; } }
+
+    const raw = yamlNav(lines, segs, 0, 0);
+    if (raw) |val| {
+        const scalar = try parseYamlScalar(gpa, val);
+        return .{ .path = key_path, .found = true, .type_name = scalar.type_name, .value_json = scalar.json };
     }
     return .{ .path = key_path, .found = false, .type_name = "null", .value_json = null };
 }
