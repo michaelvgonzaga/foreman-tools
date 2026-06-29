@@ -26,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  tag-exists <repo-path> <tag>\n", .{});
         try err.print("  changes-preview <repo-path>\n", .{});
         try err.print("  scan <path>\n", .{});
+        try err.print("  diff-dirs <path1> <path2>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -259,6 +260,9 @@ pub fn main(init: std.process.Init) !void {
             gpa.free(result.keyFiles);
             for (result.dirMap) |d| gpa.free(d);
             gpa.free(result.dirMap);
+            if (result.entryPoint) |ep| gpa.free(ep);
+            for (result.files) |f| gpa.free(f.path);
+            gpa.free(result.files);
         }
 
         const escaped_fw = try root.allocJsonEscape(gpa, result.framework);
@@ -278,7 +282,76 @@ pub fn main(init: std.process.Init) !void {
             if (i > 0) try out.writeAll(", ");
             try out.print("\"{s}\"", .{escaped});
         }
-        try out.writeAll("]\n}\n");
+        if (result.entryPoint) |ep| {
+            const escaped_ep = try root.allocJsonEscape(gpa, ep);
+            defer gpa.free(escaped_ep);
+            try out.print("],\n  \"entryPoint\": \"{s}\",\n  \"fileCount\": {d},\n  \"files\": [\n", .{ escaped_ep, result.fileCount });
+        } else {
+            try out.print("],\n  \"entryPoint\": null,\n  \"fileCount\": {d},\n  \"files\": [\n", .{result.fileCount});
+        }
+        for (result.files, 0..) |f, i| {
+            const escaped_path = try root.allocJsonEscape(gpa, f.path);
+            defer gpa.free(escaped_path);
+            try out.print(
+                "    {{\"path\": \"{s}\", \"bytes\": {d}, \"kind\": \"{s}\"}}",
+                .{ escaped_path, f.bytes, f.kind },
+            );
+            if (i + 1 < result.files.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "diff-dirs")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools diff-dirs <path1> <path2>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeDiffDirs(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.PathANotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                error.PathBNotFound => try err.print("error: path not found: {s}\n", .{args[3]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.onlyInA) |p| gpa.free(p);
+            gpa.free(result.onlyInA);
+            for (result.onlyInB) |p| gpa.free(p);
+            gpa.free(result.onlyInB);
+            for (result.inBoth) |e2| gpa.free(e2.path);
+            gpa.free(result.inBoth);
+        }
+
+        try out.writeAll("{\"onlyInA\": [");
+        for (result.onlyInA, 0..) |p, i| {
+            const escaped = try root.allocJsonEscape(gpa, p);
+            defer gpa.free(escaped);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{escaped});
+        }
+        try out.writeAll("], \"onlyInB\": [");
+        for (result.onlyInB, 0..) |p, i| {
+            const escaped = try root.allocJsonEscape(gpa, p);
+            defer gpa.free(escaped);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{escaped});
+        }
+        try out.writeAll("], \"inBoth\": [\n");
+        for (result.inBoth, 0..) |entry, i| {
+            const escaped_path = try root.allocJsonEscape(gpa, entry.path);
+            defer gpa.free(escaped_path);
+            try out.print(
+                "  {{\"path\": \"{s}\", \"bytesA\": {d}, \"bytesB\": {d}, \"same\": {s}}}",
+                .{ escaped_path, entry.bytesA, entry.bytesB, if (entry.same) "true" else "false" },
+            );
+            if (i + 1 < result.inBoth.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("]}\n");
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

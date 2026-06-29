@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.7.0";
+pub const VERSION = "0.8.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -422,11 +422,20 @@ pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
 
 // --- scan subcommand ---
 
+pub const FileEntry = struct {
+    path: []u8,           // owned by caller
+    bytes: u64,
+    kind: []const u8,     // static string literal — do not free
+};
+
 pub const ScanResult = struct {
     framework: []const u8, // static string literal — do not free
     keyFiles: [][]u8,      // owned by caller
     depCount: u32,
     dirMap: [][]u8,        // owned by caller
+    entryPoint: ?[]u8,     // owned by caller, null if not detected
+    fileCount: u32,        // total file count before 500-file cap
+    files: []FileEntry,    // owned by caller
 };
 
 const FRAMEWORK_INDICATORS = [_]struct { file: []const u8, fw: []const u8 }{
@@ -546,6 +555,81 @@ fn countCargoDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) u32 {
     return count;
 }
 
+fn getFileBytes(gpa: std.mem.Allocator, io: std.Io, root: []const u8, rel_path: []const u8) u64 {
+    const full = std.fs.path.join(gpa, &.{ root, rel_path }) catch return 0;
+    defer gpa.free(full);
+    const file = std.Io.Dir.openFileAbsolute(io, full, .{}) catch return 0;
+    defer file.close(io);
+    const st = file.stat(io) catch return 0;
+    return st.size;
+}
+
+fn classifyFile(path: []const u8) []const u8 {
+    const name = std.fs.path.basename(path);
+    // test directories
+    if (std.mem.startsWith(u8, path, "test/") or
+        std.mem.startsWith(u8, path, "tests/") or
+        std.mem.indexOf(u8, path, "/test/") != null or
+        std.mem.indexOf(u8, path, "/tests/") != null) return "test";
+    // test filename patterns
+    if (std.mem.startsWith(u8, name, "test_") or
+        std.mem.endsWith(u8, name, "_test.go") or
+        std.mem.endsWith(u8, name, "_test.zig") or
+        std.mem.endsWith(u8, name, "_test.rs") or
+        std.mem.indexOf(u8, name, ".test.") != null or
+        std.mem.indexOf(u8, name, ".spec.") != null) return "test";
+    // docs directories and extensions
+    if (std.mem.startsWith(u8, path, "docs/") or
+        std.mem.indexOf(u8, path, "/docs/") != null or
+        std.mem.endsWith(u8, name, ".md") or
+        std.mem.endsWith(u8, name, ".txt") or
+        std.mem.endsWith(u8, name, ".rst")) return "docs";
+    // config files
+    for (KNOWN_CONFIG_FILES) |known| {
+        if (std.mem.eql(u8, name, known)) return "config";
+    }
+    return "source";
+}
+
+fn fileEntrySizeDec(_: void, a: FileEntry, b: FileEntry) bool {
+    return a.bytes > b.bytes;
+}
+
+fn walkScanFiles(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    rel_prefix: []const u8,
+    root: []const u8,
+    all_files: *std.ArrayList(FileEntry),
+) !void {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .file) {
+            const rel_path: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            errdefer gpa.free(rel_path);
+            try all_files.append(gpa, .{
+                .path = rel_path,
+                .bytes = getFileBytes(gpa, io, root, rel_path),
+                .kind = classifyFile(rel_path),
+            });
+        } else if (entry.kind == .directory) {
+            if (shouldSkipScanDir(entry.name)) continue;
+            const sub_prefix: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(sub_prefix);
+            var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            try walkScanFiles(gpa, io, sub, sub_prefix, root, all_files);
+        }
+    }
+}
+
 fn walkScanDirs(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rel_prefix: []const u8, depth: u8, dirs: *std.ArrayList([]u8)) !void {
     if (depth >= 3) return;
 
@@ -626,8 +710,55 @@ pub fn computeScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ScanRe
         for (dir_list.items) |d| gpa.free(d);
         dir_list.deinit(gpa);
     }
-
     try walkScanDirs(gpa, io, dir, "", 0, &dir_list);
+
+    // File inventory
+    var all_files: std.ArrayList(FileEntry) = .empty;
+    errdefer {
+        for (all_files.items) |f| gpa.free(f.path);
+        all_files.deinit(gpa);
+    }
+    try walkScanFiles(gpa, io, dir, "", path, &all_files);
+
+    const file_count: u32 = @intCast(all_files.items.len);
+
+    // Entry point detection (before sort/cap so all files are visible)
+    const repo_basename = std.fs.path.basename(path);
+    const entry_point: ?[]u8 = ep: {
+        const static_candidates = [_][]const u8{
+            "main.go", "index.js", "index.ts",
+            "src/index.js", "src/index.ts", "app.py", "main.py",
+        };
+        for (static_candidates) |candidate| {
+            for (all_files.items) |f| {
+                if (std.mem.eql(u8, f.path, candidate))
+                    break :ep try gpa.dupe(u8, f.path);
+            }
+        }
+        for (all_files.items) |f| {
+            if (std.mem.startsWith(u8, f.path, "cmd/") and
+                std.mem.endsWith(u8, f.path, "/main.go"))
+                break :ep try gpa.dupe(u8, f.path);
+        }
+        for (all_files.items) |f| {
+            if (std.mem.startsWith(u8, f.path, "src/main."))
+                break :ep try gpa.dupe(u8, f.path);
+        }
+        for (all_files.items) |f| {
+            if (std.mem.startsWith(u8, f.path, "bin/") and
+                std.mem.eql(u8, f.path["bin/".len..], repo_basename))
+                break :ep try gpa.dupe(u8, f.path);
+        }
+        break :ep null;
+    };
+    errdefer if (entry_point) |ep| gpa.free(ep);
+
+    // Sort largest-first, cap at 500
+    std.mem.sort(FileEntry, all_files.items, {}, fileEntrySizeDec);
+    if (all_files.items.len > 500) {
+        for (all_files.items[500..]) |f| gpa.free(f.path);
+        all_files.shrinkRetainingCapacity(500);
+    }
 
     const owned_keys = try key_files.toOwnedSlice(gpa);
     errdefer {
@@ -640,6 +771,141 @@ pub fn computeScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ScanRe
         .keyFiles = owned_keys,
         .depCount = dep_count,
         .dirMap = try dir_list.toOwnedSlice(gpa),
+        .entryPoint = entry_point,
+        .fileCount = file_count,
+        .files = try all_files.toOwnedSlice(gpa),
+    };
+}
+
+// --- diff-dirs subcommand ---
+
+pub const DiffEntry = struct {
+    path: []u8,  // owned by caller
+    bytesA: u64,
+    bytesB: u64,
+    same: bool,
+};
+
+pub const DiffDirsResult = struct {
+    onlyInA: [][]u8,     // owned by caller
+    onlyInB: [][]u8,     // owned by caller
+    inBoth: []DiffEntry, // owned by caller
+};
+
+const PathEntry = struct {
+    path: []u8, // owned by caller
+    bytes: u64,
+};
+
+fn pathEntryAsc(_: void, a: PathEntry, b: PathEntry) bool {
+    return std.mem.order(u8, a.path, b.path) == .lt;
+}
+
+fn walkDirForDiff(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    rel_prefix: []const u8,
+    root: []const u8,
+    entries: *std.ArrayList(PathEntry),
+) !void {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .file) {
+            const rel_path: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            errdefer gpa.free(rel_path);
+            try entries.append(gpa, .{
+                .path = rel_path,
+                .bytes = getFileBytes(gpa, io, root, rel_path),
+            });
+        } else if (entry.kind == .directory) {
+            if (shouldSkipScanDir(entry.name)) continue;
+            const sub_prefix: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(sub_prefix);
+            var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            try walkDirForDiff(gpa, io, sub, sub_prefix, root, entries);
+        }
+    }
+}
+
+pub fn computeDiffDirs(gpa: std.mem.Allocator, io: std.Io, path_a: []const u8, path_b: []const u8) !DiffDirsResult {
+    var dir_a = std.Io.Dir.openDirAbsolute(io, path_a, .{ .iterate = true }) catch
+        return error.PathANotFound;
+    defer dir_a.close(io);
+
+    var dir_b = std.Io.Dir.openDirAbsolute(io, path_b, .{ .iterate = true }) catch
+        return error.PathBNotFound;
+    defer dir_b.close(io);
+
+    var a_entries: std.ArrayList(PathEntry) = .empty;
+    errdefer {
+        for (a_entries.items) |e| gpa.free(e.path);
+        a_entries.deinit(gpa);
+    }
+    try walkDirForDiff(gpa, io, dir_a, "", path_a, &a_entries);
+
+    var b_entries: std.ArrayList(PathEntry) = .empty;
+    errdefer {
+        for (b_entries.items) |e| gpa.free(e.path);
+        b_entries.deinit(gpa);
+    }
+    try walkDirForDiff(gpa, io, dir_b, "", path_b, &b_entries);
+
+    std.mem.sort(PathEntry, a_entries.items, {}, pathEntryAsc);
+    std.mem.sort(PathEntry, b_entries.items, {}, pathEntryAsc);
+
+    var only_a: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (only_a.items) |p| gpa.free(p);
+        only_a.deinit(gpa);
+    }
+    var only_b: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (only_b.items) |p| gpa.free(p);
+        only_b.deinit(gpa);
+    }
+    var in_both: std.ArrayList(DiffEntry) = .empty;
+    errdefer {
+        for (in_both.items) |e| gpa.free(e.path);
+        in_both.deinit(gpa);
+    }
+
+    var i: usize = 0;
+    var j: usize = 0;
+    while (i < a_entries.items.len and j < b_entries.items.len) {
+        const a = a_entries.items[i];
+        const b = b_entries.items[j];
+        switch (std.mem.order(u8, a.path, b.path)) {
+            .lt => { try only_a.append(gpa, try gpa.dupe(u8, a.path)); i += 1; },
+            .gt => { try only_b.append(gpa, try gpa.dupe(u8, b.path)); j += 1; },
+            .eq => {
+                try in_both.append(gpa, .{
+                    .path = try gpa.dupe(u8, a.path),
+                    .bytesA = a.bytes,
+                    .bytesB = b.bytes,
+                    .same = a.bytes == b.bytes,
+                });
+                i += 1;
+                j += 1;
+            },
+        }
+    }
+    while (i < a_entries.items.len) : (i += 1)
+        try only_a.append(gpa, try gpa.dupe(u8, a_entries.items[i].path));
+    while (j < b_entries.items.len) : (j += 1)
+        try only_b.append(gpa, try gpa.dupe(u8, b_entries.items[j].path));
+
+    return .{
+        .onlyInA = try only_a.toOwnedSlice(gpa),
+        .onlyInB = try only_b.toOwnedSlice(gpa),
+        .inBoth = try in_both.toOwnedSlice(gpa),
     };
 }
 
@@ -716,5 +982,44 @@ test "allocJsonEscape: escapes special chars" {
     const result = try allocJsonEscape(std.testing.allocator, "say \"hello\"\nline2");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("say \\\"hello\\\"\\nline2", result);
+}
+
+test "classifyFile: test patterns" {
+    try std.testing.expectEqualStrings("test", classifyFile("test/foo.go"));
+    try std.testing.expectEqualStrings("test", classifyFile("tests/bar.ts"));
+    try std.testing.expectEqualStrings("test", classifyFile("src/foo_test.go"));
+    try std.testing.expectEqualStrings("test", classifyFile("src/foo.test.js"));
+    try std.testing.expectEqualStrings("test", classifyFile("src/foo.spec.ts"));
+    try std.testing.expectEqualStrings("test", classifyFile("test_helpers.py"));
+}
+
+test "classifyFile: docs patterns" {
+    try std.testing.expectEqualStrings("docs", classifyFile("README.md"));
+    try std.testing.expectEqualStrings("docs", classifyFile("docs/guide.txt"));
+    try std.testing.expectEqualStrings("docs", classifyFile("src/notes.rst"));
+}
+
+test "classifyFile: config patterns" {
+    try std.testing.expectEqualStrings("config", classifyFile("package.json"));
+    try std.testing.expectEqualStrings("config", classifyFile("Cargo.toml"));
+    try std.testing.expectEqualStrings("config", classifyFile("Makefile"));
+}
+
+test "classifyFile: source fallback" {
+    try std.testing.expectEqualStrings("source", classifyFile("src/main.go"));
+    try std.testing.expectEqualStrings("source", classifyFile("lib/utils.ts"));
+}
+
+test "FileEntry fields" {
+    const e = FileEntry{ .path = @constCast("src/main.go"), .bytes = 1024, .kind = "source" };
+    try std.testing.expectEqualStrings("src/main.go", e.path);
+    try std.testing.expectEqual(@as(u64, 1024), e.bytes);
+    try std.testing.expectEqualStrings("source", e.kind);
+}
+
+test "DiffEntry fields" {
+    const e = DiffEntry{ .path = @constCast("src/foo.go"), .bytesA = 100, .bytesB = 200, .same = false };
+    try std.testing.expectEqualStrings("src/foo.go", e.path);
+    try std.testing.expect(!e.same);
 }
 
