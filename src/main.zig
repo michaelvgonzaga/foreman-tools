@@ -51,6 +51,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
         try err.print("  outline <file-path>\n", .{});
+        try err.print("  deps <root-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1252,6 +1253,49 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\n    {{\"name\": \"{s}\", \"kind\": \"{s}\", \"line\": {d}}}", .{ esc_name, sym.kind, sym.line });
         }
         if (result.symbols.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "deps")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools deps <root-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeDeps(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.NoManifestFound => try err.print("error: no supported manifest found in: {s}\n", .{args[2]}),
+                error.InvalidJson     => try err.print("error: invalid JSON in package.json: {s}\n", .{args[2]}),
+                else                  => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.deps) |d| { gpa.free(d.name); gpa.free(d.version); }
+            gpa.free(result.deps);
+            gpa.free(result.manifest);
+        }
+
+        const esc_manifest = try root.allocJsonEscape(gpa, result.manifest);
+        defer gpa.free(esc_manifest);
+
+        try out.print(
+            "{{\n  \"manifest\": \"{s}\",\n  \"format\": \"{s}\",\n  \"totalCount\": {d},\n  \"deps\": [",
+            .{ esc_manifest, result.format, result.totalCount },
+        );
+        for (result.deps, 0..) |dep, i| {
+            const esc_name = try root.allocJsonEscape(gpa, dep.name);
+            defer gpa.free(esc_name);
+            const esc_ver = try root.allocJsonEscape(gpa, dep.version);
+            defer gpa.free(esc_ver);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"name\": \"{s}\", \"version\": \"{s}\", \"dev\": {s}}}",
+                .{ esc_name, esc_ver, if (dep.dev) "true" else "false" },
+            );
+        }
+        if (result.deps.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
     } else {

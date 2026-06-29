@@ -774,6 +774,39 @@ Miss:
 
 ---
 
+## deps
+
+`foreman-tools deps <root-path>`
+
+```json
+{
+  "manifest": "package.json",
+  "format": "npm",
+  "totalCount": 48,
+  "deps": [
+    {"name": "react",      "version": "^18.2.0", "dev": false},
+    {"name": "typescript", "version": "^5.0.0",  "dev": true}
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `manifest` | string | detected manifest filename (relative) |
+| `format` | string | `"npm"` \| `"cargo"` \| `"go"` \| `"pip"` |
+| `totalCount` | int | total dep count before the 100-item cap |
+| `deps[].name` | string | package name |
+| `deps[].version` | string | version constraint as written in manifest; `""` if unspecified |
+| `deps[].dev` | bool | true for devDependencies (npm) / [dev-dependencies] (cargo); always false for go/pip |
+
+**Detection order:** `package.json` → `Cargo.toml` → `go.mod` → `requirements.txt`. First found wins.
+
+**Constraints:** Capped at 100 deps. `<root-path>` must be an absolute path. File cap: 10 MB.
+
+**Errors:** `NoManifestFound` (exit 1), `InvalidJson` (exit 1 for malformed package.json)
+
+---
+
 ## Schema change policy
 
 Any modification to an existing subcommand's output shape (field rename, type change, enum value addition/removal, field removal) requires:

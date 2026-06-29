@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.28.0";
+pub const VERSION = "0.29.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -3273,6 +3273,248 @@ pub fn computeOutline(
         .lang = lang,
         .symbols = symbols,
     };
+}
+
+// --- deps subcommand ---
+
+pub const Dep = struct {
+    name: []u8,     // owned
+    version: []u8,  // owned; "" when unspecified
+    dev: bool,
+};
+
+pub const DepsResult = struct {
+    manifest: []u8,     // owned; relative filename e.g. "package.json"
+    format: []const u8, // static: "npm"|"cargo"|"go"|"pip"|"pyproject"
+    totalCount: u32,    // count before cap
+    deps: []Dep,        // owned; capped at DEPS_MAX
+};
+
+const DEPS_MAX: usize = 100;
+
+// Trim surrounding quotes (single or double) from a string
+fn depsStripQuotes(s: []const u8) []const u8 {
+    const v = std.mem.trim(u8, s, " \t\r\n");
+    if (v.len >= 2 and ((v[0] == '"' and v[v.len - 1] == '"') or
+        (v[0] == '\'' and v[v.len - 1] == '\'')))
+        return v[1 .. v.len - 1];
+    return v;
+}
+
+// Extract dep name from pip requirement line: "name==1.0", "name>=1.0 ; extras", "name"
+fn depsPipParse(line: []const u8) struct { name: []const u8, version: []const u8 } {
+    // Strip markers after ';'
+    const semi = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
+    const raw = std.mem.trim(u8, line[0..semi], " \t");
+    // Find first operator: ==, >=, <=, !=, ~=, >, <, [ (extras)
+    const ops = [_][]const u8{ "==", ">=", "<=", "!=", "~=", ">", "<", "[" };
+    var split: usize = raw.len;
+    for (ops) |op| {
+        if (std.mem.indexOf(u8, raw, op)) |pos| {
+            if (pos < split) split = pos;
+        }
+    }
+    const name = std.mem.trim(u8, raw[0..split], " \t");
+    const ver  = std.mem.trim(u8, raw[split..], " \t");
+    return .{ .name = name, .version = ver };
+}
+
+fn computeDepsNpm(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch
+        return error.InvalidJson;
+    defer parsed.deinit();
+
+    const buf = try gpa.alloc(Dep, DEPS_MAX);
+    var n: usize = 0;
+    var total: u32 = 0;
+    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+
+    const sections = [_]struct { key: []const u8, dev: bool }{
+        .{ .key = "dependencies",     .dev = false },
+        .{ .key = "devDependencies",  .dev = true  },
+        .{ .key = "peerDependencies", .dev = false },
+    };
+    for (sections) |sec| {
+        const obj = switch (parsed.value) {
+            .object => |o| o.get(sec.key) orelse continue,
+            else => continue,
+        };
+        const deps = switch (obj) { .object => |o| o, else => continue };
+        var it = deps.iterator();
+        while (it.next()) |entry| {
+            total += 1;
+            if (n >= DEPS_MAX) continue;
+            const ver = switch (entry.value_ptr.*) { .string => |s| s, else => "" };
+            buf[n] = .{
+                .name    = try gpa.dupe(u8, entry.key_ptr.*),
+                .version = try gpa.dupe(u8, ver),
+                .dev     = sec.dev,
+            };
+            n += 1;
+        }
+    }
+
+    return .{
+        .manifest = try gpa.dupe(u8, "package.json"),
+        .format   = "npm",
+        .totalCount = total,
+        .deps = try gpa.realloc(buf, n),
+    };
+}
+
+fn computeDepsCargo(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
+    const buf = try gpa.alloc(Dep, DEPS_MAX);
+    var n: usize = 0;
+    var total: u32 = 0;
+    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+
+    var in_deps: bool = false;
+    var in_dev: bool = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            in_deps = std.mem.eql(u8, line, "[dependencies]");
+            in_dev  = std.mem.eql(u8, line, "[dev-dependencies]");
+            continue;
+        }
+        if (!in_deps and !in_dev) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t\"");
+        if (key.len == 0) continue;
+        const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        // Version: "1.0" or { version = "1.0", ... } or { path = "..." }
+        var ver: []const u8 = "";
+        if (val.len > 0 and val[0] == '"') {
+            ver = depsStripQuotes(val);
+        } else if (std.mem.indexOf(u8, val, "version")) |vi| {
+            const after = val[vi + 7 ..]; // skip "version"
+            if (std.mem.indexOf(u8, after, "\"")) |qi| {
+                const inner = after[qi + 1 ..];
+                const close = std.mem.indexOfScalar(u8, inner, '"') orelse inner.len;
+                ver = inner[0..close];
+            }
+        }
+        total += 1;
+        if (n < DEPS_MAX) {
+            buf[n] = .{ .name = try gpa.dupe(u8, key), .version = try gpa.dupe(u8, ver), .dev = in_dev };
+            n += 1;
+        }
+    }
+
+    return .{
+        .manifest = try gpa.dupe(u8, "Cargo.toml"),
+        .format   = "cargo",
+        .totalCount = total,
+        .deps = try gpa.realloc(buf, n),
+    };
+}
+
+fn computeDepsGoMod(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
+    const buf = try gpa.alloc(Dep, DEPS_MAX);
+    var n: usize = 0;
+    var total: u32 = 0;
+    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+
+    var in_require = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '/' ) continue;
+        if (std.mem.eql(u8, line, "require (")) { in_require = true; continue; }
+        if (std.mem.eql(u8, line, ")"))          { in_require = false; continue; }
+
+        var dep_line: []const u8 = "";
+        if (in_require) {
+            dep_line = line;
+        } else if (std.mem.startsWith(u8, line, "require ")) {
+            dep_line = std.mem.trimStart(u8, line[8..], " \t");
+        }
+        if (dep_line.len == 0) continue;
+
+        // Strip "// indirect" comment
+        const comment = std.mem.indexOf(u8, dep_line, "//") orelse dep_line.len;
+        const clean = std.mem.trim(u8, dep_line[0..comment], " \t");
+
+        // Split on first whitespace: module-path version
+        var i: usize = 0;
+        while (i < clean.len and clean[i] != ' ' and clean[i] != '\t') i += 1;
+        const name = clean[0..i];
+        const ver  = std.mem.trim(u8, clean[i..], " \t");
+        if (name.len == 0) continue;
+
+        total += 1;
+        if (n < DEPS_MAX) {
+            buf[n] = .{ .name = try gpa.dupe(u8, name), .version = try gpa.dupe(u8, ver), .dev = false };
+            n += 1;
+        }
+    }
+
+    return .{
+        .manifest = try gpa.dupe(u8, "go.mod"),
+        .format   = "go",
+        .totalCount = total,
+        .deps = try gpa.realloc(buf, n),
+    };
+}
+
+fn computeDepsPip(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
+    const buf = try gpa.alloc(Dep, DEPS_MAX);
+    var n: usize = 0;
+    var total: u32 = 0;
+    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#' or line[0] == '-') continue;
+        const p = depsPipParse(line);
+        if (p.name.len == 0) continue;
+        total += 1;
+        if (n < DEPS_MAX) {
+            buf[n] = .{ .name = try gpa.dupe(u8, p.name), .version = try gpa.dupe(u8, p.version), .dev = false };
+            n += 1;
+        }
+    }
+
+    return .{
+        .manifest = try gpa.dupe(u8, "requirements.txt"),
+        .format   = "pip",
+        .totalCount = total,
+        .deps = try gpa.realloc(buf, n),
+    };
+}
+
+const DEPS_MANIFESTS = [_]struct { file: []const u8, fmt: []const u8 }{
+    .{ .file = "package.json",    .fmt = "npm"    },
+    .{ .file = "Cargo.toml",      .fmt = "cargo"  },
+    .{ .file = "go.mod",          .fmt = "go"     },
+    .{ .file = "requirements.txt",.fmt = "pip"    },
+};
+
+pub fn computeDeps(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    root_path: []const u8,
+) !DepsResult {
+    for (DEPS_MANIFESTS) |m| {
+        const abs_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root_path, m.file });
+        defer gpa.free(abs_path);
+
+        const file = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch continue;
+        defer file.close(io);
+        var rbuf: [4096]u8 = undefined;
+        var r = file.reader(io, &rbuf);
+        const content = try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+        defer gpa.free(content);
+
+        if (std.mem.eql(u8, m.fmt, "npm"))   return computeDepsNpm(gpa, content);
+        if (std.mem.eql(u8, m.fmt, "cargo")) return computeDepsCargo(gpa, content);
+        if (std.mem.eql(u8, m.fmt, "go"))    return computeDepsGoMod(gpa, content);
+        if (std.mem.eql(u8, m.fmt, "pip"))   return computeDepsPip(gpa, content);
+    }
+    return error.NoManifestFound;
 }
 
 // --- Tests ---
