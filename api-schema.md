@@ -584,6 +584,45 @@ Miss:
 
 ---
 
+## context-changed
+
+`foreman-tools context-changed <repo-path> [ref]`
+
+```json
+{
+  "ref": "HEAD",
+  "totalFiles": 2,
+  "totalAdditions": 46,
+  "totalDeletions": 0,
+  "truncated": false,
+  "files": [
+    {
+      "path": "src/main.zig",
+      "status": "modified",
+      "additions": 46,
+      "deletions": 0,
+      "diff": "diff --git a/src/main.zig b/src/main.zig\n..."
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `ref` | string | ref used; default `"HEAD"` |
+| `totalFiles` | int | total changed files (before truncation) |
+| `truncated` | bool | `true` if more than 8 files were changed — only the first 8 are included |
+| `files[].status` | enum | `"added"` `"modified"` `"deleted"` `"renamed"` |
+| `files[].diff` | string | unified diff capped at 100 lines; JSON-escaped; starts with `diff --git …` header |
+
+**Ref semantics:** `""` = working tree vs index (unstaged only); `"staged"` = index vs HEAD; `"HEAD"` = all uncommitted changes vs HEAD; any other git ref is passed directly.
+
+**Constraints:** First 8 files shown; diff per file capped at 100 lines; not applicable to non-git paths.
+
+**Errors:** exit 1 if git fails (not a git repo, ref not found).
+
+---
+
 ## context-evidence
 
 `foreman-tools context-evidence <file-path> <pattern>`

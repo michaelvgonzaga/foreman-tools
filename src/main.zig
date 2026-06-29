@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
         try err.print("  file-hash <file-path>\n", .{});
         try err.print("  context-scan <path>\n", .{});
+        try err.print("  context-changed <repo-path> [ref]\n", .{});
         try err.print("  context-evidence <file-path> <pattern>\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
@@ -943,6 +944,51 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\"{s}\"", .{esc});
         }
         try out.writeAll("]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-changed")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools context-changed <repo-path> [ref]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const ref = if (args.len >= 4) args[3] else "HEAD";
+
+        const result = root.computeContextChanged(gpa, io, args[2], ref) catch |e| {
+            switch (e) {
+                error.GitFailed => try err.print("error: git command failed in: {s}\n", .{args[2]}),
+                else            => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.files) |f| {
+                gpa.free(f.path);
+                gpa.free(f.diff);
+            }
+            gpa.free(result.files);
+        }
+
+        const esc_ref = try root.allocJsonEscape(gpa, result.ref);
+        defer gpa.free(esc_ref);
+
+        try out.print(
+            "{{\n  \"ref\": \"{s}\",\n  \"totalFiles\": {d},\n  \"totalAdditions\": {d},\n  \"totalDeletions\": {d},\n  \"truncated\": {s},\n  \"files\": [\n",
+            .{ esc_ref, result.totalFiles, result.totalAdditions, result.totalDeletions, if (result.truncated) "true" else "false" },
+        );
+        for (result.files, 0..) |f, i| {
+            const esc_path = try root.allocJsonEscape(gpa, f.path);
+            defer gpa.free(esc_path);
+            const esc_diff = try root.allocJsonEscape(gpa, f.diff);
+            defer gpa.free(esc_diff);
+            try out.print(
+                "    {{\"path\": \"{s}\", \"status\": \"{s}\", \"additions\": {d}, \"deletions\": {d}, \"diff\": \"{s}\"}}",
+                .{ esc_path, f.status, f.additions, f.deletions, esc_diff },
+            );
+            if (i + 1 < result.files.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "context-evidence")) {
         if (args.len < 4) {

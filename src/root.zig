@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.24.0";
+pub const VERSION = "0.25.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -2316,6 +2316,156 @@ pub fn computeCacheFetch(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
         .subKey = try gpa.dupe(u8, sub_key),
         .hit = true,
         .value = try gpa.dupe(u8, stored_value),
+    };
+}
+
+// --- context-changed subcommand ---
+
+pub const ChangedFileDiff = struct {
+    path: []u8,         // owned
+    status: []const u8, // static: "added"|"modified"|"deleted"|"renamed"
+    additions: u32,
+    deletions: u32,
+    diff: []u8,         // owned — unified diff capped at CHANGED_MAX_DIFF_LINES
+};
+
+pub const ContextChangedResult = struct {
+    ref: []const u8, // static or caller-owned slice — do not free
+    totalFiles: u32,
+    totalAdditions: u32,
+    totalDeletions: u32,
+    truncated: bool,
+    files: []ChangedFileDiff, // owned; each .path and .diff is owned
+};
+
+const CHANGED_MAX_FILES: usize = 8;
+const CHANGED_MAX_DIFF_LINES: usize = 100;
+
+pub fn computeContextChanged(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    repo_path: []const u8,
+    ref: []const u8, // "" = working-tree vs HEAD, "staged" = --cached, else passed to git
+) !ContextChangedResult {
+    // Step 1: numstat — file list with add/del counts
+    var numstat_args: std.ArrayList([]const u8) = .empty;
+    defer numstat_args.deinit(gpa);
+    try numstat_args.append(gpa, "diff");
+    try numstat_args.append(gpa, "--numstat");
+    if (std.mem.eql(u8, ref, "staged")) {
+        try numstat_args.append(gpa, "--cached");
+    } else if (ref.len > 0) {
+        try numstat_args.append(gpa, ref);
+    }
+    const numstat_raw = runGit(gpa, io, repo_path, numstat_args.items) catch return error.GitFailed;
+    defer gpa.free(numstat_raw);
+
+    // Step 2: name-status — per-file A/M/D/R codes
+    var ns_args: std.ArrayList([]const u8) = .empty;
+    defer ns_args.deinit(gpa);
+    try ns_args.append(gpa, "diff");
+    try ns_args.append(gpa, "--name-status");
+    if (std.mem.eql(u8, ref, "staged")) {
+        try ns_args.append(gpa, "--cached");
+    } else if (ref.len > 0) {
+        try ns_args.append(gpa, ref);
+    }
+    const ns_raw = runGit(gpa, io, repo_path, ns_args.items) catch null;
+    defer if (ns_raw) |r| gpa.free(r);
+
+    var status_map = std.StringHashMap([]const u8).init(gpa);
+    defer status_map.deinit();
+    if (ns_raw) |ns| {
+        var ns_lines = std.mem.splitScalar(u8, ns, '\n');
+        while (ns_lines.next()) |line| {
+            if (line.len < 2) continue;
+            const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+            const code = std.mem.trim(u8, line[0..tab], " ");
+            const path = std.mem.trim(u8, line[tab + 1 ..], " \r\n");
+            const status: []const u8 = if (code.len > 0) switch (code[0]) {
+                'A' => "added",
+                'D' => "deleted",
+                'R' => "renamed",
+                else => "modified",
+            } else "modified";
+            try status_map.put(path, status);
+        }
+    }
+
+    // Step 3: parse numstat into file list
+    var all_files: std.ArrayList(DiffFileStat) = .empty;
+    defer {
+        for (all_files.items) |f| gpa.free(f.path);
+        all_files.deinit(gpa);
+    }
+    var total_add: u32 = 0;
+    var total_del: u32 = 0;
+    {
+        var ns_lines = std.mem.splitScalar(u8, numstat_raw, '\n');
+        while (ns_lines.next()) |line| {
+            if (std.mem.trim(u8, line, " \r\n").len == 0) continue;
+            const stat = try parseNumstatLine(line, gpa) orelse continue;
+            total_add += stat.additions;
+            total_del += stat.deletions;
+            const resolved = status_map.get(stat.path) orelse stat.status;
+            try all_files.append(gpa, .{
+                .path = stat.path,
+                .additions = stat.additions,
+                .deletions = stat.deletions,
+                .status = resolved,
+            });
+        }
+    }
+    const total_files: u32 = @intCast(all_files.items.len);
+    const truncated = all_files.items.len > CHANGED_MAX_FILES;
+    const file_count = @min(all_files.items.len, CHANGED_MAX_FILES);
+
+    // Step 4: per-file unified diff, capped at CHANGED_MAX_DIFF_LINES
+    const result_files = try gpa.alloc(ChangedFileDiff, file_count);
+    for (all_files.items[0..file_count], 0..) |stat, i| {
+        var diff_args: std.ArrayList([]const u8) = .empty;
+        defer diff_args.deinit(gpa);
+        try diff_args.append(gpa, "diff");
+        try diff_args.append(gpa, "--unified=3");
+        if (std.mem.eql(u8, ref, "staged")) {
+            try diff_args.append(gpa, "--cached");
+        } else if (ref.len > 0) {
+            try diff_args.append(gpa, ref);
+        }
+        try diff_args.append(gpa, "--");
+        try diff_args.append(gpa, stat.path);
+
+        const diff_raw = runGit(gpa, io, repo_path, diff_args.items) catch
+            try gpa.dupe(u8, "");
+        defer gpa.free(diff_raw);
+
+        // Count lines and find byte offset at CHANGED_MAX_DIFF_LINES
+        var line_count: usize = 0;
+        var byte_end: usize = 0;
+        var it = std.mem.splitScalar(u8, diff_raw, '\n');
+        while (it.next()) |line| {
+            byte_end += line.len + 1;
+            line_count += 1;
+            if (line_count >= CHANGED_MAX_DIFF_LINES) break;
+        }
+        const capped = if (byte_end > diff_raw.len) diff_raw else diff_raw[0..byte_end];
+
+        result_files[i] = .{
+            .path       = try gpa.dupe(u8, stat.path),
+            .status     = stat.status,
+            .additions  = stat.additions,
+            .deletions  = stat.deletions,
+            .diff       = try gpa.dupe(u8, capped),
+        };
+    }
+
+    return .{
+        .ref            = if (ref.len == 0) "HEAD" else ref,
+        .totalFiles     = total_files,
+        .totalAdditions = total_add,
+        .totalDeletions = total_del,
+        .truncated      = truncated,
+        .files          = result_files,
     };
 }
 
