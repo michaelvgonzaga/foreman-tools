@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.9.0";
+pub const VERSION = "0.10.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -488,6 +488,21 @@ fn shouldSkipScanDir(name: []const u8) bool {
     return SKIP_DIR_SET.has(name);
 }
 
+const BINARY_EXT_SET = std.StaticStringMap(void).initComptime(&.{
+    .{ ".png", {} }, .{ ".jpg", {} }, .{ ".jpeg", {} }, .{ ".gif", {} }, .{ ".webp", {} },
+    .{ ".ico", {} }, .{ ".bmp", {} }, .{ ".tiff", {} },
+    .{ ".woff", {} }, .{ ".woff2", {} }, .{ ".ttf", {} }, .{ ".eot", {} }, .{ ".otf", {} },
+    .{ ".mp3", {} }, .{ ".mp4", {} }, .{ ".wav", {} }, .{ ".ogg", {} }, .{ ".avi", {} }, .{ ".mov", {} },
+    .{ ".pdf", {} }, .{ ".zip", {} }, .{ ".tar", {} }, .{ ".gz", {} }, .{ ".bz2", {} }, .{ ".xz", {} },
+    .{ ".wasm", {} }, .{ ".bin", {} }, .{ ".exe", {} }, .{ ".dylib", {} }, .{ ".so", {} }, .{ ".a", {} },
+    .{ ".map", {} }, .{ ".pyc", {} }, .{ ".class", {} }, .{ ".o", {} },
+});
+
+fn shouldSkipGrepFile(name: []const u8) bool {
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return false;
+    return BINARY_EXT_SET.has(name[dot..]);
+}
+
 fn readFileScan(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8) !?[]u8 {
     const file = dir.openFile(io, name, .{}) catch return null;
     defer file.close(io);
@@ -905,6 +920,253 @@ pub fn computeDiffDirs(gpa: std.mem.Allocator, io: std.Io, path_a: []const u8, p
     };
 }
 
+// --- grep ---
+
+pub const GrepMatch = struct { file: []u8, line: u32, col: u32, text: []u8 };
+pub const GrepResult = struct { pattern: []const u8, matchCount: u32, capped: bool, matches: []GrepMatch };
+
+const GREP_MAX_MATCHES: u32 = 500;
+const GREP_MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
+
+fn grepOneFile(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    abs_path: []const u8,
+    rel_path: []const u8,
+    pattern: []const u8,
+    matches: *std.ArrayList(GrepMatch),
+) !bool {
+    if (matches.items.len >= GREP_MAX_MATCHES) return true;
+    const file = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch return false;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(GREP_MAX_FILE_BYTES)) catch return false;
+    defer gpa.free(content);
+    var line_num: u32 = 1;
+    var line_start: usize = 0;
+    while (line_start < content.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
+        const line = content[line_start..line_end];
+        var search_start: usize = 0;
+        while (std.mem.indexOf(u8, line[search_start..], pattern)) |rel_off| {
+            const col = search_start + rel_off;
+            const text = try gpa.dupe(u8, std.mem.trimEnd(u8, line, "\r"));
+            try matches.append(gpa, .{
+                .file = try gpa.dupe(u8, rel_path),
+                .line = line_num,
+                .col = @intCast(col + 1),
+                .text = text,
+            });
+            search_start = col + pattern.len;
+            if (matches.items.len >= GREP_MAX_MATCHES) return true;
+        }
+        line_num += 1;
+        line_start = line_end + 1;
+    }
+    return false;
+}
+
+fn walkGrep(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    rel_prefix: []const u8,
+    root: []const u8,
+    pattern: []const u8,
+    ext_filter: ?[]const u8,
+    matches: *std.ArrayList(GrepMatch),
+) !bool {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (matches.items.len >= GREP_MAX_MATCHES) return true;
+        if (entry.kind == .file) {
+            if (shouldSkipGrepFile(entry.name)) continue;
+            if (ext_filter) |ext| {
+                if (!std.mem.endsWith(u8, entry.name, ext)) continue;
+            }
+            const rel_path: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(rel_path);
+            const abs_path = try std.fs.path.join(gpa, &.{ root, rel_path });
+            defer gpa.free(abs_path);
+            const capped = try grepOneFile(gpa, io, abs_path, rel_path, pattern, matches);
+            if (capped) return true;
+        } else if (entry.kind == .directory) {
+            if (shouldSkipScanDir(entry.name)) continue;
+            const sub_prefix: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(sub_prefix);
+            var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            const capped = try walkGrep(gpa, io, sub, sub_prefix, root, pattern, ext_filter, matches);
+            if (capped) return true;
+        }
+    }
+    return false;
+}
+
+pub fn computeGrep(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    pattern: []const u8,
+    ext_filter: ?[]const u8,
+) !GrepResult {
+    var dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch
+        return error.RootNotFound;
+    defer dir.close(io);
+    var matches: std.ArrayList(GrepMatch) = .empty;
+    errdefer {
+        for (matches.items) |m| { gpa.free(m.file); gpa.free(m.text); }
+        matches.deinit(gpa);
+    }
+    const capped = try walkGrep(gpa, io, dir, "", root, pattern, ext_filter, &matches);
+    return .{
+        .pattern = pattern,
+        .matchCount = @intCast(matches.items.len),
+        .capped = capped,
+        .matches = try matches.toOwnedSlice(gpa),
+    };
+}
+
+// --- parse-stack ---
+
+pub const StackFrame = struct { file: []const u8, line: u32, col: u32, func: []const u8 };
+pub const ParseStackResult = struct { frames: []StackFrame };
+
+// Parses file:line or file:line:col from the tail of s.
+// Returns the byte index of the colon before the line number, or null if no match.
+fn parseFileLine(s: []const u8, out_line: *u32, out_col: *u32) ?usize {
+    if (s.len == 0) return null;
+    // Scan trailing digits (either line or col).
+    var i: usize = s.len;
+    const d2_end = i;
+    while (i > 0 and s[i - 1] >= '0' and s[i - 1] <= '9') i -= 1;
+    if (i == d2_end or i == 0 or s[i - 1] != ':') return null;
+    const d2_start = i;
+    const colon2 = i - 1;
+    // Check if before colon2 there's another :digits block (making d2 the col).
+    var j: usize = colon2;
+    const d1_end = j;
+    while (j > 0 and s[j - 1] >= '0' and s[j - 1] <= '9') j -= 1;
+    if (j < d1_end and j > 0 and s[j - 1] == ':') {
+        // file:line:col
+        const colon1 = j - 1;
+        out_line.* = std.fmt.parseInt(u32, s[j..d1_end], 10) catch return null;
+        out_col.* = std.fmt.parseInt(u32, s[d2_start..d2_end], 10) catch 0;
+        return colon1;
+    }
+    // file:line (d2 is the line number)
+    out_line.* = std.fmt.parseInt(u32, s[d2_start..d2_end], 10) catch return null;
+    out_col.* = 0;
+    return colon2;
+}
+
+// Parse one line of a stack trace.  Returns null if the line is not a frame.
+// Supported formats:
+//   Node/V8:   "    at FnName (file:line:col)"  or  "    at file:line:col"
+//   Python:    '    File "file", line N, in fn'
+//   Go:        "        file.go:line +0x..."
+//   Ruby:      "    file:line:in `fn'"
+fn parseStackLine(gpa: std.mem.Allocator, raw: []const u8) !?StackFrame {
+    const line = std.mem.trim(u8, raw, " \t\r\n");
+
+    // Node/V8: "at FnName (file:line:col)" or "at file:line:col"
+    if (std.mem.startsWith(u8, line, "at ")) {
+        const rest = std.mem.trim(u8, line[3..], " ");
+        if (rest.len > 0 and rest[rest.len - 1] == ')') {
+            // "at FnName (file:line:col)"
+            const lparen = std.mem.lastIndexOfScalar(u8, rest, '(') orelse return null;
+            const fn_name = std.mem.trim(u8, rest[0..lparen], " ");
+            const inner = rest[lparen + 1 .. rest.len - 1];
+            var out_line: u32 = 0; var out_col: u32 = 0;
+            const colon_pos = parseFileLine(inner, &out_line, &out_col) orelse return null;
+            return .{
+                .file = try gpa.dupe(u8, inner[0..colon_pos]),
+                .line = out_line, .col = out_col,
+                .func = try gpa.dupe(u8, fn_name),
+            };
+        }
+        // "at file:line:col"
+        var out_line: u32 = 0; var out_col: u32 = 0;
+        const colon_pos = parseFileLine(rest, &out_line, &out_col) orelse return null;
+        return .{
+            .file = try gpa.dupe(u8, rest[0..colon_pos]),
+            .line = out_line, .col = out_col,
+            .func = try gpa.dupe(u8, "<anonymous>"),
+        };
+    }
+
+    // Python: 'File "file", line N, in fn'
+    if (std.mem.startsWith(u8, line, "File \"")) {
+        const rest = line[6..];
+        const quote_end = std.mem.indexOfScalar(u8, rest, '"') orelse return null;
+        const file_name = rest[0..quote_end];
+        const after = rest[quote_end + 1 ..];
+        // ", line N"
+        const line_kw = std.mem.indexOf(u8, after, ", line ") orelse return null;
+        const after_line = after[line_kw + 7 ..];
+        const comma_or_end = std.mem.indexOfAny(u8, after_line, ", \n") orelse after_line.len;
+        const line_num = std.fmt.parseInt(u32, after_line[0..comma_or_end], 10) catch return null;
+        // "in fn"
+        const in_kw = std.mem.indexOf(u8, after_line[comma_or_end..], " in ") orelse {
+            return .{ .file = try gpa.dupe(u8, file_name), .line = line_num, .col = 0, .func = try gpa.dupe(u8, "<module>") };
+        };
+        const fn_start = comma_or_end + in_kw + 4;
+        const fn_name = std.mem.trim(u8, after_line[fn_start..], " \t\r\n");
+        return .{ .file = try gpa.dupe(u8, file_name), .line = line_num, .col = 0, .func = try gpa.dupe(u8, fn_name) };
+    }
+
+    // Go: "file.go:line +0x..." (starts with a path component containing a dot or slash)
+    if (std.mem.indexOf(u8, line, ".go:") != null or
+        (line.len > 0 and (line[0] == '/' or line[0] == '.') and std.mem.indexOfScalar(u8, line, ':') != null))
+    {
+        // strip trailing " +0x..."
+        const space = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
+        const part = line[0..space];
+        var out_line: u32 = 0; var out_col: u32 = 0;
+        const colon_pos = parseFileLine(part, &out_line, &out_col) orelse return null;
+        return .{ .file = try gpa.dupe(u8, part[0..colon_pos]), .line = out_line, .col = out_col, .func = try gpa.dupe(u8, "<go>") };
+    }
+
+    // Ruby: "file:line:in `fn'"
+    if (std.mem.indexOf(u8, line, ":in `") != null) {
+        const in_pos = std.mem.indexOf(u8, line, ":in `").?;
+        const file_line_part = line[0..in_pos];
+        const fn_part = line[in_pos + 5 ..];
+        const fn_end = std.mem.indexOfScalar(u8, fn_part, '\'') orelse fn_part.len;
+        var out_line: u32 = 0; var out_col: u32 = 0;
+        const colon_pos = parseFileLine(file_line_part, &out_line, &out_col) orelse return null;
+        return .{
+            .file = try gpa.dupe(u8, file_line_part[0..colon_pos]),
+            .line = out_line, .col = out_col,
+            .func = try gpa.dupe(u8, fn_part[0..fn_end]),
+        };
+    }
+
+    return null;
+}
+
+pub fn computeParseStack(gpa: std.mem.Allocator, input: []const u8) !ParseStackResult {
+    var frames: std.ArrayList(StackFrame) = .empty;
+    errdefer {
+        for (frames.items) |f| { gpa.free(f.file); gpa.free(f.func); }
+        frames.deinit(gpa);
+    }
+    var lines = std.mem.splitScalar(u8, input, '\n');
+    while (lines.next()) |raw| {
+        if (try parseStackLine(gpa, raw)) |frame| {
+            try frames.append(gpa, frame);
+        }
+    }
+    return .{ .frames = try frames.toOwnedSlice(gpa) };
+}
+
 // --- Tests ---
 
 test "DoctorResult fields" {
@@ -1017,5 +1279,88 @@ test "DiffEntry fields" {
     const e = DiffEntry{ .path = @constCast("src/foo.go"), .bytesA = 100, .bytesB = 200, .same = false };
     try std.testing.expectEqualStrings("src/foo.go", e.path);
     try std.testing.expect(!e.same);
+}
+
+test "shouldSkipGrepFile: binary extensions skipped" {
+    try std.testing.expect(shouldSkipGrepFile("image.png"));
+    try std.testing.expect(shouldSkipGrepFile("font.woff2"));
+    try std.testing.expect(shouldSkipGrepFile("archive.gz"));
+    try std.testing.expect(shouldSkipGrepFile("module.wasm"));
+    try std.testing.expect(!shouldSkipGrepFile("main.go"));
+    try std.testing.expect(!shouldSkipGrepFile("index.ts"));
+    try std.testing.expect(!shouldSkipGrepFile("Makefile"));
+}
+
+test "parseFileLine: line only" {
+    var out_line: u32 = 0; var out_col: u32 = 0;
+    const pos = parseFileLine("src/main.go:42", &out_line, &out_col);
+    try std.testing.expectEqual(@as(?usize, 11), pos);
+    try std.testing.expectEqual(@as(u32, 42), out_line);
+    try std.testing.expectEqual(@as(u32, 0), out_col);
+}
+
+test "parseFileLine: line and col" {
+    var out_line: u32 = 0; var out_col: u32 = 0;
+    const pos = parseFileLine("/app/foo.js:10:5", &out_line, &out_col);
+    try std.testing.expectEqual(@as(?usize, 11), pos);
+    try std.testing.expectEqual(@as(u32, 10), out_line);
+    try std.testing.expectEqual(@as(u32, 5), out_col);
+}
+
+test "parseStackLine: Node/V8 with parens" {
+    const frame = try parseStackLine(std.testing.allocator, "    at myFunc (src/app.js:10:5)");
+    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    try std.testing.expect(frame != null);
+    try std.testing.expectEqualStrings("src/app.js", frame.?.file);
+    try std.testing.expectEqual(@as(u32, 10), frame.?.line);
+    try std.testing.expectEqual(@as(u32, 5), frame.?.col);
+    try std.testing.expectEqualStrings("myFunc", frame.?.func);
+}
+
+test "parseStackLine: Node/V8 bare" {
+    const frame = try parseStackLine(std.testing.allocator, "    at src/app.js:20:3");
+    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    try std.testing.expect(frame != null);
+    try std.testing.expectEqualStrings("src/app.js", frame.?.file);
+    try std.testing.expectEqual(@as(u32, 20), frame.?.line);
+}
+
+test "parseStackLine: Python" {
+    const frame = try parseStackLine(std.testing.allocator, "  File \"app/main.py\", line 33, in run");
+    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    try std.testing.expect(frame != null);
+    try std.testing.expectEqualStrings("app/main.py", frame.?.file);
+    try std.testing.expectEqual(@as(u32, 33), frame.?.line);
+    try std.testing.expectEqualStrings("run", frame.?.func);
+}
+
+test "parseStackLine: Ruby" {
+    const frame = try parseStackLine(std.testing.allocator, "    app/models/user.rb:15:in `save'");
+    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    try std.testing.expect(frame != null);
+    try std.testing.expectEqualStrings("app/models/user.rb", frame.?.file);
+    try std.testing.expectEqual(@as(u32, 15), frame.?.line);
+    try std.testing.expectEqualStrings("save", frame.?.func);
+}
+
+test "parseStackLine: non-frame line returns null" {
+    const frame = try parseStackLine(std.testing.allocator, "Error: something went wrong");
+    try std.testing.expect(frame == null);
+}
+
+test "computeParseStack: mixed trace" {
+    const trace =
+        \\Error: boom
+        \\    at inner (src/a.js:5:3)
+        \\    at outer (src/b.js:12:1)
+    ;
+    const result = try computeParseStack(std.testing.allocator, trace);
+    defer {
+        for (result.frames) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); }
+        std.testing.allocator.free(result.frames);
+    }
+    try std.testing.expectEqual(@as(usize, 2), result.frames.len);
+    try std.testing.expectEqualStrings("src/a.js", result.frames[0].file);
+    try std.testing.expectEqualStrings("src/b.js", result.frames[1].file);
 }
 

@@ -27,6 +27,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  changes-preview <repo-path>\n", .{});
         try err.print("  scan <path>\n", .{});
         try err.print("  diff-dirs <path1> <path2>\n", .{});
+        try err.print("  grep <root-path> <pattern> [ext-filter]\n", .{});
+        try err.print("  parse-stack\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -352,6 +354,84 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.writeAll("]}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "grep")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools grep <root-path> <pattern> [ext-filter]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const ext_filter: ?[]const u8 = if (args.len >= 5) args[4] else null;
+        const result = root.computeGrep(gpa, io, args[2], args[3], ext_filter) catch |e| {
+            switch (e) {
+                error.RootNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.matches) |m| { gpa.free(m.file); gpa.free(m.text); }
+            gpa.free(result.matches);
+        }
+
+        const escaped_pattern = try root.allocJsonEscape(gpa, result.pattern);
+        defer gpa.free(escaped_pattern);
+
+        try out.print(
+            "{{\n  \"pattern\": \"{s}\",\n  \"matchCount\": {d},\n  \"capped\": {s},\n  \"matches\": [\n",
+            .{ escaped_pattern, result.matchCount, if (result.capped) "true" else "false" },
+        );
+        for (result.matches, 0..) |m, i| {
+            const escaped_file = try root.allocJsonEscape(gpa, m.file);
+            defer gpa.free(escaped_file);
+            const escaped_text = try root.allocJsonEscape(gpa, m.text);
+            defer gpa.free(escaped_text);
+            try out.print(
+                "    {{\"file\": \"{s}\", \"line\": {d}, \"col\": {d}, \"text\": \"{s}\"}}",
+                .{ escaped_file, m.line, m.col, escaped_text },
+            );
+            if (i + 1 < result.matches.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "parse-stack")) {
+        // Read stdin
+        var stdin_read_buf: [4096]u8 = undefined;
+        var stdin_reader = std.Io.File.stdin().reader(io, &stdin_read_buf);
+        const input = stdin_reader.interface.allocRemaining(gpa, .limited(512 * 1024)) catch |e| {
+            try err.print("error reading stdin: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(input);
+
+        const result = root.computeParseStack(gpa, input) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.frames) |f| { gpa.free(f.file); gpa.free(f.func); }
+            gpa.free(result.frames);
+        }
+
+        try out.writeAll("[\n");
+        for (result.frames, 0..) |frame, i| {
+            const escaped_file = try root.allocJsonEscape(gpa, frame.file);
+            defer gpa.free(escaped_file);
+            const escaped_func = try root.allocJsonEscape(gpa, frame.func);
+            defer gpa.free(escaped_func);
+            try out.print(
+                "  {{\"file\": \"{s}\", \"line\": {d}, \"col\": {d}, \"fn\": \"{s}\"}}",
+                .{ escaped_file, frame.line, frame.col, escaped_func },
+            );
+            if (i + 1 < result.frames.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("]\n");
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
