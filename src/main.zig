@@ -36,6 +36,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  file-stats <file-path>\n", .{});
         try err.print("  env-scan <root-path>\n", .{});
         try err.print("  toml-query <file-path> <dot-path>\n", .{});
+        try err.print("  list-projects <foreman-root>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -696,6 +697,43 @@ pub fn main(init: std.process.Init) !void {
                 .{escaped_path},
             );
         }
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "list-projects")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools list-projects <foreman-root>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const entries = try root.computeListProjects(gpa, io, args[2]);
+        defer {
+            for (entries) |e| {
+                gpa.free(e.name);
+                gpa.free(e.url);
+            }
+            gpa.free(entries);
+        }
+
+        try out.writeAll("[\n");
+        for (entries, 0..) |entry, i| {
+            const escaped_name = try root.allocJsonEscape(gpa, entry.name);
+            defer gpa.free(escaped_name);
+            const escaped_url = try root.allocJsonEscape(gpa, entry.url);
+            defer gpa.free(escaped_url);
+
+            try out.print(
+                "  {{\"name\": \"{s}\", \"url\": \"{s}\", \"isForeman\": {s}, \"isLocal\": {s}}}",
+                .{
+                    escaped_name,
+                    escaped_url,
+                    if (entry.isForeman) "true" else "false",
+                    if (entry.isLocal) "true" else "false",
+                },
+            );
+            if (i + 1 < entries.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("]\n");
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

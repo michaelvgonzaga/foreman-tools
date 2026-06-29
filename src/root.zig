@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.14.0";
+pub const VERSION = "0.15.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1732,6 +1732,96 @@ pub fn computeTomlQuery(
         return .{ .path = key_path, .found = true, .type_name = s.type_name, .value_json = s.json };
     }
     return .{ .path = key_path, .found = false, .type_name = "null", .value_json = null };
+}
+
+// --- list-projects subcommand ---
+
+pub const ProjectEntry = struct {
+    name: []u8,      // owned by caller
+    url: []u8,       // owned by caller
+    isForeman: bool,
+    isLocal: bool,
+};
+
+const FRAMEWORK_REPO_PREFIXES = [_][]const u8{ "homebrew-", "foreman-" };
+const FRAMEWORK_REPO_NAMES = [_][]const u8{ "foreman", "plowman" };
+
+fn isFrameworkRepo(name: []const u8) bool {
+    for (FRAMEWORK_REPO_NAMES) |n| if (std.mem.eql(u8, name, n)) return true;
+    for (FRAMEWORK_REPO_PREFIXES) |p| if (std.mem.startsWith(u8, name, p)) return true;
+    return false;
+}
+
+fn repoHasSpecMd(gpa: std.mem.Allocator, io: std.Io, nwo: []const u8) bool {
+    const api_path = std.fmt.allocPrint(gpa, "repos/{s}/contents/spec.md", .{nwo}) catch return false;
+    defer gpa.free(api_path);
+    const result = std.process.run(gpa, io, .{ .argv = &.{ "gh", "api", api_path } }) catch return false;
+    gpa.free(result.stdout);
+    gpa.free(result.stderr);
+    return switch (result.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+}
+
+pub fn computeListProjects(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) ![]ProjectEntry {
+    const list_result = std.process.run(gpa, io, .{
+        .argv = &.{ "gh", "repo", "list", "--json", "name,nameWithOwner,url", "--limit", "100" },
+    }) catch return &.{};
+    defer gpa.free(list_result.stderr);
+    defer gpa.free(list_result.stdout);
+
+    switch (list_result.term) {
+        .exited => |c| if (c != 0) return &.{},
+        else => return &.{},
+    }
+
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, list_result.stdout, .{}) catch return &.{};
+    defer parsed.deinit();
+    if (parsed.value != .array) return &.{};
+
+    var entries: std.ArrayList(ProjectEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            gpa.free(e.name);
+            gpa.free(e.url);
+        }
+        entries.deinit(gpa);
+    }
+
+    for (parsed.value.array.items) |repo| {
+        if (repo != .object) continue;
+        const name_val = repo.object.get("name") orelse continue;
+        const nwo_val = repo.object.get("nameWithOwner") orelse continue;
+        const url_val = repo.object.get("url") orelse continue;
+        if (name_val != .string or nwo_val != .string or url_val != .string) continue;
+
+        const name = name_val.string;
+        const nwo = nwo_val.string;
+        const url = url_val.string;
+
+        if (isFrameworkRepo(name)) continue;
+
+        const is_foreman = repoHasSpecMd(gpa, io, nwo);
+
+        const local_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, name });
+        defer gpa.free(local_path);
+        const is_local = fileExists(io, local_path);
+
+        const name_owned = try gpa.dupe(u8, name);
+        errdefer gpa.free(name_owned);
+        const url_owned = try gpa.dupe(u8, url);
+        errdefer gpa.free(url_owned);
+
+        try entries.append(gpa, .{
+            .name = name_owned,
+            .url = url_owned,
+            .isForeman = is_foreman,
+            .isLocal = is_local,
+        });
+    }
+
+    return entries.toOwnedSlice(gpa);
 }
 
 // --- Tests ---
