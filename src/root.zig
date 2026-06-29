@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.18.0";
+pub const VERSION = "0.19.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -2014,6 +2014,46 @@ pub fn computeValidateHooks(gpa: std.mem.Allocator, io: std.Io) !ValidateHooksRe
         .memorySync = searchStopHooks(stop_val, MEMORY_SYNC_MSG),
         .autoPush   = searchStopHooks(stop_val, AUTO_PUSH_MSG),
     };
+}
+
+// --- gh-release subcommand ---
+
+pub const GhReleaseResult = struct {
+    url: []u8, // owned by caller
+};
+
+pub fn computeGhRelease(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    owner: []const u8,
+    repo: []const u8,
+    tag: []const u8,
+    title: []const u8,
+    notes_file: []const u8,
+) !GhReleaseResult {
+    // Verify notes file is readable before invoking gh
+    {
+        const f = std.Io.Dir.openFileAbsolute(io, notes_file, .{}) catch return error.NotesFileNotFound;
+        f.close(io);
+    }
+
+    const nwo = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ owner, repo });
+    defer gpa.free(nwo);
+
+    const result = std.process.run(gpa, io, .{
+        .argv = &.{ "gh", "release", "create", tag, "--repo", nwo, "--title", title, "--notes-file", notes_file },
+    }) catch return error.GhFailed;
+    defer gpa.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |c| if (c != 0) { gpa.free(result.stdout); return error.GhFailed; },
+        else => { gpa.free(result.stdout); return error.GhFailed; },
+    }
+
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\n\r");
+    const url = try gpa.dupe(u8, trimmed);
+    gpa.free(result.stdout);
+    return .{ .url = url };
 }
 
 // --- Tests ---

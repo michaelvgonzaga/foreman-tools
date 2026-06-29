@@ -40,6 +40,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  tarball-sha <owner> <repo> <tag>\n", .{});
         try err.print("  formula-info <tap-path> <formula-name>\n", .{});
         try err.print("  validate-hooks\n", .{});
+        try err.print("  gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -818,6 +819,29 @@ pub fn main(init: std.process.Init) !void {
                 if (result.autoPush) "true" else "false",
             },
         );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "gh-release")) {
+        if (args.len < 7) {
+            try err.print("usage: foreman-tools gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeGhRelease(gpa, io, args[2], args[3], args[4], args[5], args[6]) catch |e| {
+            switch (e) {
+                error.NotesFileNotFound => try err.print("error: notes file not found: {s}\n", .{args[6]}),
+                error.GhFailed => try err.print("error: gh release create failed (check gh auth and tag existence)\n", .{}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.url);
+
+        const esc_url = try root.allocJsonEscape(gpa, result.url);
+        defer gpa.free(esc_url);
+
+        try out.print("{{\n  \"url\": \"{s}\"\n}}\n", .{esc_url});
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
