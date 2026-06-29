@@ -2291,14 +2291,28 @@ pub fn computeCacheCheck(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
     };
 }
 
+fn atomicRenameAbsolute(old_path: []const u8, new_path: []const u8) void {
+    var old_z: [512]u8 = undefined;
+    var new_z: [512]u8 = undefined;
+    const o = std.fmt.bufPrintZ(&old_z, "{s}", .{old_path}) catch return;
+    const n = std.fmt.bufPrintZ(&new_z, "{s}", .{new_path}) catch return;
+    _ = std.c.rename(o.ptr, n.ptr);
+}
+
 fn writeCacheEntry(io: std.Io, cache_dir: []const u8, entry_path: []const u8, sha: []const u8) void {
     std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch {};
-    const cf = std.Io.Dir.createFileAbsolute(io, entry_path, .{}) catch return;
-    defer cf.close(io);
+    var tmp_buf: [512]u8 = undefined;
+    const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{entry_path}) catch return;
+    const cf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch return;
     var wbuf: [128]u8 = undefined;
     var w = cf.writerStreaming(io, &wbuf);
-    w.interface.writeAll(sha) catch return;
+    w.interface.writeAll(sha) catch {
+        cf.close(io);
+        return;
+    };
     w.interface.flush() catch {};
+    cf.close(io);
+    atomicRenameAbsolute(tmp_path, entry_path);
 }
 
 // --- context-scan subcommand ---
@@ -2413,22 +2427,29 @@ pub fn computeCacheStore(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
     defer gpa.free(entry_path);
 
     std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch {};
-    const cf = std.Io.Dir.createFileAbsolute(io, entry_path, .{}) catch {
+    const tmp_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{entry_path});
+    defer gpa.free(tmp_path);
+    const cf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch {
         return .{
             .path = try gpa.dupe(u8, file_path),
             .subKey = try gpa.dupe(u8, sub_key),
             .stored = false,
         };
     };
-    defer cf.close(io);
     var wbuf: [4096]u8 = undefined;
     var w = cf.writerStreaming(io, &wbuf);
-    w.interface.writeAll(fh.sha256) catch {
-        return .{ .path = try gpa.dupe(u8, file_path), .subKey = try gpa.dupe(u8, sub_key), .stored = false };
+    const write_ok = blk: {
+        w.interface.writeAll(fh.sha256) catch break :blk false;
+        w.interface.writeAll("\n") catch break :blk false;
+        w.interface.writeAll(value_json) catch break :blk false;
+        w.interface.flush() catch break :blk false;
+        break :blk true;
     };
-    w.interface.writeAll("\n") catch {};
-    w.interface.writeAll(value_json) catch {};
-    w.interface.flush() catch {};
+    cf.close(io);
+    if (!write_ok) {
+        return .{ .path = try gpa.dupe(u8, file_path), .subKey = try gpa.dupe(u8, sub_key), .stored = false };
+    }
+    atomicRenameAbsolute(tmp_path, entry_path);
 
     return .{
         .path = try gpa.dupe(u8, file_path),

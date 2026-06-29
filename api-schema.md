@@ -807,6 +807,188 @@ Miss:
 
 ---
 
+## run-tests
+
+`foreman-tools run-tests <path>`
+
+```json
+{
+  "path": "/abs/path/to/project",
+  "framework": "jest",
+  "command": "npx jest --ci",
+  "success": false,
+  "passed": 42,
+  "failed": 3,
+  "skipped": 1,
+  "duration_ms": 4821,
+  "failures": [
+    {
+      "file": "src/user.test.ts",
+      "line": 47,
+      "test": "should return 404 for unknown user",
+      "message": "Expected: 404\nReceived: 200"
+    }
+  ],
+  "truncated": false
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `path` | string | absolute project root as passed |
+| `framework` | string | detected: `"jest"` `"pytest"` `"go"` `"cargo"` `"zig"` `"bats"` `"unknown"` |
+| `command` | string | exact command executed |
+| `success` | bool | `true` if all tests passed (exit 0) |
+| `passed` | int | number of passing tests; 0 if framework output doesn't report counts |
+| `failed` | int | number of failing tests |
+| `skipped` | int | number of skipped/pending tests |
+| `duration_ms` | int | wall-clock run time in milliseconds |
+| `failures` | array | structured failures; capped at 50 |
+| `failures[].file` | string | relative path to the test file |
+| `failures[].line` | int | 1-based line number; 0 if not reported |
+| `failures[].test` | string | test name / describe block + test name |
+| `failures[].message` | string | failure message; multiline, JSON-escaped |
+| `truncated` | bool | `true` if more than 50 failures were found — only the first 50 are included |
+
+**Detection order:** `package.json` (jest in deps or scripts.test) → `pytest.ini` / `conftest.py` / `pyproject.toml [tool.pytest]` → `go.mod` → `Cargo.toml` → `build.zig` → `*.bats` in `test/` or `tests/`. First match wins.
+
+**Framework commands:**
+- `jest` → `npx jest --ci`
+- `pytest` → `python -m pytest -q`
+- `go` → `go test ./...`
+- `cargo` → `cargo test`
+- `zig` → `zig build test`
+- `bats` → `bats test/` (or `tests/`)
+
+**Constraints:** `<path>` must be absolute. Timeout: 120s. Framework binary must be in PATH or resolvable from project root.
+
+**Errors:** exit 1 if no recognizable test framework detected (`framework: "unknown"`, message on stderr). exit 1 if the test command itself cannot be launched (not if tests fail — test failures exit 0 with `success: false`).
+
+---
+
+## build
+
+`foreman-tools build <path>`
+
+```json
+{
+  "path": "/abs/path/to/project",
+  "tool": "cargo",
+  "command": "cargo build",
+  "success": true,
+  "errors": [],
+  "warnings": [
+    {
+      "file": "src/main.rs",
+      "line": 42,
+      "col": 5,
+      "message": "unused variable `x`"
+    }
+  ],
+  "duration_ms": 3201,
+  "truncated": false
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `path` | string | absolute project root as passed |
+| `tool` | string | detected: `"cargo"` `"go"` `"zig"` `"npm"` `"yarn"` `"make"` `"unknown"` |
+| `command` | string | exact command executed |
+| `success` | bool | `true` if build exited 0 |
+| `errors` | array | structured errors; capped at 50 |
+| `errors[].file` | string | relative path; `""` if not reported |
+| `errors[].line` | int | 1-based line; 0 if not reported |
+| `errors[].col` | int | 1-based column; 0 if not reported |
+| `errors[].message` | string | error text; multiline, JSON-escaped |
+| `errors[].severity` | string | `"error"` or `"warning"` (errors array only contains `"error"`) |
+| `warnings` | array | structured warnings; capped at 20 |
+| `warnings[].file` | string | relative path; `""` if not reported |
+| `warnings[].line` | int | 1-based line; 0 if not reported |
+| `warnings[].col` | int | 1-based column; 0 if not reported |
+| `warnings[].message` | string | warning text |
+| `duration_ms` | int | wall-clock build time in milliseconds |
+| `truncated` | bool | `true` if more than 50 errors or 20 warnings were found |
+
+**Detection order:** `Cargo.toml` → `go.mod` → `build.zig` → `package.json` (scripts.build) → `yarn.lock` → `Makefile`. First match wins.
+
+**Build commands:**
+- `cargo` → `cargo build`
+- `go` → `go build ./...`
+- `zig` → `zig build`
+- `npm` → `npm run build`
+- `yarn` → `yarn build`
+- `make` → `make`
+
+**Error parsing per tool:**
+- `cargo` / `rust` → `error[E####]: message\n --> file:line:col`
+- `go` → `file:line:col: message`
+- `zig` → `file:line:col: error: message`
+- `npm` / `yarn` / `tsc` → `file(line,col): error TSxxxx: message` or `file:line:col - error`
+- `make` → `Makefile:line: *** message`
+
+**Constraints:** `<path>` must be absolute. Timeout: 300s. Build tool must be in PATH.
+
+**Errors:** exit 1 if no recognizable build system detected. Build failure (non-zero build exit code) exits 0 with `success: false` and populated `errors`.
+
+---
+
+## device-scan
+
+`foreman-tools device-scan`
+
+```json
+{
+  "profile_id": "apple_m3_pro_36gb_macos_arm64",
+  "hardware": {
+    "cpu": "Apple M3 Pro",
+    "cores": 11,
+    "ram_gb": 36,
+    "os": "darwin",
+    "arch": "arm64"
+  },
+  "tools": {
+    "zig":           { "present": true,  "version": "0.16.0", "path": "/opt/homebrew/bin/zig" },
+    "git":           { "present": true,  "version": "2.47.1", "path": "/usr/bin/git" },
+    "gh":            { "present": true,  "version": "2.62.0", "path": "/opt/homebrew/bin/gh" },
+    "brew":          { "present": true,  "version": "4.4.0",  "path": "/opt/homebrew/bin/brew" },
+    "node":          { "present": false, "version": null,      "path": null },
+    "python3":       { "present": true,  "version": "3.12.0", "path": "/opt/homebrew/bin/python3" },
+    "go":            { "present": false, "version": null,      "path": null },
+    "cargo":         { "present": false, "version": null,      "path": null },
+    "foreman_tools": { "present": true,  "version": "1.26.0", "path": "/opt/homebrew/bin/foreman-tools" }
+  },
+  "optimal": {
+    "zig_build_flags": "-Doptimize=ReleaseSafe -Dcpu=apple_m3",
+    "bottleneck": "git_io",
+    "git_spawn_ms_estimate": 20
+  },
+  "shell": "zsh",
+  "scanned_at": "2026-06-30T12:00:00Z"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `profile_id` | string | stable slug from cpu+ram+os+arch; used as community profile key |
+| `hardware.cpu` | string | from `sysctl machdep.cpu.brand_string` |
+| `hardware.cores` | int | from `sysctl hw.physicalcpu` |
+| `hardware.ram_gb` | int | from `sysctl hw.memsize` / 1073741824 |
+| `hardware.os` | string | `"darwin"` on macOS |
+| `hardware.arch` | string | `"arm64"` or `"x86_64"` |
+| `tools.*` | object | `present` bool; `version`/`path` null when not present |
+| `optimal.zig_build_flags` | string | derived from arch; `apple_m3` on M3, `apple_m4` on M4, generic arm64 otherwise |
+| `optimal.bottleneck` | string | always `"git_io"` for macOS foreman-tools; future: `"disk_io"` or `"cpu"` |
+| `optimal.git_spawn_ms_estimate` | int | estimated cost per git subprocess in ms |
+| `shell` | string | from `$SHELL` |
+| `scanned_at` | string | ISO 8601 UTC timestamp |
+
+**Community contribution:** The `profile_id` + `hardware` + `optimal` + `tools[*].{present, version}` fields (no paths) form the public-safe subset. Foreman shows a diff of what will be shared and asks for consent before pushing to the `foreman-env` repo. Paths are never included in the community profile — they often contain usernames.
+
+**Errors:** exit 1 if `sysctl` is unavailable. All tool checks are best-effort — missing tool = `present: false`, no error.
+
+---
+
 ## Schema change policy
 
 Any modification to an existing subcommand's output shape (field rename, type change, enum value addition/removal, field removal) requires:

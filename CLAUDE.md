@@ -57,7 +57,7 @@ See `spec.md` for milestones and decisions. See `api-schema.md` for the locked J
 brew install zig   # or download from ziglang.org — pin to 0.16
 
 # build
-zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=ReleaseSafe -Dcpu=apple_m3
 
 # run / work
 ./zig-out/bin/foreman-tools status ~/foreman
@@ -119,3 +119,5 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | yaml-query uses indentation-based block-style parser, not a full YAML AST (v0.27.0) | covers 95%+ of real-world YAML (GitHub Actions, docker-compose, k8s); avoids pulling in a YAML library; trimLeft→trimStart, trimRight→trimEnd in Zig 0.16 |
 | 2026-06-30 | outline uses line-by-line pattern matching, not a full AST (v0.28.0) | covers 12 languages; extracts top-level and nested definitions (no indentation filtering — trimmed lines look top-level); capped at 200 symbols; skips lines starting with comment chars before language dispatch |
 | 2026-06-30 | deps errdefer uses `for (...) { ... } gpa.free(buf)` — no `;` between for-block and next statement (v0.29.0) | Zig 0.16: for-block is a compound statement, trailing `;` after `}` is a parse error |
+| 2026-06-30 | atomic writes via `atomicRenameAbsolute` helper + `std.c.rename` (v0.30.0) | `writeCacheEntry` and `computeCacheStore` both wrote directly via `createFileAbsolute` — power loss mid-write left a corrupted cache entry; fix: write to `{entry_path}.tmp`, flush, close, then `std.c.rename(tmp, final)`; `std.c.rename` is the correct path in Zig 0.16 (libc-backed); `std.posix.rename` does not exist in 0.16 |
+| 2026-06-30 | `device-scan` subcommand spec locked (M30, v0.30.0) | Profile hardware+tools+optimal at first install, store to `~/.foreman/profile.json`; Claude reads this at session start instead of re-discovering the environment; community contribution to `foreman-env` repo is opt-in with explicit consent and strips all user paths before sharing |
