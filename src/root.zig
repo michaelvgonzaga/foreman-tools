@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.23.0";
+pub const VERSION = "0.24.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -2316,6 +2316,151 @@ pub fn computeCacheFetch(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
         .subKey = try gpa.dupe(u8, sub_key),
         .hit = true,
         .value = try gpa.dupe(u8, stored_value),
+    };
+}
+
+// --- context-evidence subcommand ---
+
+pub const EvidenceChunk = struct {
+    startLine: u32, // 1-based
+    endLine: u32,   // 1-based
+    content: []u8,  // owned by caller
+};
+
+pub const ContextEvidenceResult = struct {
+    path: []u8,              // owned
+    pattern: []u8,           // owned
+    fileBytes: u64,
+    matchCount: u32,
+    chunks: []EvidenceChunk, // owned; each chunk.content is owned
+};
+
+const EVIDENCE_CONTEXT_LINES: usize = 10;
+const EVIDENCE_MAX_CHUNKS: usize = 8;
+
+fn containsInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |c, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(c)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+pub fn computeContextEvidence(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8, pattern: []const u8) !ContextEvidenceResult {
+    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch return error.FileNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(5 * 1024 * 1024));
+    defer gpa.free(content);
+    const file_bytes: u64 = @intCast(content.len);
+
+    // Count lines (pass 1)
+    var line_count: usize = 0;
+    {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |_| line_count += 1;
+    }
+    if (line_count == 0) return .{
+        .path = try gpa.dupe(u8, file_path),
+        .pattern = try gpa.dupe(u8, pattern),
+        .fileBytes = file_bytes,
+        .matchCount = 0,
+        .chunks = &.{},
+    };
+
+    // Collect line slices into content — valid until content is freed (end of function)
+    const lines = try gpa.alloc([]const u8, line_count);
+    defer gpa.free(lines);
+    {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        var i: usize = 0;
+        while (it.next()) |line| : (i += 1) lines[i] = line;
+    }
+
+    // Count matching lines (pass 1)
+    var match_count: u32 = 0;
+    for (lines) |line| {
+        if (containsInsensitive(line, pattern)) match_count += 1;
+    }
+
+    // Collect match indices (pass 2)
+    const match_indices = try gpa.alloc(usize, match_count);
+    defer gpa.free(match_indices);
+    {
+        var mi: usize = 0;
+        for (lines, 0..) |line, idx| {
+            if (containsInsensitive(line, pattern)) {
+                match_indices[mi] = idx;
+                mi += 1;
+            }
+        }
+    }
+
+    // Build and merge context windows; worst case = match_count windows
+    const windows = try gpa.alloc([2]usize, if (match_count > 0) match_count else 1);
+    defer gpa.free(windows);
+    var merged_count: usize = 0;
+    if (match_count > 0) {
+        var cur_start: usize = if (match_indices[0] >= EVIDENCE_CONTEXT_LINES) match_indices[0] - EVIDENCE_CONTEXT_LINES else 0;
+        var cur_end: usize = @min(match_indices[0] + EVIDENCE_CONTEXT_LINES, lines.len - 1);
+        for (match_indices[1..]) |idx| {
+            const w_start: usize = if (idx >= EVIDENCE_CONTEXT_LINES) idx - EVIDENCE_CONTEXT_LINES else 0;
+            const w_end: usize = @min(idx + EVIDENCE_CONTEXT_LINES, lines.len - 1);
+            if (w_start <= cur_end + 1) {
+                cur_end = @max(cur_end, w_end);
+            } else {
+                windows[merged_count] = .{ cur_start, cur_end };
+                merged_count += 1;
+                cur_start = w_start;
+                cur_end = w_end;
+            }
+        }
+        windows[merged_count] = .{ cur_start, cur_end };
+        merged_count += 1;
+    }
+
+    // Build chunks (capped at EVIDENCE_MAX_CHUNKS)
+    const chunk_count = @min(merged_count, EVIDENCE_MAX_CHUNKS);
+    const chunks = try gpa.alloc(EvidenceChunk, chunk_count);
+    for (0..chunk_count) |i| {
+        const start = windows[i][0];
+        const end   = windows[i][1];
+        // Calculate byte size of joined lines
+        var byte_count: usize = 0;
+        for (lines[start..end + 1]) |line| byte_count += line.len + 1;
+        if (byte_count > 0) byte_count -= 1; // no trailing \n
+        const chunk_buf = try gpa.alloc(u8, byte_count);
+        var pos: usize = 0;
+        for (lines[start..end + 1], 0..) |line, li| {
+            @memcpy(chunk_buf[pos..pos + line.len], line);
+            pos += line.len;
+            if (li + 1 < end - start + 1) {
+                chunk_buf[pos] = '\n';
+                pos += 1;
+            }
+        }
+        chunks[i] = .{
+            .startLine = @intCast(start + 1),
+            .endLine   = @intCast(end + 1),
+            .content   = chunk_buf,
+        };
+    }
+
+    return .{
+        .path       = try gpa.dupe(u8, file_path),
+        .pattern    = try gpa.dupe(u8, pattern),
+        .fileBytes  = file_bytes,
+        .matchCount = match_count,
+        .chunks     = chunks,
     };
 }
 

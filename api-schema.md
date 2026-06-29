@@ -584,6 +584,38 @@ Miss:
 
 ---
 
+## context-evidence
+
+`foreman-tools context-evidence <file-path> <pattern>`
+
+```json
+{
+  "path": "/abs/path/to/file.zig",
+  "pattern": "CacheCheck",
+  "fileBytes": 107174,
+  "matchCount": 2,
+  "chunks": [
+    {"startLine": 2074, "endLine": 2104, "content": "pub const CacheCheckResult = struct {\n    ..."}
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `matchCount` | int | total lines containing `pattern` (before chunk cap) |
+| `chunks` | array | up to 8 merged context windows; each is `{startLine, endLine, content}` |
+| `chunks[].startLine` | int | 1-based first line of this chunk |
+| `chunks[].endLine` | int | 1-based last line of this chunk |
+| `chunks[].content` | string | lines joined by `\n`; JSON-escaped |
+
+**Search:** case-insensitive literal string match. Each matching line expands to ±10 lines of context; overlapping windows are merged.
+
+**Constraints:** `<file-path>` must be absolute. File capped at 5 MB. Empty pattern returns `matchCount: 0, chunks: []`.
+
+**Errors:** exit 1 if file not found or unreadable.
+
+---
+
 ## context-scan
 
 `foreman-tools context-scan <path>`

@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
         try err.print("  file-hash <file-path>\n", .{});
         try err.print("  context-scan <path>\n", .{});
+        try err.print("  context-evidence <file-path> <pattern>\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -942,6 +943,49 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\"{s}\"", .{esc});
         }
         try out.writeAll("]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-evidence")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools context-evidence <file-path> <pattern>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeContextEvidence(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            gpa.free(result.path);
+            gpa.free(result.pattern);
+            for (result.chunks) |c| gpa.free(c.content);
+            gpa.free(result.chunks);
+        }
+
+        const esc_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(esc_path);
+        const esc_pat = try root.allocJsonEscape(gpa, result.pattern);
+        defer gpa.free(esc_pat);
+
+        try out.print(
+            "{{\n  \"path\": \"{s}\",\n  \"pattern\": \"{s}\",\n  \"fileBytes\": {d},\n  \"matchCount\": {d},\n  \"chunks\": [\n",
+            .{ esc_path, esc_pat, result.fileBytes, result.matchCount },
+        );
+        for (result.chunks, 0..) |chunk, i| {
+            const esc_content = try root.allocJsonEscape(gpa, chunk.content);
+            defer gpa.free(esc_content);
+            try out.print(
+                "    {{\"startLine\": {d}, \"endLine\": {d}, \"content\": \"{s}\"}}",
+                .{ chunk.startLine, chunk.endLine, esc_content },
+            );
+            if (i + 1 < result.chunks.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
         if (args.len < 3) {
