@@ -104,3 +104,4 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | formula-info parser is line-by-line, not a Ruby AST (v0.17.0) | Covers all real Homebrew formulas (url/sha256/version are always plain quoted fields); avoids pulling in a Ruby parser |
 | 2026-06-29 | validate-hooks returns false on missing/malformed file, not an error (v0.18.0) | Callers (/setup-automation, /first-run) already handle the false case; erroring adds no new information and complicates caller logic |
 | 2026-06-29 | validate-hooks uses std.c.getenv for HOME (v0.18.0) | std.posix.getenv doesn't exist in Zig 0.16; std.c.getenv is the correct path for libc-backed targets |
+| 2026-06-29 | gh-release passes --notes-file to gh, not --notes (v0.19.0) | --notes requires shell escaping of newlines/quotes/backticks; --notes-file lets gh read content directly, eliminating the escaping problem entirely |
