@@ -95,3 +95,5 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | find-files caps at 2000 results (v0.11.0) | Beyond 2000 matches the JSON output itself becomes a token problem; caller should narrow the glob instead |
 | 2026-06-29 | json-query value field is a raw JSON fragment, not a re-encoded string (v0.12.0) | Avoids double-encoding; caller reads the value directly without a second parse step |
 | 2026-06-29 | json-query uses dot notation with numeric segments for array indexing (v0.12.0) | Keeps the path syntax uniform; `items.1` is simpler to pass as a CLI arg than `items[1]` |
+| 2026-06-29 | git-diff runs two git calls (--numstat + --name-status) and correlates them (v0.13.0) | --numstat gives clean addition/deletion counts; --name-status gives A/M/D/R status; neither alone gives both |
+| 2026-06-29 | list-dir sorts dirs first then files alphabetically (v0.13.0) | Matches mental model of ls -la; dirs up front means structure is visible before file noise |
