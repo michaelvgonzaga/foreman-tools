@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.11.0";
+pub const VERSION = "0.12.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1167,6 +1167,82 @@ pub fn computeParseStack(gpa: std.mem.Allocator, input: []const u8) !ParseStackR
     return .{ .frames = try frames.toOwnedSlice(gpa) };
 }
 
+// --- json-query ---
+
+pub const JsonQueryResult = struct {
+    path: []const u8,
+    found: bool,
+    type_name: []const u8, // "string" | "number" | "bool" | "null" | "object" | "array"
+    value_json: ?[]u8,     // raw JSON fragment; null when not found
+};
+
+fn jsonTypeName(v: std.json.Value) []const u8 {
+    return switch (v) {
+        .null => "null",
+        .bool => "bool",
+        .integer, .float, .number_string => "number",
+        .string => "string",
+        .array => "array",
+        .object => "object",
+    };
+}
+
+pub fn computeJsonQuery(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    key_path: []const u8,
+) !JsonQueryResult {
+    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch
+        return error.FileNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+    defer gpa.free(content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch
+        return error.InvalidJson;
+    defer parsed.deinit();
+
+    // Walk the dot-separated path
+    var node: std.json.Value = parsed.value;
+    var segments = std.mem.splitScalar(u8, key_path, '.');
+    while (segments.next()) |seg| {
+        switch (node) {
+            .object => |obj| {
+                node = obj.get(seg) orelse return .{
+                    .path = key_path, .found = false,
+                    .type_name = "null", .value_json = null,
+                };
+            },
+            .array => |arr| {
+                const idx = std.fmt.parseInt(usize, seg, 10) catch return .{
+                    .path = key_path, .found = false,
+                    .type_name = "null", .value_json = null,
+                };
+                if (idx >= arr.items.len) return .{
+                    .path = key_path, .found = false,
+                    .type_name = "null", .value_json = null,
+                };
+                node = arr.items[idx];
+            },
+            else => return .{
+                .path = key_path, .found = false,
+                .type_name = "null", .value_json = null,
+            },
+        }
+    }
+
+    const value_json = try std.json.Stringify.valueAlloc(gpa, node, .{});
+    return .{
+        .path = key_path,
+        .found = true,
+        .type_name = jsonTypeName(node),
+        .value_json = value_json,
+    };
+}
+
 // --- find-files ---
 
 pub const FindFilesResult = struct { pattern: []const u8, count: u32, capped: bool, files: [][]u8 };
@@ -1481,5 +1557,20 @@ test "globMatch: *contains*" {
 test "globMatch: wildcard *" {
     try std.testing.expect(globMatch("*", "anything.txt"));
     try std.testing.expect(globMatch("*", ""));
+}
+
+test "jsonTypeName" {
+    try std.testing.expectEqualStrings("string", jsonTypeName(.{ .string = "hi" }));
+    try std.testing.expectEqualStrings("number", jsonTypeName(.{ .integer = 42 }));
+    try std.testing.expectEqualStrings("number", jsonTypeName(.{ .float = 3.14 }));
+    try std.testing.expectEqualStrings("bool", jsonTypeName(.{ .bool = true }));
+    try std.testing.expectEqualStrings("null", jsonTypeName(.null));
+}
+
+test "JsonQueryResult fields" {
+    const r = JsonQueryResult{ .path = "version", .found = true, .type_name = "string", .value_json = null };
+    try std.testing.expectEqualStrings("version", r.path);
+    try std.testing.expect(r.found);
+    try std.testing.expectEqualStrings("string", r.type_name);
 }
 

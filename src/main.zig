@@ -30,6 +30,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  grep <root-path> <pattern> [ext-filter]\n", .{});
         try err.print("  parse-stack\n", .{});
         try err.print("  find-files <root-path> <glob>\n", .{});
+        try err.print("  json-query <file-path> <dot-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -469,6 +470,39 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.writeAll("  ]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "json-query")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools json-query <file-path> <dot-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeJsonQuery(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                error.InvalidJson  => try err.print("error: invalid JSON: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer if (result.value_json) |v| gpa.free(v);
+
+        const escaped_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(escaped_path);
+
+        if (result.found) {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"found\": true,\n  \"type\": \"{s}\",\n  \"value\": {s}\n}}\n",
+                .{ escaped_path, result.type_name, result.value_json.? },
+            );
+        } else {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"found\": false,\n  \"type\": null,\n  \"value\": null\n}}\n",
+                .{escaped_path},
+            );
+        }
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
