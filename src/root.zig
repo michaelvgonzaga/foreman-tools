@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.16.0";
+pub const VERSION = "0.17.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1879,6 +1879,66 @@ pub fn computeTarballSha(gpa: std.mem.Allocator, io: std.Io, owner: []const u8, 
     return .{
         .sha256 = try gpa.dupe(u8, &hex),
         .url = url,
+    };
+}
+
+// --- formula-info subcommand ---
+
+pub const FormulaInfoResult = struct {
+    formulaPath: []u8, // owned by caller
+    url: []u8,         // owned by caller
+    sha256: []u8,      // owned by caller
+    version: []u8,     // owned by caller
+};
+
+fn extractQuotedField(line: []const u8, key: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, key)) return null;
+    const rest = std.mem.trimStart(u8, line[key.len..], " \t");
+    if (rest.len < 2 or rest[0] != '"') return null;
+    const close = std.mem.indexOfScalarPos(u8, rest, 1, '"') orelse return null;
+    return rest[1..close];
+}
+
+pub fn computeFormulaInfo(gpa: std.mem.Allocator, io: std.Io, tap_path: []const u8, formula_name: []const u8) !FormulaInfoResult {
+    const formula_path = try std.fmt.allocPrint(gpa, "{s}/Formula/{s}.rb", .{ tap_path, formula_name });
+    errdefer gpa.free(formula_path);
+
+    const file = std.Io.Dir.openFileAbsolute(io, formula_path, .{}) catch return error.FormulaNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(1 * 1024 * 1024));
+    defer gpa.free(content);
+
+    var url: ?[]u8 = null;
+    var sha256: ?[]u8 = null;
+    var ver: ?[]u8 = null;
+
+    errdefer {
+        if (url) |s| gpa.free(s);
+        if (sha256) |s| gpa.free(s);
+        if (ver) |s| gpa.free(s);
+    }
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (url == null) {
+            if (extractQuotedField(trimmed, "url")) |v| url = try gpa.dupe(u8, v);
+        }
+        if (sha256 == null) {
+            if (extractQuotedField(trimmed, "sha256")) |v| sha256 = try gpa.dupe(u8, v);
+        }
+        if (ver == null) {
+            if (extractQuotedField(trimmed, "version")) |v| ver = try gpa.dupe(u8, v);
+        }
+    }
+
+    return .{
+        .formulaPath = formula_path,
+        .url = url orelse return error.MissingField,
+        .sha256 = sha256 orelse return error.MissingField,
+        .version = ver orelse return error.MissingField,
     };
 }
 

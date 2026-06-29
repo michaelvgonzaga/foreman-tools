@@ -38,6 +38,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  toml-query <file-path> <dot-path>\n", .{});
         try err.print("  list-projects <foreman-root>\n", .{});
         try err.print("  tarball-sha <owner> <repo> <tag>\n", .{});
+        try err.print("  formula-info <tap-path> <formula-name>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -762,6 +763,41 @@ pub fn main(init: std.process.Init) !void {
         try out.print(
             "{{\n  \"sha256\": \"{s}\",\n  \"url\": \"{s}\"\n}}\n",
             .{ escaped_sha, escaped_url },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "formula-info")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools formula-info <tap-path> <formula-name>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeFormulaInfo(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FormulaNotFound => try err.print("error: formula file not found: {s}/Formula/{s}.rb\n", .{ args[2], args[3] }),
+                error.MissingField => try err.print("error: formula missing required field (url, sha256, or version)\n", .{}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.formulaPath);
+        defer gpa.free(result.url);
+        defer gpa.free(result.sha256);
+        defer gpa.free(result.version);
+
+        const esc_path = try root.allocJsonEscape(gpa, result.formulaPath);
+        defer gpa.free(esc_path);
+        const esc_url = try root.allocJsonEscape(gpa, result.url);
+        defer gpa.free(esc_url);
+        const esc_sha = try root.allocJsonEscape(gpa, result.sha256);
+        defer gpa.free(esc_sha);
+        const esc_ver = try root.allocJsonEscape(gpa, result.version);
+        defer gpa.free(esc_ver);
+
+        try out.print(
+            "{{\n  \"formulaPath\": \"{s}\",\n  \"url\": \"{s}\",\n  \"sha256\": \"{s}\",\n  \"version\": \"{s}\"\n}}\n",
+            .{ esc_path, esc_url, esc_sha, esc_ver },
         );
         try out.flush();
     } else {
