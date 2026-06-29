@@ -24,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  release-info <repo-path>\n", .{});
         try err.print("  repo-info <repo-path>\n", .{});
         try err.print("  tag-exists <repo-path> <tag>\n", .{});
+        try err.print("  changes-preview <repo-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -204,6 +205,38 @@ pub fn main(init: std.process.Init) !void {
             "{{\n  \"owner\": \"{s}\",\n  \"repo\": \"{s}\",\n  \"url\": \"{s}\"\n}}\n",
             .{ escaped_owner, escaped_repo, escaped_url },
         );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "changes-preview")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools changes-preview <repo-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = try root.computeChangesPreview(gpa, io, args[2]);
+        defer {
+            for (result.commits) |e| {
+                gpa.free(e.hash);
+                gpa.free(e.message);
+            }
+            gpa.free(result.commits);
+        }
+
+        try out.writeAll("{\n  \"commits\": [\n");
+        for (result.commits, 0..) |entry, i| {
+            const escaped_hash = try root.allocJsonEscape(gpa, entry.hash);
+            defer gpa.free(escaped_hash);
+            const escaped_msg = try root.allocJsonEscape(gpa, entry.message);
+            defer gpa.free(escaped_msg);
+
+            try out.print(
+                "    {{\"hash\": \"{s}\", \"category\": \"{s}\", \"message\": \"{s}\"}}",
+                .{ escaped_hash, entry.category, escaped_msg },
+            );
+            if (i + 1 < result.commits.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.print("  ],\n  \"filesChanged\": {d}\n}}\n", .{result.filesChanged});
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

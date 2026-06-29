@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.5.0";
+pub const VERSION = "0.6.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -254,6 +254,57 @@ pub fn computeReleaseInfo(gpa: std.mem.Allocator, io: std.Io, repo_path: []const
         .suggestedNext = suggested_next,
         .commitsSince = commits_since,
         .isDirty = is_dirty,
+    };
+}
+
+// --- changes-preview subcommand ---
+
+pub const ChangesPreviewResult = struct {
+    commits: []CommitEntry, // owned by caller
+    filesChanged: u32,
+};
+
+pub fn computeChangesPreview(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8) !ChangesPreviewResult {
+    const log_raw = runGit(gpa, io, repo_path, &.{ "log", "--format=%H\t%s", "HEAD..origin/main" }) catch
+        return .{ .commits = &.{}, .filesChanged = 0 };
+    defer gpa.free(log_raw);
+
+    var entries: std.ArrayList(CommitEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            gpa.free(e.hash);
+            gpa.free(e.message);
+        }
+        entries.deinit(gpa);
+    }
+
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, log_raw, "\n"), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        const hash = line[0..tab];
+        const msg = line[tab + 1 ..];
+        try entries.append(gpa, .{
+            .hash = try gpa.dupe(u8, hash),
+            .category = categorize(msg),
+            .message = try gpa.dupe(u8, msg),
+        });
+    }
+
+    const files_changed: u32 = blk: {
+        const names_raw = runGit(gpa, io, repo_path, &.{ "diff", "--name-only", "HEAD..origin/main" }) catch break :blk 0;
+        defer gpa.free(names_raw);
+        const trimmed = std.mem.trimEnd(u8, names_raw, "\n");
+        if (trimmed.len == 0) break :blk 0;
+        var count: u32 = 0;
+        var it = std.mem.splitScalar(u8, trimmed, '\n');
+        while (it.next()) |_| count += 1;
+        break :blk count;
+    };
+
+    return .{
+        .commits = try entries.toOwnedSlice(gpa),
+        .filesChanged = files_changed,
     };
 }
 
