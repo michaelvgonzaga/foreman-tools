@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.29.0";
+pub const VERSION = "0.29.1";
 
 pub const StatusResult = struct {
     upToDate: bool,
