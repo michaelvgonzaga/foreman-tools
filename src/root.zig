@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.17.0";
+pub const VERSION = "0.18.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1939,6 +1939,80 @@ pub fn computeFormulaInfo(gpa: std.mem.Allocator, io: std.Io, tap_path: []const 
         .url = url orelse return error.MissingField,
         .sha256 = sha256 orelse return error.MissingField,
         .version = ver orelse return error.MissingField,
+    };
+}
+
+// --- validate-hooks subcommand ---
+
+pub const ValidateHooksResult = struct {
+    memorySync: bool,
+    autoPush: bool,
+};
+
+const MEMORY_SYNC_MSG = "Syncing memory\u{2026}";    // "Syncing memory…"
+const AUTO_PUSH_MSG   = "Pushing project commits\u{2026}"; // "Pushing project commits…"
+
+fn searchStopHooks(stop: std.json.Value, needle: []const u8) bool {
+    const arr = switch (stop) {
+        .array => |a| a,
+        else => return false,
+    };
+    for (arr.items) |matcher| {
+        const inner = switch (matcher) {
+            .object => |o| o.get("hooks") orelse continue,
+            else => continue,
+        };
+        const hooks_arr = switch (inner) {
+            .array => |a| a,
+            else => continue,
+        };
+        for (hooks_arr.items) |hook| {
+            const obj = switch (hook) {
+                .object => |o| o,
+                else => continue,
+            };
+            const msg = obj.get("statusMessage") orelse continue;
+            const msg_str = switch (msg) {
+                .string => |s| s,
+                else => continue,
+            };
+            if (std.mem.eql(u8, msg_str, needle)) return true;
+        }
+    }
+    return false;
+}
+
+pub fn computeValidateHooks(gpa: std.mem.Allocator, io: std.Io) !ValidateHooksResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const settings_path = try std.fmt.allocPrint(gpa, "{s}/.claude/settings.json", .{home});
+    defer gpa.free(settings_path);
+
+    const file = std.Io.Dir.openFileAbsolute(io, settings_path, .{}) catch return .{ .memorySync = false, .autoPush = false };
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(1 * 1024 * 1024));
+    defer gpa.free(content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch
+        return .{ .memorySync = false, .autoPush = false };
+    defer parsed.deinit();
+
+    const root_obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return .{ .memorySync = false, .autoPush = false },
+    };
+    const hooks_val = root_obj.get("hooks") orelse return .{ .memorySync = false, .autoPush = false };
+    const hooks_obj = switch (hooks_val) {
+        .object => |o| o,
+        else => return .{ .memorySync = false, .autoPush = false },
+    };
+    const stop_val = hooks_obj.get("Stop") orelse return .{ .memorySync = false, .autoPush = false };
+
+    return .{
+        .memorySync = searchStopHooks(stop_val, MEMORY_SYNC_MSG),
+        .autoPush   = searchStopHooks(stop_val, AUTO_PUSH_MSG),
     };
 }
 

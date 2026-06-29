@@ -39,6 +39,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  list-projects <foreman-root>\n", .{});
         try err.print("  tarball-sha <owner> <repo> <tag>\n", .{});
         try err.print("  formula-info <tap-path> <formula-name>\n", .{});
+        try err.print("  validate-hooks\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -798,6 +799,24 @@ pub fn main(init: std.process.Init) !void {
         try out.print(
             "{{\n  \"formulaPath\": \"{s}\",\n  \"url\": \"{s}\",\n  \"sha256\": \"{s}\",\n  \"version\": \"{s}\"\n}}\n",
             .{ esc_path, esc_url, esc_sha, esc_ver },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "validate-hooks")) {
+        const result = root.computeValidateHooks(gpa, io) catch |e| {
+            switch (e) {
+                error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+
+        try out.print(
+            "{{\n  \"memorySync\": {s},\n  \"autoPush\": {s}\n}}\n",
+            .{
+                if (result.memorySync) "true" else "false",
+                if (result.autoPush) "true" else "false",
+            },
         );
         try out.flush();
     } else {
