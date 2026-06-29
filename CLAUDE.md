@@ -91,3 +91,5 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | grep subcommand uses literal string search, not regex (v0.10.0) | Covers the dominant Claude usage pattern (find a symbol/string); avoids pulling in a regex engine; can upgrade to regex in a future version |
 | 2026-06-29 | grep caps at 500 matches and skips files >5 MB (v0.10.0) | Prevents unbounded JSON output that would consume the token budget the subcommand is meant to save |
 | 2026-06-29 | parse-stack reads from stdin, not a file arg (v0.10.0) | Stack traces arrive inline in Claude's context, not as files on disk; stdin lets the caller pipe directly without writing a temp file |
+| 2026-06-29 | find-files glob supports only *.ext / prefix* / *contains* / exact / * (v0.11.0) | Covers every real-world pattern without pulling in a regex engine; ** recursive glob deferred until a concrete need surfaces |
+| 2026-06-29 | find-files caps at 2000 results (v0.11.0) | Beyond 2000 matches the JSON output itself becomes a token problem; caller should narrow the glob instead |
