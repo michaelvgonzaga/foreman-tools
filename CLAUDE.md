@@ -102,3 +102,5 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | toml-query TOML parser is line-by-line, no full AST (v0.14.0) | Covers 95% of real usage (Cargo.toml, pyproject.toml) without a full TOML library; handles [[array-of-tables]] by ignoring it |
 | 2026-06-29 | tarball-sha sleep uses std.posix.system.nanosleep (v0.16.0) | std.time.sleep and std.posix.nanosleep don't exist in Zig 0.16; direct POSIX syscall via posix.system is the correct path |
 | 2026-06-29 | formula-info parser is line-by-line, not a Ruby AST (v0.17.0) | Covers all real Homebrew formulas (url/sha256/version are always plain quoted fields); avoids pulling in a Ruby parser |
+| 2026-06-29 | validate-hooks returns false on missing/malformed file, not an error (v0.18.0) | Callers (/setup-automation, /first-run) already handle the false case; erroring adds no new information and complicates caller logic |
+| 2026-06-29 | validate-hooks uses std.c.getenv for HOME (v0.18.0) | std.posix.getenv doesn't exist in Zig 0.16; std.c.getenv is the correct path for libc-backed targets |
