@@ -97,3 +97,6 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | json-query uses dot notation with numeric segments for array indexing (v0.12.0) | Keeps the path syntax uniform; `items.1` is simpler to pass as a CLI arg than `items[1]` |
 | 2026-06-29 | git-diff runs two git calls (--numstat + --name-status) and correlates them (v0.13.0) | --numstat gives clean addition/deletion counts; --name-status gives A/M/D/R status; neither alone gives both |
 | 2026-06-29 | list-dir sorts dirs first then files alphabetically (v0.13.0) | Matches mental model of ls -la; dirs up front means structure is visible before file noise |
+| 2026-06-29 | env-scan returns keys only, never values (v0.14.0) | Values are secrets; keys are all Claude needs to understand what a project requires |
+| 2026-06-29 | toml-query reuses JsonQueryResult (v0.14.0) | Same shape as json-query means callers handle both identically; no new struct needed |
+| 2026-06-29 | toml-query TOML parser is line-by-line, no full AST (v0.14.0) | Covers 95% of real usage (Cargo.toml, pyproject.toml) without a full TOML library; handles [[array-of-tables]] by ignoring it |
