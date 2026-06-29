@@ -2,6 +2,13 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.30.0] — 2026-06-30
+
+### New
+- `compat-check` — zero-token dependency guard; compares current tool versions (foreman_tools, zig, git, gh, brew, node, python3) against a stored baseline; returns `{ ok, baselineAge, drifted, advice }` with risk-rated drift entries and exact rollback commands; high-risk drift (zig, foreman_tools) surfaces a STOP advisory before the user starts typing
+- `compat-check --baseline` — snapshot current tool versions to `~/.foreman/compat-baseline.json` (atomic write); returns `{ recorded, path, tools }`
+- `compat-check --update-baseline` — alias for `--baseline`; after confirming drift is safe, promotes current versions to the new baseline
+
 ## [0.29.1] — 2026-06-30
 
 ### Fixed

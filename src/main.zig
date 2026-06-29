@@ -52,6 +52,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
         try err.print("  outline <file-path>\n", .{});
         try err.print("  deps <root-path>\n", .{});
+        try err.print("  compat-check [--baseline | --update-baseline]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1298,6 +1299,88 @@ pub fn main(init: std.process.Init) !void {
         if (result.deps.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
+    } else if (std.mem.eql(u8, args[1], "compat-check")) {
+        const do_baseline = args.len >= 3 and
+            (std.mem.eql(u8, args[2], "--baseline") or std.mem.eql(u8, args[2], "--update-baseline"));
+
+        if (do_baseline) {
+            const result = root.computeCompatBaseline(gpa, io) catch |e| {
+                switch (e) {
+                    error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
+                    else         => try err.print("error: {}\n", .{e}),
+                }
+                try err.flush();
+                std.process.exit(1);
+            };
+            defer {
+                for (result.versions) |v| gpa.free(v);
+                gpa.free(result.path);
+            }
+
+            const esc_path = try root.allocJsonEscape(gpa, result.path);
+            defer gpa.free(esc_path);
+
+            try out.print(
+                "{{\n  \"recorded\": {s},\n  \"path\": \"{s}\",\n  \"tools\": {{",
+                .{ if (result.recorded) "true" else "false", esc_path },
+            );
+            for (root.COMPAT_TOOLS, 0..) |tool, i| {
+                if (i > 0) try out.print(",", .{});
+                const esc_ver = try root.allocJsonEscape(gpa, result.versions[i]);
+                defer gpa.free(esc_ver);
+                try out.print("\n    \"{s}\": \"{s}\"", .{ tool, esc_ver });
+            }
+            try out.print("\n  }}\n}}\n", .{});
+            try out.flush();
+        } else {
+            const result = root.computeCompatCheck(gpa, io) catch |e| {
+                switch (e) {
+                    error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
+                    else         => try err.print("error: {}\n", .{e}),
+                }
+                try err.flush();
+                std.process.exit(1);
+            };
+            defer {
+                for (result.drifted) |d| {
+                    gpa.free(d.tool);
+                    gpa.free(d.was);
+                    gpa.free(d.now);
+                    gpa.free(d.rollback);
+                }
+                gpa.free(result.drifted);
+                gpa.free(result.baseline_age);
+                gpa.free(result.advice);
+            }
+
+            const esc_age    = try root.allocJsonEscape(gpa, result.baseline_age);
+            defer gpa.free(esc_age);
+            const esc_advice = try root.allocJsonEscape(gpa, result.advice);
+            defer gpa.free(esc_advice);
+
+            try out.print(
+                "{{\n  \"ok\": {s},\n  \"baselineAge\": \"{s}\",\n  \"drifted\": [",
+                .{ if (result.ok) "true" else "false", esc_age },
+            );
+            for (result.drifted, 0..) |d, i| {
+                if (i > 0) try out.print(",", .{});
+                const esc_tool     = try root.allocJsonEscape(gpa, d.tool);
+                defer gpa.free(esc_tool);
+                const esc_was      = try root.allocJsonEscape(gpa, d.was);
+                defer gpa.free(esc_was);
+                const esc_now      = try root.allocJsonEscape(gpa, d.now);
+                defer gpa.free(esc_now);
+                const esc_rollback = try root.allocJsonEscape(gpa, d.rollback);
+                defer gpa.free(esc_rollback);
+                try out.print(
+                    "\n    {{\"tool\": \"{s}\", \"was\": \"{s}\", \"now\": \"{s}\", \"risk\": \"{s}\", \"rollback\": \"{s}\"}}",
+                    .{ esc_tool, esc_was, esc_now, d.risk, esc_rollback },
+                );
+            }
+            if (result.drifted.len > 0) try out.print("\n  ", .{});
+            try out.print("],\n  \"advice\": \"{s}\"\n}}\n", .{esc_advice});
+            try out.flush();
+        }
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
         try err.flush();

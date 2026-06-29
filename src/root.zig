@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.29.1";
+pub const VERSION = "0.30.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -3536,6 +3536,266 @@ pub fn computeDeps(
         if (std.mem.eql(u8, m.fmt, "pip"))   return computeDepsPip(gpa, content);
     }
     return error.NoManifestFound;
+}
+
+// --- compat-check subcommand ---
+
+fn extractVersionFromLine(line: []const u8) []const u8 {
+    const l = if (line.len > 0 and (line[0] == 'v' or line[0] == 'V')) line[1..] else line;
+    var it = std.mem.splitScalar(u8, l, ' ');
+    while (it.next()) |tok| {
+        if (tok.len > 0 and tok[0] >= '0' and tok[0] <= '9') return tok;
+    }
+    return l;
+}
+
+fn getToolVersionAlloc(gpa: std.mem.Allocator, io: std.Io, tool: []const u8) ![]u8 {
+    if (std.mem.eql(u8, tool, "foreman_tools")) return gpa.dupe(u8, VERSION);
+    const flag = if (std.mem.eql(u8, tool, "zig")) "version" else "--version";
+    const r = std.process.run(gpa, io, .{ .argv = &.{ tool, flag } }) catch return gpa.dupe(u8, "");
+    defer gpa.free(r.stderr);
+    defer gpa.free(r.stdout);
+    switch (r.term) {
+        .exited => |c| if (c != 0) return gpa.dupe(u8, ""),
+        else => return gpa.dupe(u8, ""),
+    }
+    const raw = std.mem.trim(u8, r.stdout, " \t\n\r");
+    const first_nl = std.mem.indexOfScalar(u8, raw, '\n') orelse raw.len;
+    return gpa.dupe(u8, extractVersionFromLine(raw[0..first_nl]));
+}
+
+// Returns a slice into content (not owned). Empty string if not found.
+fn parseBaselineField(content: []const u8, field: []const u8) []const u8 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (field.len + 3 > 60) continue;
+        var key_buf: [64]u8 = undefined;
+        key_buf[0] = '"';
+        for (field, 0..) |c, j| key_buf[1 + j] = c;
+        key_buf[1 + field.len] = '"';
+        key_buf[2 + field.len] = ':';
+        const key = key_buf[0 .. 3 + field.len];
+        const pos = std.mem.indexOf(u8, trimmed, key) orelse continue;
+        var rest = std.mem.trimStart(u8, trimmed[pos + key.len ..], " \t");
+        if (rest.len == 0 or rest[0] != '"') continue;
+        rest = rest[1..];
+        const end_q = std.mem.indexOfScalar(u8, rest, '"') orelse continue;
+        return rest[0..end_q];
+    }
+    return "";
+}
+
+fn buildRollbackCmd(gpa: std.mem.Allocator, tool: []const u8, was: []const u8) ![]u8 {
+    if (std.mem.eql(u8, tool, "zig")) {
+        const dot = std.mem.lastIndexOfScalar(u8, was, '.') orelse was.len;
+        return std.fmt.allocPrint(gpa, "brew uninstall zig && brew install zig@{s}", .{was[0..dot]});
+    }
+    if (std.mem.eql(u8, tool, "foreman_tools")) {
+        return gpa.dupe(u8, "brew uninstall foreman-tools && brew install michaelvgonzaga/foreman/foreman-tools");
+    }
+    if (std.mem.eql(u8, tool, "node")) {
+        const dot = std.mem.indexOfScalar(u8, was, '.') orelse was.len;
+        return std.fmt.allocPrint(gpa, "brew uninstall node && brew install node@{s}", .{was[0..dot]});
+    }
+    if (std.mem.eql(u8, tool, "python3")) {
+        const dot2 = std.mem.lastIndexOfScalar(u8, was, '.') orelse was.len;
+        return std.fmt.allocPrint(gpa, "brew uninstall python3 && brew install python@{s}", .{was[0..dot2]});
+    }
+    if (std.mem.eql(u8, tool, "gh")) {
+        return gpa.dupe(u8, "# gh updates are generally safe; check: brew info gh");
+    }
+    if (std.mem.eql(u8, tool, "git")) {
+        return gpa.dupe(u8, "# git updates are generally safe; check: brew info git");
+    }
+    if (std.mem.eql(u8, tool, "brew")) {
+        return gpa.dupe(u8, "export HOMEBREW_NO_AUTO_UPDATE=1  # prevents future Homebrew auto-updates");
+    }
+    return gpa.dupe(u8, "# no rollback command known");
+}
+
+fn toolRisk(tool: []const u8) []const u8 {
+    if (std.mem.eql(u8, tool, "zig")) return "high";
+    if (std.mem.eql(u8, tool, "foreman_tools")) return "high";
+    if (std.mem.eql(u8, tool, "node")) return "medium";
+    if (std.mem.eql(u8, tool, "python3")) return "medium";
+    return "low";
+}
+
+pub const COMPAT_TOOLS = [_][]const u8{ "foreman_tools", "zig", "git", "gh", "brew", "node", "python3" };
+
+pub const DriftedTool = struct {
+    tool:     []u8,
+    was:      []u8,
+    now:      []u8,
+    risk:     []const u8,
+    rollback: []u8,
+};
+
+pub const CompatCheckResult = struct {
+    ok:           bool,
+    baseline_age: []u8,
+    drifted:      []DriftedTool,
+    advice:       []u8,
+};
+
+pub const CompatBaselineResult = struct {
+    recorded: bool,
+    path:     []u8,
+    versions: [COMPAT_TOOLS.len][]u8,
+};
+
+fn currentIsoTimestamp(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
+    const r = std.process.run(gpa, io, .{
+        .argv = &.{ "date", "-u", "+%Y-%m-%dT%H:%M:%SZ" },
+    }) catch return gpa.dupe(u8, "unknown");
+    defer gpa.free(r.stderr);
+    defer gpa.free(r.stdout);
+    return gpa.dupe(u8, std.mem.trim(u8, r.stdout, " \t\n\r"));
+}
+
+pub fn computeCompatBaseline(gpa: std.mem.Allocator, io: std.Io) !CompatBaselineResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const dir_path = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    defer gpa.free(dir_path);
+    std.Io.Dir.createDirAbsolute(io, dir_path, .default_dir) catch {};
+
+    const baseline_path = try std.fmt.allocPrint(gpa, "{s}/compat-baseline.json", .{dir_path});
+    errdefer gpa.free(baseline_path);
+
+    var versions: [COMPAT_TOOLS.len][]u8 = undefined;
+    var n_filled: usize = 0;
+    errdefer {
+        for (versions[0..n_filled]) |v| {
+            gpa.free(v);
+        }
+    }
+    for (COMPAT_TOOLS, 0..) |tool, i| {
+        versions[i] = getToolVersionAlloc(gpa, io, tool) catch try gpa.dupe(u8, "");
+        n_filled = i + 1;
+    }
+
+    const ts = currentIsoTimestamp(gpa, io) catch try gpa.dupe(u8, "unknown");
+    defer gpa.free(ts);
+
+    const tmp_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{baseline_path});
+    defer gpa.free(tmp_path);
+
+    var recorded = false;
+    write_blk: {
+        const f = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch break :write_blk;
+        var wbuf: [4096]u8 = undefined;
+        var w = f.writerStreaming(io, &wbuf);
+        var write_ok = true;
+        w.interface.writeAll("{\n  \"recorded_at\": \"") catch { write_ok = false; };
+        w.interface.writeAll(ts) catch { write_ok = false; };
+        w.interface.writeAll("\",\n  \"tools\": {\n") catch { write_ok = false; };
+        for (COMPAT_TOOLS, 0..) |tool, i| {
+            if (i > 0) w.interface.writeAll(",\n") catch { write_ok = false; };
+            w.interface.print("    \"{s}\": \"{s}\"", .{ tool, versions[i] }) catch { write_ok = false; };
+        }
+        w.interface.writeAll("\n  }\n}\n") catch { write_ok = false; };
+        w.interface.flush() catch { write_ok = false; };
+        f.close(io);
+        if (write_ok) {
+            atomicRenameAbsolute(tmp_path, baseline_path);
+            recorded = true;
+        }
+    }
+
+    return .{
+        .recorded = recorded,
+        .path = baseline_path,
+        .versions = versions,
+    };
+}
+
+pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const baseline_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/compat-baseline.json", .{home});
+    defer gpa.free(baseline_path);
+
+    const baseline_content: []u8 = blk: {
+        const f = std.Io.Dir.openFileAbsolute(io, baseline_path, .{}) catch {
+            const age = try gpa.dupe(u8, "none");
+            errdefer gpa.free(age);
+            const advice = try gpa.dupe(u8, "No baseline recorded. Run: foreman-tools compat-check --baseline");
+            errdefer gpa.free(advice);
+            const drifted = try gpa.alloc(DriftedTool, 0);
+            return .{ .ok = false, .baseline_age = age, .drifted = drifted, .advice = advice };
+        };
+        defer f.close(io);
+        var rbuf: [4096]u8 = undefined;
+        var r = f.reader(io, &rbuf);
+        break :blk try r.interface.allocRemaining(gpa, .limited(64 * 1024));
+    };
+    defer gpa.free(baseline_content);
+
+    const recorded_at = parseBaselineField(baseline_content, "recorded_at");
+    const baseline_age = try gpa.dupe(u8,
+        if (recorded_at.len >= 10) recorded_at[0..10]
+        else if (recorded_at.len > 0) recorded_at
+        else "unknown");
+    errdefer gpa.free(baseline_age);
+
+    var drifted_buf: [COMPAT_TOOLS.len]DriftedTool = undefined;
+    var drifted_count: usize = 0;
+    var has_high = false;
+
+    for (COMPAT_TOOLS) |tool| {
+        const was_str = parseBaselineField(baseline_content, tool);
+        if (was_str.len == 0) continue;
+
+        const now_str = try getToolVersionAlloc(gpa, io, tool);
+        if (std.mem.eql(u8, was_str, now_str)) {
+            gpa.free(now_str);
+            continue;
+        }
+
+        const risk = toolRisk(tool);
+        if (std.mem.eql(u8, risk, "high")) has_high = true;
+
+        drifted_buf[drifted_count] = .{
+            .tool     = try gpa.dupe(u8, tool),
+            .was      = try gpa.dupe(u8, was_str),
+            .now      = now_str,
+            .risk     = risk,
+            .rollback = try buildRollbackCmd(gpa, tool, was_str),
+        };
+        drifted_count += 1;
+    }
+
+    const drifted = try gpa.alloc(DriftedTool, drifted_count);
+    errdefer gpa.free(drifted);
+    for (drifted_buf[0..drifted_count], 0..) |d, i| drifted[i] = d;
+
+    const advice: []u8 = if (drifted_count == 0)
+        try gpa.dupe(u8, "")
+    else blk: {
+        const intro: []const u8 = if (has_high)
+            "STOP: High-risk tool drift detected. Roll back before proceeding:"
+        else
+            "Warning: Tool versions changed since baseline:";
+        var acc = try gpa.dupe(u8, intro);
+        for (drifted) |d| {
+            const piece = try std.fmt.allocPrint(gpa,
+                " {s} {s}->{s} ({s} risk): {s}.", .{ d.tool, d.was, d.now, d.risk, d.rollback });
+            const joined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ acc, piece });
+            gpa.free(piece);
+            gpa.free(acc);
+            acc = joined;
+        }
+        break :blk acc;
+    };
+
+    return .{
+        .ok           = drifted_count == 0,
+        .baseline_age = baseline_age,
+        .drifted      = drifted,
+        .advice       = advice,
+    };
 }
 
 // --- Tests ---
