@@ -51,6 +51,11 @@ A single binary with two subcommands. `status` runs on every session open — th
 - [x] Zig 0.16 (pinned in build.zig.zon)
 - [x] Distributed via the existing `homebrew-foreman` tap alongside `foreman-ai` — no separate tap
 - [x] macOS only for v1 (arm64 + amd64 universal binary)
+- [ ] M12: `scan` new fields are additive — existing callers that ignore unknown JSON fields are unaffected; no version flag needed
+- [ ] M12: file inventory capped at 500 files sorted largest-first — avoids huge output on monorepos; `fileCount` lets Claude know if the cap was hit
+- [ ] M12: kind classification rules — test: `*.test.*`, `*.spec.*`, `*_test.*`, `test_*`, files in `test/` or `tests/` dirs; config: existing KNOWN_CONFIG_FILES list; docs: `*.md`, `*.txt`, files in `docs/`; source: everything else
+- [ ] M12: entry point detection order — `main.go`, `cmd/*/main.go`, `index.js`, `index.ts`, `src/index.js`, `src/index.ts`, `src/main.*`, `app.py`, `main.py`, `bin/<repo-name>` (from repo dirname); first match wins, null if none found
+- [ ] M13: `diff-dirs` is structural only — compares paths and byte sizes, no file content; `same: bool` is derived from equal byte counts (not a real content hash)
 
 ---
 
@@ -78,3 +83,5 @@ A single binary with two subcommands. `status` runs on every session open — th
 | M9 — changes-preview subcommand | Incoming update summary in one call | `foreman-tools changes-preview <path>` returns `{"commits": [...], "filesChanged": N}`; `self-update` skill uses it instead of raw `git log` + `git diff --stat` |
 | M10 — scan subcommand | Project structure summary in one call | `foreman-tools scan <path>` returns `{"framework": "string", "keyFiles": [...], "depCount": N, "dirMap": [...]}`; `/absorb` and `/new-project` use it instead of manual filesystem browsing |
 | M11 — list-projects subcommand | GitHub Foreman project list in one call | `foreman-tools list-projects` returns `[{"name", "url", "isForeman": bool, "isLocal": bool}]`; `/restore-projects` uses it instead of `gh repo list` + per-repo API checks |
+| M12 — scan file inventory | Full repo map in one call; Claude reads which files to open instead of exploring | `foreman-tools scan <path>` gains three new fields (additive, non-breaking): `"entryPoint": string\|null` (detected main file — `main.go`, `index.js/ts`, `src/main.*`, `app.py`, `cmd/*/main.go`, `bin/<name>`); `"files": [{"path": string, "bytes": N, "kind": "source"\|"test"\|"config"\|"docs"\|"other"}]` (flat inventory, capped at 500 files, sorted largest-first); `"fileCount": N` (total before cap). `/absorb`, `/new-project`, and the `software-projects` skill use the file list to prioritize reads instead of running `find`/`ls` chains |
+| M13 — diff-dirs subcommand | Structural comparison of two directories in one call | `foreman-tools diff-dirs <path1> <path2>` returns `{"onlyInA": [string], "onlyInB": [string], "inBoth": [{"path": string, "bytesA": N, "bytesB": N, "same": bool}]}` where paths are relative and the same SCAN_SKIP_DIRS exclusions apply; used when Claude needs to compare two projects, a project against a template, or two branches of similar work |
