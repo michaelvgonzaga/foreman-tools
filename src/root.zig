@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const VERSION = "0.5.0";
+
 pub const StatusResult = struct {
     upToDate: bool,
     behindBy: u32,
@@ -255,6 +257,38 @@ pub fn computeReleaseInfo(gpa: std.mem.Allocator, io: std.Io, repo_path: []const
     };
 }
 
+// --- doctor subcommand ---
+
+pub const DoctorResult = struct {
+    claude: bool,
+    git: bool,
+    gh: bool,
+    version: []const u8, // owned by caller
+};
+
+fn toolAvailable(gpa: std.mem.Allocator, io: std.Io, name: []const u8) bool {
+    const result = std.process.run(gpa, io, .{
+        .argv = &.{ name, "--version" },
+    }) catch return false;
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    return switch (result.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+}
+
+pub fn computeDoctor(gpa: std.mem.Allocator, io: std.Io) !DoctorResult {
+    const version = try gpa.dupe(u8, VERSION);
+    errdefer gpa.free(version);
+    return .{
+        .claude = toolAvailable(gpa, io, "claude"),
+        .git = toolAvailable(gpa, io, "git"),
+        .gh = toolAvailable(gpa, io, "gh"),
+        .version = version,
+    };
+}
+
 // --- tag-exists subcommand ---
 
 pub const TagExistsResult = struct {
@@ -336,6 +370,14 @@ pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
 }
 
 // --- Tests ---
+
+test "DoctorResult fields" {
+    const r = DoctorResult{ .claude = true, .git = true, .gh = false, .version = VERSION };
+    try std.testing.expect(r.claude);
+    try std.testing.expect(r.git);
+    try std.testing.expect(!r.gh);
+    try std.testing.expectEqualStrings(VERSION, r.version);
+}
 
 test "fileExists: true for known path" {
     const io = std.testing.io;

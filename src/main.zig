@@ -17,6 +17,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 2) {
         try err.print("usage: foreman-tools <subcommand> [args]\n", .{});
         try err.print("subcommands:\n", .{});
+        try err.print("  doctor\n", .{});
         try err.print("  status <workspace-path>\n", .{});
         try err.print("  commits <repo-path> [since-tag]\n", .{});
         try err.print("  gh-user\n", .{});
@@ -27,7 +28,24 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
 
-    if (std.mem.eql(u8, args[1], "status")) {
+    if (std.mem.eql(u8, args[1], "doctor")) {
+        const result = try root.computeDoctor(gpa, io);
+        defer gpa.free(result.version);
+
+        const escaped_version = try root.allocJsonEscape(gpa, result.version);
+        defer gpa.free(escaped_version);
+
+        try out.print(
+            "{{\n  \"claude\": {s},\n  \"git\": {s},\n  \"gh\": {s},\n  \"version\": \"{s}\"\n}}\n",
+            .{
+                if (result.claude) "true" else "false",
+                if (result.git) "true" else "false",
+                if (result.gh) "true" else "false",
+                escaped_version,
+            },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "status")) {
         if (args.len < 3) {
             try err.print("usage: foreman-tools status <workspace-path>\n", .{});
             try err.flush();
