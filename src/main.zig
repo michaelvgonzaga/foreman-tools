@@ -25,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  repo-info <repo-path>\n", .{});
         try err.print("  tag-exists <repo-path> <tag>\n", .{});
         try err.print("  changes-preview <repo-path>\n", .{});
+        try err.print("  scan <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -237,6 +238,47 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.print("  ],\n  \"filesChanged\": {d}\n}}\n", .{result.filesChanged});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "scan")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools scan <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeScan(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.keyFiles) |f| gpa.free(f);
+            gpa.free(result.keyFiles);
+            for (result.dirMap) |d| gpa.free(d);
+            gpa.free(result.dirMap);
+        }
+
+        const escaped_fw = try root.allocJsonEscape(gpa, result.framework);
+        defer gpa.free(escaped_fw);
+
+        try out.print("{{\n  \"framework\": \"{s}\",\n  \"keyFiles\": [", .{escaped_fw});
+        for (result.keyFiles, 0..) |f, i| {
+            const escaped = try root.allocJsonEscape(gpa, f);
+            defer gpa.free(escaped);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{escaped});
+        }
+        try out.print("],\n  \"depCount\": {d},\n  \"dirMap\": [", .{result.depCount});
+        for (result.dirMap, 0..) |d, i| {
+            const escaped = try root.allocJsonEscape(gpa, d);
+            defer gpa.free(escaped);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{escaped});
+        }
+        try out.writeAll("]\n}\n");
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

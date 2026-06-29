@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.6.0";
+pub const VERSION = "0.7.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -418,6 +418,229 @@ pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
         }
     }
     return out.toOwnedSlice(gpa);
+}
+
+// --- scan subcommand ---
+
+pub const ScanResult = struct {
+    framework: []const u8, // static string literal — do not free
+    keyFiles: [][]u8,      // owned by caller
+    depCount: u32,
+    dirMap: [][]u8,        // owned by caller
+};
+
+const FRAMEWORK_INDICATORS = [_]struct { file: []const u8, fw: []const u8 }{
+    .{ .file = "package.json",    .fw = "Node.js" },
+    .{ .file = "go.mod",          .fw = "Go" },
+    .{ .file = "build.zig",       .fw = "Zig" },
+    .{ .file = "Cargo.toml",      .fw = "Rust" },
+    .{ .file = "pyproject.toml",  .fw = "Python" },
+    .{ .file = "requirements.txt",.fw = "Python" },
+    .{ .file = "setup.py",        .fw = "Python" },
+    .{ .file = "Gemfile",         .fw = "Ruby" },
+    .{ .file = "composer.json",   .fw = "PHP" },
+    .{ .file = "pom.xml",         .fw = "Java (Maven)" },
+    .{ .file = "build.gradle",    .fw = "Java (Gradle)" },
+    .{ .file = "pubspec.yaml",    .fw = "Flutter/Dart" },
+    .{ .file = "mix.exs",         .fw = "Elixir" },
+};
+
+const KNOWN_CONFIG_FILES = [_][]const u8{
+    "package.json", "package-lock.json", "yarn.lock",       "pnpm-lock.yaml",
+    "pyproject.toml", "requirements.txt", "setup.py",       "setup.cfg",
+    "go.mod", "go.sum",
+    "build.zig", "build.zig.zon",
+    "Cargo.toml", "Cargo.lock",
+    "Gemfile", "Gemfile.lock",
+    "composer.json", "composer.lock",
+    "pom.xml", "build.gradle", "build.gradle.kts",
+    "pubspec.yaml", "mix.exs",
+    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    ".env.example", ".env.sample",
+    "tsconfig.json", "jsconfig.json",
+    ".eslintrc.json", ".eslintrc.js",
+    ".prettierrc", ".prettierrc.json",
+    "Makefile", "justfile", "Taskfile.yml",
+    "netlify.toml", "vercel.json",
+};
+
+const SCAN_SKIP_DIRS = [_][]const u8{
+    "node_modules", ".git",    "vendor",  "__pycache__",
+    ".next",        "dist",    "target",  "zig-out",
+    ".zig-cache",   ".cache",  "coverage", ".venv",
+    "venv",         ".tox",    "tmp",     "temp",
+};
+
+fn shouldSkipScanDir(name: []const u8) bool {
+    for (SCAN_SKIP_DIRS) |s| if (std.mem.eql(u8, name, s)) return true;
+    return false;
+}
+
+fn readFileScan(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8) !?[]u8 {
+    const file = dir.openFile(io, name, .{}) catch return null;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    return try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+}
+
+fn countNodeDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) u32 {
+    const content = (readFileScan(gpa, io, dir, "package.json") catch return 0) orelse return 0;
+    defer gpa.free(content);
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch return 0;
+    defer parsed.deinit();
+    if (parsed.value != .object) return 0;
+    var count: u32 = 0;
+    for ([_][]const u8{ "dependencies", "devDependencies" }) |key| {
+        if (parsed.value.object.get(key)) |deps| {
+            if (deps == .object) count += @intCast(deps.object.count());
+        }
+    }
+    return count;
+}
+
+fn countReqsDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) u32 {
+    const content = (readFileScan(gpa, io, dir, "requirements.txt") catch return 0) orelse return 0;
+    defer gpa.free(content);
+    var count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (t.len == 0 or t[0] == '#') continue;
+        count += 1;
+    }
+    return count;
+}
+
+fn countGoDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) u32 {
+    const content = (readFileScan(gpa, io, dir, "go.mod") catch return 0) orelse return 0;
+    defer gpa.free(content);
+    var count: u32 = 0;
+    var in_require = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "require (")) { in_require = true; continue; }
+        if (in_require and std.mem.eql(u8, t, ")")) { in_require = false; continue; }
+        const dep: []const u8 = if (std.mem.startsWith(u8, t, "require ")) t["require ".len..] else if (in_require) t else continue;
+        const sp = std.mem.indexOfScalar(u8, dep, ' ') orelse dep.len;
+        const name = std.mem.trim(u8, dep[0..sp], " \t");
+        if (name.len > 0 and !std.mem.startsWith(u8, name, "//")) count += 1;
+    }
+    return count;
+}
+
+fn countCargoDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) u32 {
+    const content = (readFileScan(gpa, io, dir, "Cargo.toml") catch return 0) orelse return 0;
+    defer gpa.free(content);
+    var count: u32 = 0;
+    var in_deps = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.eql(u8, t, "[dependencies]") or std.mem.eql(u8, t, "[dev-dependencies]")) { in_deps = true; continue; }
+        if (t.len > 0 and t[0] == '[') { in_deps = false; continue; }
+        if (!in_deps or t.len == 0 or t[0] == '#') continue;
+        if (std.mem.indexOfScalar(u8, t, '=') != null) count += 1;
+    }
+    return count;
+}
+
+fn walkScanDirs(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rel_prefix: []const u8, depth: u8, dirs: *std.ArrayList([]u8)) !void {
+    if (depth >= 3) return;
+
+    var names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (names.items) |n| gpa.free(n);
+        names.deinit(gpa);
+    }
+
+    {
+        var it = dir.iterate();
+        while (try it.next(io)) |entry| {
+            if (entry.kind != .directory) continue;
+            if (shouldSkipScanDir(entry.name)) continue;
+            try names.append(gpa, try gpa.dupe(u8, entry.name));
+        }
+    }
+
+    for (names.items) |name| {
+        {
+            const rel_path: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, name });
+            errdefer gpa.free(rel_path);
+            try dirs.append(gpa, rel_path);
+        }
+        const stored = dirs.items[dirs.items.len - 1];
+        var sub = dir.openDir(io, name, .{ .iterate = true }) catch continue;
+        defer sub.close(io);
+        try walkScanDirs(gpa, io, sub, stored, depth + 1, dirs);
+    }
+}
+
+pub fn computeScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ScanResult {
+    var dir = try std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var framework: []const u8 = "unknown";
+
+    var key_files: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (key_files.items) |f| gpa.free(f);
+        key_files.deinit(gpa);
+    }
+
+    {
+        var it = dir.iterate();
+        while (try it.next(io)) |entry| {
+            if (entry.kind != .file) continue;
+            if (std.mem.eql(u8, framework, "unknown")) {
+                for (FRAMEWORK_INDICATORS) |ind| {
+                    if (std.mem.eql(u8, entry.name, ind.file)) { framework = ind.fw; break; }
+                }
+            }
+            for (KNOWN_CONFIG_FILES) |known| {
+                if (std.mem.eql(u8, entry.name, known)) {
+                    try key_files.append(gpa, try gpa.dupe(u8, entry.name));
+                    break;
+                }
+            }
+        }
+    }
+
+    const dep_count: u32 = if (std.mem.eql(u8, framework, "Node.js"))
+        countNodeDeps(gpa, io, dir)
+    else if (std.mem.eql(u8, framework, "Python"))
+        countReqsDeps(gpa, io, dir)
+    else if (std.mem.eql(u8, framework, "Go"))
+        countGoDeps(gpa, io, dir)
+    else if (std.mem.eql(u8, framework, "Rust"))
+        countCargoDeps(gpa, io, dir)
+    else
+        0;
+
+    var dir_list: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (dir_list.items) |d| gpa.free(d);
+        dir_list.deinit(gpa);
+    }
+
+    try walkScanDirs(gpa, io, dir, "", 0, &dir_list);
+
+    const owned_keys = try key_files.toOwnedSlice(gpa);
+    errdefer {
+        for (owned_keys) |f| gpa.free(f);
+        gpa.free(owned_keys);
+    }
+
+    return .{
+        .framework = framework,
+        .keyFiles = owned_keys,
+        .depCount = dep_count,
+        .dirMap = try dir_list.toOwnedSlice(gpa),
+    };
 }
 
 // --- Tests ---
