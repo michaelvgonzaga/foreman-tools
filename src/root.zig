@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.12.0";
+pub const VERSION = "0.13.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1167,6 +1167,182 @@ pub fn computeParseStack(gpa: std.mem.Allocator, input: []const u8) !ParseStackR
     return .{ .frames = try frames.toOwnedSlice(gpa) };
 }
 
+// --- git-diff ---
+
+pub const DiffFileStat = struct { path: []u8, additions: u32, deletions: u32, status: []const u8 };
+pub const GitDiffResult = struct {
+    ref: []const u8,
+    totalAdditions: u32,
+    totalDeletions: u32,
+    fileCount: u32,
+    files: []DiffFileStat,
+};
+
+// Parse one line of `git diff --numstat` output: "<add>\t<del>\tpath"
+fn parseNumstatLine(line: []const u8, gpa: std.mem.Allocator) !?DiffFileStat {
+    const t1 = std.mem.indexOfScalar(u8, line, '\t') orelse return null;
+    const rest = line[t1 + 1 ..];
+    const t2 = std.mem.indexOfScalar(u8, rest, '\t') orelse return null;
+    const add_str = std.mem.trim(u8, line[0..t1], " ");
+    const del_str = std.mem.trim(u8, rest[0..t2], " ");
+    const path = std.mem.trim(u8, rest[t2 + 1 ..], " \r\n");
+    if (path.len == 0) return null;
+    // binary files show "-" for add/del — treat as 0
+    const additions = std.fmt.parseInt(u32, add_str, 10) catch 0;
+    const deletions = std.fmt.parseInt(u32, del_str, 10) catch 0;
+    return .{
+        .path = try gpa.dupe(u8, path),
+        .additions = additions,
+        .deletions = deletions,
+        .status = "modified", // refined below from name-status
+    };
+}
+
+pub fn computeGitDiff(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    repo_path: []const u8,
+    ref: []const u8, // "" = unstaged, "staged" = --cached, else passed to git
+) !GitDiffResult {
+    // Build args for --numstat
+    var numstat_args: std.ArrayList([]const u8) = .empty;
+    defer numstat_args.deinit(gpa);
+    try numstat_args.append(gpa, "diff");
+    try numstat_args.append(gpa, "--numstat");
+    if (std.mem.eql(u8, ref, "staged")) {
+        try numstat_args.append(gpa, "--cached");
+    } else if (ref.len > 0) {
+        try numstat_args.append(gpa, ref);
+    }
+    const numstat_raw = runGit(gpa, io, repo_path, numstat_args.items) catch
+        return error.GitFailed;
+    defer gpa.free(numstat_raw);
+
+    // Build args for --name-status (to get A/M/D/R per file)
+    var ns_args: std.ArrayList([]const u8) = .empty;
+    defer ns_args.deinit(gpa);
+    try ns_args.append(gpa, "diff");
+    try ns_args.append(gpa, "--name-status");
+    if (std.mem.eql(u8, ref, "staged")) {
+        try ns_args.append(gpa, "--cached");
+    } else if (ref.len > 0) {
+        try ns_args.append(gpa, ref);
+    }
+    const ns_raw = runGit(gpa, io, repo_path, ns_args.items) catch null;
+    defer if (ns_raw) |r| gpa.free(r);
+
+    // Build a map of path → status from name-status output
+    var status_map = std.StringHashMap([]const u8).init(gpa);
+    defer status_map.deinit();
+    if (ns_raw) |ns| {
+        var lines = std.mem.splitScalar(u8, ns, '\n');
+        while (lines.next()) |line| {
+            const t = line;
+            if (t.len < 2) continue;
+            const tab = std.mem.indexOfScalar(u8, t, '\t') orelse continue;
+            const code = std.mem.trim(u8, t[0..tab], " ");
+            const path = std.mem.trim(u8, t[tab + 1 ..], " \r\n");
+            const status: []const u8 = if (code.len > 0) switch (code[0]) {
+                'A' => "added",
+                'D' => "deleted",
+                'R' => "renamed",
+                'C' => "copied",
+                else => "modified",
+            } else "modified";
+            try status_map.put(path, status);
+        }
+    }
+
+    // Parse numstat output
+    var files: std.ArrayList(DiffFileStat) = .empty;
+    errdefer {
+        for (files.items) |f| gpa.free(f.path);
+        files.deinit(gpa);
+    }
+    var total_add: u32 = 0;
+    var total_del: u32 = 0;
+    var lines = std.mem.splitScalar(u8, numstat_raw, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.trim(u8, line, " \r\n").len == 0) continue;
+        const stat = try parseNumstatLine(line, gpa) orelse continue;
+        total_add += stat.additions;
+        total_del += stat.deletions;
+        const resolved_status = status_map.get(stat.path) orelse stat.status;
+        try files.append(gpa, .{
+            .path = stat.path,
+            .additions = stat.additions,
+            .deletions = stat.deletions,
+            .status = resolved_status,
+        });
+    }
+
+    return .{
+        .ref = ref,
+        .totalAdditions = total_add,
+        .totalDeletions = total_del,
+        .fileCount = @intCast(files.items.len),
+        .files = try files.toOwnedSlice(gpa),
+    };
+}
+
+// --- list-dir ---
+
+pub const DirEntry = struct { name: []u8, kind: []const u8, bytes: u64 };
+pub const ListDirResult = struct { path: []const u8, count: u32, entries: []DirEntry };
+
+pub fn computeListDir(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) !ListDirResult {
+    var dir = std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }) catch
+        return error.PathNotFound;
+    defer dir.close(io);
+
+    var entries: std.ArrayList(DirEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| gpa.free(e.name);
+        entries.deinit(gpa);
+    }
+
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        const kind: []const u8 = switch (entry.kind) {
+            .directory => "dir",
+            .file      => "file",
+            .sym_link  => "symlink",
+            else       => "other",
+        };
+        const bytes: u64 = if (entry.kind == .file) blk: {
+            const f = dir.openFile(io, entry.name, .{}) catch break :blk 0;
+            defer f.close(io);
+            const st = f.stat(io) catch break :blk 0;
+            break :blk st.size;
+        } else 0;
+        try entries.append(gpa, .{
+            .name  = try gpa.dupe(u8, entry.name),
+            .kind  = kind,
+            .bytes = bytes,
+        });
+    }
+
+    // Sort alphabetically: dirs first, then files
+    std.mem.sort(DirEntry, entries.items, {}, struct {
+        fn lt(_: void, a: DirEntry, b: DirEntry) bool {
+            const a_dir = std.mem.eql(u8, a.kind, "dir");
+            const b_dir = std.mem.eql(u8, b.kind, "dir");
+            if (a_dir != b_dir) return a_dir;
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lt);
+
+    return .{
+        .path = path,
+        .count = @intCast(entries.items.len),
+        .entries = try entries.toOwnedSlice(gpa),
+    };
+}
+
 // --- json-query ---
 
 pub const JsonQueryResult = struct {
@@ -1557,6 +1733,41 @@ test "globMatch: *contains*" {
 test "globMatch: wildcard *" {
     try std.testing.expect(globMatch("*", "anything.txt"));
     try std.testing.expect(globMatch("*", ""));
+}
+
+test "parseNumstatLine: normal line" {
+    const stat = try parseNumstatLine("10\t5\tsrc/main.go", std.testing.allocator);
+    defer if (stat) |s| std.testing.allocator.free(s.path);
+    try std.testing.expect(stat != null);
+    try std.testing.expectEqual(@as(u32, 10), stat.?.additions);
+    try std.testing.expectEqual(@as(u32, 5), stat.?.deletions);
+    try std.testing.expectEqualStrings("src/main.go", stat.?.path);
+}
+
+test "parseNumstatLine: binary file (dashes)" {
+    const stat = try parseNumstatLine("-\t-\tassets/img.png", std.testing.allocator);
+    defer if (stat) |s| std.testing.allocator.free(s.path);
+    try std.testing.expect(stat != null);
+    try std.testing.expectEqual(@as(u32, 0), stat.?.additions);
+    try std.testing.expectEqual(@as(u32, 0), stat.?.deletions);
+}
+
+test "parseNumstatLine: empty line returns null" {
+    const stat = try parseNumstatLine("", std.testing.allocator);
+    try std.testing.expect(stat == null);
+}
+
+test "DirEntry fields" {
+    const e = DirEntry{ .name = @constCast("src"), .kind = "dir", .bytes = 0 };
+    try std.testing.expectEqualStrings("src", e.name);
+    try std.testing.expectEqualStrings("dir", e.kind);
+}
+
+test "GitDiffResult fields" {
+    const r = GitDiffResult{ .ref = "HEAD", .totalAdditions = 10, .totalDeletions = 5, .fileCount = 2, .files = &.{} };
+    try std.testing.expectEqualStrings("HEAD", r.ref);
+    try std.testing.expectEqual(@as(u32, 10), r.totalAdditions);
+    try std.testing.expectEqual(@as(u32, 2), r.fileCount);
 }
 
 test "jsonTypeName" {
