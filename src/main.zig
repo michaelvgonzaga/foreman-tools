@@ -37,6 +37,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  env-scan <root-path>\n", .{});
         try err.print("  toml-query <file-path> <dot-path>\n", .{});
         try err.print("  list-projects <foreman-root>\n", .{});
+        try err.print("  tarball-sha <owner> <repo> <tag>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -734,6 +735,34 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.writeAll("]\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "tarball-sha")) {
+        if (args.len < 5) {
+            try err.print("usage: foreman-tools tarball-sha <owner> <repo> <tag>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeTarballSha(gpa, io, args[2], args[3], args[4]) catch |e| {
+            switch (e) {
+                error.FetchFailed => try err.print("error: failed to fetch tarball (tag not yet available?)\n", .{}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.sha256);
+        defer gpa.free(result.url);
+
+        const escaped_sha = try root.allocJsonEscape(gpa, result.sha256);
+        defer gpa.free(escaped_sha);
+        const escaped_url = try root.allocJsonEscape(gpa, result.url);
+        defer gpa.free(escaped_url);
+
+        try out.print(
+            "{{\n  \"sha256\": \"{s}\",\n  \"url\": \"{s}\"\n}}\n",
+            .{ escaped_sha, escaped_url },
+        );
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

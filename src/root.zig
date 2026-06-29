@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.15.0";
+pub const VERSION = "0.16.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1822,6 +1822,64 @@ pub fn computeListProjects(gpa: std.mem.Allocator, io: std.Io, foreman_root: []c
     }
 
     return entries.toOwnedSlice(gpa);
+}
+
+// --- tarball-sha subcommand ---
+
+pub const TarballShaResult = struct {
+    sha256: []u8, // owned by caller, lowercase hex
+    url: []u8,    // owned by caller
+};
+
+const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb924" ++
+    "27ae41e4649b934ca495991b7852b855";
+
+fn sha256Hex(data: []const u8) [64]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(data);
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    hasher.final(&digest);
+    const hex_chars = "0123456789abcdef";
+    var out: [64]u8 = undefined;
+    for (digest, 0..) |b, i| {
+        out[i * 2] = hex_chars[b >> 4];
+        out[i * 2 + 1] = hex_chars[b & 0xf];
+    }
+    return out;
+}
+
+fn fetchUrl(gpa: std.mem.Allocator, io: std.Io, url: []const u8) ?[]u8 {
+    const result = std.process.run(gpa, io, .{
+        .argv = &.{ "curl", "-sL", "--fail", url },
+    }) catch return null;
+    defer gpa.free(result.stderr);
+    switch (result.term) {
+        .exited => |c| if (c != 0) { gpa.free(result.stdout); return null; },
+        else => { gpa.free(result.stdout); return null; },
+    }
+    return result.stdout;
+}
+
+pub fn computeTarballSha(gpa: std.mem.Allocator, io: std.Io, owner: []const u8, repo: []const u8, tag: []const u8) !TarballShaResult {
+    const url = try std.fmt.allocPrint(gpa, "https://github.com/{s}/{s}/archive/refs/tags/{s}.tar.gz", .{ owner, repo, tag });
+    errdefer gpa.free(url);
+
+    const data = fetchUrl(gpa, io, url) orelse return error.FetchFailed;
+    var hex = sha256Hex(data);
+    gpa.free(data);
+
+    if (std.mem.eql(u8, &hex, EMPTY_SHA256)) {
+        var ts = std.posix.timespec{ .sec = 10, .nsec = 0 };
+        _ = std.posix.system.nanosleep(&ts, null);
+        const data2 = fetchUrl(gpa, io, url) orelse return error.FetchFailed;
+        hex = sha256Hex(data2);
+        gpa.free(data2);
+    }
+
+    return .{
+        .sha256 = try gpa.dupe(u8, &hex),
+        .url = url,
+    };
 }
 
 // --- Tests ---
