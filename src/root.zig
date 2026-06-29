@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.13.0";
+pub const VERSION = "0.14.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -1508,6 +1508,232 @@ pub fn computeFindFiles(
     };
 }
 
+// --- file-stats ---
+
+pub const FileStatsResult = struct { path: []const u8, lines: u64, bytes: u64 };
+
+pub fn computeFileStats(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !FileStatsResult {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return error.FileNotFound;
+    defer file.close(io);
+    const bytes: u64 = blk: {
+        const st = file.stat(io) catch break :blk 0;
+        break :blk st.size;
+    };
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(100 * 1024 * 1024)) catch {
+        return .{ .path = path, .lines = 0, .bytes = bytes };
+    };
+    defer gpa.free(content);
+    var lines: u64 = 0;
+    for (content) |c| {
+        if (c == '\n') lines += 1;
+    }
+    if (content.len > 0 and content[content.len - 1] != '\n') lines += 1;
+    return .{ .path = path, .lines = lines, .bytes = bytes };
+}
+
+// --- env-scan ---
+
+pub const EnvFile = struct { file: []u8, keyCount: u32, keys: [][]u8 };
+pub const EnvScanResult = struct { root: []const u8, fileCount: u32, files: []EnvFile };
+
+fn parseEnvKeys(gpa: std.mem.Allocator, content: []const u8) ![][]u8 {
+    var keys: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (keys.items) |k| gpa.free(k);
+        keys.deinit(gpa);
+    }
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        // Strip optional "export " prefix
+        const stripped = if (std.mem.startsWith(u8, line, "export "))
+            std.mem.trimStart(u8, line["export ".len..], " \t")
+        else
+            line;
+        const eq = std.mem.indexOfScalar(u8, stripped, '=') orelse continue;
+        const key = std.mem.trim(u8, stripped[0..eq], " \t");
+        if (key.len == 0) continue;
+        // Validate key: must start with letter or underscore
+        if (key[0] != '_' and (key[0] < 'A' or key[0] > 'Z') and
+            (key[0] < 'a' or key[0] > 'z')) continue;
+        try keys.append(gpa, try gpa.dupe(u8, key));
+    }
+    return keys.toOwnedSlice(gpa);
+}
+
+pub fn computeEnvScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8) !EnvScanResult {
+    var dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch
+        return error.RootNotFound;
+    defer dir.close(io);
+
+    var env_files: std.ArrayList(EnvFile) = .empty;
+    errdefer {
+        for (env_files.items) |ef| {
+            gpa.free(ef.file);
+            for (ef.keys) |k| gpa.free(k);
+            gpa.free(ef.keys);
+        }
+        env_files.deinit(gpa);
+    }
+
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.startsWith(u8, entry.name, ".env")) continue;
+        const file = dir.openFile(io, entry.name, .{}) catch continue;
+        defer file.close(io);
+        var read_buf: [4096]u8 = undefined;
+        var r = file.reader(io, &read_buf);
+        const content = r.interface.allocRemaining(gpa, .limited(1024 * 1024)) catch continue;
+        defer gpa.free(content);
+        const keys = try parseEnvKeys(gpa, content);
+        try env_files.append(gpa, .{
+            .file = try gpa.dupe(u8, entry.name),
+            .keyCount = @intCast(keys.len),
+            .keys = keys,
+        });
+    }
+
+    // Sort by filename for deterministic output
+    std.mem.sort(EnvFile, env_files.items, {}, struct {
+        fn lt(_: void, a: EnvFile, b: EnvFile) bool {
+            return std.mem.lessThan(u8, a.file, b.file);
+        }
+    }.lt);
+
+    return .{
+        .root = root,
+        .fileCount = @intCast(env_files.items.len),
+        .files = try env_files.toOwnedSlice(gpa),
+    };
+}
+
+// --- toml-query ---
+
+const TOMLScalar = struct { type_name: []const u8, json: []u8 };
+
+fn parseTOMLScalar(gpa: std.mem.Allocator, raw: []const u8) !TOMLScalar {
+    if (raw.len == 0) return .{ .type_name = "null", .json = try gpa.dupe(u8, "null") };
+
+    // Double or single quoted string
+    if (raw[0] == '"' or raw[0] == '\'') {
+        const quote = raw[0];
+        // find closing quote (last occurrence to skip escaped chars naively)
+        const close = std.mem.lastIndexOfScalar(u8, raw[1..], quote) orelse {
+            return .{ .type_name = "string", .json = try gpa.dupe(u8, "\"\"") };
+        };
+        const inner = raw[1 .. 1 + close];
+        const escaped = try allocJsonEscape(gpa, inner);
+        defer gpa.free(escaped);
+        return .{ .type_name = "string", .json = try std.fmt.allocPrint(gpa, "\"{s}\"", .{escaped}) };
+    }
+
+    // Boolean
+    if (std.mem.eql(u8, raw, "true"))  return .{ .type_name = "bool", .json = try gpa.dupe(u8, "true") };
+    if (std.mem.eql(u8, raw, "false")) return .{ .type_name = "bool", .json = try gpa.dupe(u8, "false") };
+
+    // Array or inline table — return raw as-is (best effort)
+    if (raw[0] == '[') return .{ .type_name = "array",  .json = try gpa.dupe(u8, raw) };
+    if (raw[0] == '{') return .{ .type_name = "object", .json = try gpa.dupe(u8, raw) };
+
+    // Number — strip trailing inline comment first
+    var num = raw;
+    if (std.mem.indexOfScalar(u8, raw, '#')) |h| {
+        num = std.mem.trimEnd(u8, raw[0..h], " \t");
+    }
+    if (std.fmt.parseInt(i64, num, 10)) |_| {
+        return .{ .type_name = "number", .json = try gpa.dupe(u8, num) };
+    } else |_| {}
+    if (std.fmt.parseFloat(f64, num)) |_| {
+        return .{ .type_name = "number", .json = try gpa.dupe(u8, num) };
+    } else |_| {}
+
+    // Fallback: return as string
+    const escaped = try allocJsonEscape(gpa, raw);
+    defer gpa.free(escaped);
+    return .{ .type_name = "string", .json = try std.fmt.allocPrint(gpa, "\"{s}\"", .{escaped}) };
+}
+
+fn extractTOMLValue(gpa: std.mem.Allocator, content: []const u8, key_path: []const u8) !?TOMLScalar {
+    // Split path into section prefix + target key
+    var seg_buf: [16][]const u8 = undefined;
+    var seg_count: usize = 0;
+    var seg_it = std.mem.splitScalar(u8, key_path, '.');
+    while (seg_it.next()) |s| {
+        if (seg_count >= 16) break;
+        seg_buf[seg_count] = s;
+        seg_count += 1;
+    }
+    if (seg_count == 0) return null;
+    const target_key = seg_buf[seg_count - 1];
+    const section_path = seg_buf[0 .. seg_count - 1];
+
+    var cur_sec: [16][]const u8 = undefined;
+    var cur_depth: usize = 0; // starts at root (depth 0 = no section)
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        // Section header [name] but not array of tables [[name]]
+        if (line[0] == '[' and (line.len < 2 or line[1] != '[')) {
+            const close = std.mem.lastIndexOfScalar(u8, line, ']') orelse continue;
+            const sec_str = std.mem.trim(u8, line[1..close], " \t");
+            cur_depth = 0;
+            var parts = std.mem.splitScalar(u8, sec_str, '.');
+            while (parts.next()) |p| {
+                if (cur_depth >= 16) break;
+                cur_sec[cur_depth] = std.mem.trim(u8, p, " \t\"");
+                cur_depth += 1;
+            }
+            continue;
+        }
+
+        // Key = value
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t\"");
+        const val_raw = std.mem.trim(u8, line[eq + 1 ..], " \t");
+
+        // Check section match
+        if (cur_depth != section_path.len) continue;
+        var sec_match = true;
+        for (section_path, 0..) |s, i| {
+            if (!std.mem.eql(u8, cur_sec[i], s)) { sec_match = false; break; }
+        }
+        if (!sec_match) continue;
+
+        // Check key match
+        if (!std.mem.eql(u8, key, target_key)) continue;
+
+        return try parseTOMLScalar(gpa, val_raw);
+    }
+    return null;
+}
+
+pub fn computeTomlQuery(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    key_path: []const u8,
+) !JsonQueryResult {
+    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch return error.FileNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+    defer gpa.free(content);
+
+    const scalar = try extractTOMLValue(gpa, content, key_path);
+    if (scalar) |s| {
+        return .{ .path = key_path, .found = true, .type_name = s.type_name, .value_json = s.json };
+    }
+    return .{ .path = key_path, .found = false, .type_name = "null", .value_json = null };
+}
+
 // --- Tests ---
 
 test "DoctorResult fields" {
@@ -1783,5 +2009,86 @@ test "JsonQueryResult fields" {
     try std.testing.expectEqualStrings("version", r.path);
     try std.testing.expect(r.found);
     try std.testing.expectEqualStrings("string", r.type_name);
+}
+
+test "FileStatsResult fields" {
+    const r = FileStatsResult{ .path = "/tmp/foo.txt", .lines = 42, .bytes = 1024 };
+    try std.testing.expectEqual(@as(u64, 42), r.lines);
+    try std.testing.expectEqual(@as(u64, 1024), r.bytes);
+}
+
+test "parseEnvKeys: basic" {
+    const content = "# comment\nDB_URL=postgres://localhost/db\nAPI_KEY=secret\nexport PORT=3000\n\nNODE_ENV=production\n";
+    const keys = try parseEnvKeys(std.testing.allocator, content);
+    defer { for (keys) |k| std.testing.allocator.free(k); std.testing.allocator.free(keys); }
+    try std.testing.expectEqual(@as(usize, 4), keys.len);
+    try std.testing.expectEqualStrings("DB_URL", keys[0]);
+    try std.testing.expectEqualStrings("PORT", keys[2]);
+}
+
+test "parseEnvKeys: skips invalid keys" {
+    const content = "123INVALID=val\n_VALID=ok\nALSO_VALID=yes\n";
+    const keys = try parseEnvKeys(std.testing.allocator, content);
+    defer { for (keys) |k| std.testing.allocator.free(k); std.testing.allocator.free(keys); }
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+    try std.testing.expectEqualStrings("_VALID", keys[0]);
+}
+
+test "parseTOMLScalar: string" {
+    const s = try parseTOMLScalar(std.testing.allocator, "\"hello world\"");
+    defer std.testing.allocator.free(s.json);
+    try std.testing.expectEqualStrings("string", s.type_name);
+    try std.testing.expectEqualStrings("\"hello world\"", s.json);
+}
+
+test "parseTOMLScalar: integer" {
+    const s = try parseTOMLScalar(std.testing.allocator, "42");
+    defer std.testing.allocator.free(s.json);
+    try std.testing.expectEqualStrings("number", s.type_name);
+    try std.testing.expectEqualStrings("42", s.json);
+}
+
+test "parseTOMLScalar: bool" {
+    const t = try parseTOMLScalar(std.testing.allocator, "true");
+    defer std.testing.allocator.free(t.json);
+    try std.testing.expectEqualStrings("bool", t.type_name);
+    try std.testing.expectEqualStrings("true", t.json);
+}
+
+test "parseTOMLScalar: number with inline comment" {
+    const s = try parseTOMLScalar(std.testing.allocator, "99 # the count");
+    defer std.testing.allocator.free(s.json);
+    try std.testing.expectEqualStrings("number", s.type_name);
+    try std.testing.expectEqualStrings("99", s.json);
+}
+
+test "extractTOMLValue: top-level key" {
+    const toml = "name = \"my-app\"\nversion = \"1.2.3\"\n";
+    const s = try extractTOMLValue(std.testing.allocator, toml, "version");
+    defer if (s) |v| std.testing.allocator.free(v.json);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("\"1.2.3\"", s.?.json);
+}
+
+test "extractTOMLValue: section key" {
+    const toml = "[package]\nname = \"crate\"\nversion = \"0.1.0\"\n";
+    const s = try extractTOMLValue(std.testing.allocator, toml, "package.version");
+    defer if (s) |v| std.testing.allocator.free(v.json);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("\"0.1.0\"", s.?.json);
+}
+
+test "extractTOMLValue: nested dotted section" {
+    const toml = "[tool.poetry]\nversion = \"2.0.0\"\n";
+    const s = try extractTOMLValue(std.testing.allocator, toml, "tool.poetry.version");
+    defer if (s) |v| std.testing.allocator.free(v.json);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("\"2.0.0\"", s.?.json);
+}
+
+test "extractTOMLValue: missing key returns null" {
+    const toml = "[package]\nname = \"crate\"\n";
+    const s = try extractTOMLValue(std.testing.allocator, toml, "package.missing");
+    try std.testing.expect(s == null);
 }
 

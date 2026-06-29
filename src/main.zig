@@ -33,6 +33,9 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  json-query <file-path> <dot-path>\n", .{});
         try err.print("  git-diff <repo-path> [ref]\n", .{});
         try err.print("  list-dir <path>\n", .{});
+        try err.print("  file-stats <file-path>\n", .{});
+        try err.print("  env-scan <root-path>\n", .{});
+        try err.print("  toml-query <file-path> <dot-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -591,6 +594,108 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.writeAll("  ]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "file-stats")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools file-stats <file-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeFileStats(gpa, io, args[2]) catch {
+            try err.print("error: file not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+
+        const escaped_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(escaped_path);
+        try out.print(
+            "{{\n  \"path\": \"{s}\",\n  \"lines\": {d},\n  \"bytes\": {d}\n}}\n",
+            .{ escaped_path, result.lines, result.bytes },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "env-scan")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools env-scan <root-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeEnvScan(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.RootNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.files) |ef| {
+                gpa.free(ef.file);
+                for (ef.keys) |k| gpa.free(k);
+                gpa.free(ef.keys);
+            }
+            gpa.free(result.files);
+        }
+
+        const escaped_root = try root.allocJsonEscape(gpa, result.root);
+        defer gpa.free(escaped_root);
+
+        try out.print(
+            "{{\n  \"root\": \"{s}\",\n  \"fileCount\": {d},\n  \"files\": [\n",
+            .{ escaped_root, result.fileCount },
+        );
+        for (result.files, 0..) |ef, i| {
+            const escaped_file = try root.allocJsonEscape(gpa, ef.file);
+            defer gpa.free(escaped_file);
+            try out.print(
+                "    {{\"file\": \"{s}\", \"keyCount\": {d}, \"keys\": [",
+                .{ escaped_file, ef.keyCount },
+            );
+            for (ef.keys, 0..) |k, ki| {
+                const escaped_key = try root.allocJsonEscape(gpa, k);
+                defer gpa.free(escaped_key);
+                if (ki > 0) try out.writeAll(", ");
+                try out.print("\"{s}\"", .{escaped_key});
+            }
+            try out.writeAll("]}");
+            if (i + 1 < result.files.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "toml-query")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools toml-query <file-path> <dot-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeTomlQuery(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer if (result.value_json) |v| gpa.free(v);
+
+        const escaped_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(escaped_path);
+
+        if (result.found) {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"found\": true,\n  \"type\": \"{s}\",\n  \"value\": {s}\n}}\n",
+                .{ escaped_path, result.type_name, result.value_json.? },
+            );
+        } else {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"found\": false,\n  \"type\": null,\n  \"value\": null\n}}\n",
+                .{escaped_path},
+            );
+        }
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
