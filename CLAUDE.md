@@ -87,3 +87,7 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-28 | status reads already-fetched refs, does not git fetch | Latency: fetch adds 200-500ms on every session open; ref reads are instant |
 | 2026-06-28 | Added M4 gh-user, M5 release-info, M6 repo-info to spec | Audit of 14 command/skill files found these patterns repeated across 3–5 files each; one JSON read replaces 2–3 shell calls + Claude parsing |
 | 2026-06-28 | Added M7 tag-exists to spec | foreman-tools audit found `git tag \| grep "^v<version>$"` in both `/release` and `/brew-release` Step 2 pre-flight — candidate promoted per repetition rule |
+| 2026-06-28 | comptime StaticStringMap for FRAMEWORK_MAP, CONFIG_FILE_MAP, SKIP_DIR_SET (v0.9.0) | O(1) lookups at zero runtime cost; replaces O(n) linear scans that ran on every file entry during scan |
+| 2026-06-29 | grep subcommand uses literal string search, not regex (v0.10.0) | Covers the dominant Claude usage pattern (find a symbol/string); avoids pulling in a regex engine; can upgrade to regex in a future version |
+| 2026-06-29 | grep caps at 500 matches and skips files >5 MB (v0.10.0) | Prevents unbounded JSON output that would consume the token budget the subcommand is meant to save |
+| 2026-06-29 | parse-stack reads from stdin, not a file arg (v0.10.0) | Stack traces arrive inline in Claude's context, not as files on disk; stdin lets the caller pipe directly without writing a temp file |
