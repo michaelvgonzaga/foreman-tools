@@ -41,6 +41,11 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  formula-info <tap-path> <formula-name>\n", .{});
         try err.print("  validate-hooks\n", .{});
         try err.print("  gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
+        try err.print("  file-hash <file-path>\n", .{});
+        try err.print("  context-scan <path>\n", .{});
+        try err.print("  cache-check <file-path>\n", .{});
+        try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
+        try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -842,6 +847,210 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(esc_url);
 
         try out.print("{{\n  \"url\": \"{s}\"\n}}\n", .{esc_url});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "file-hash")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools file-hash <file-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeFileHash(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.path);
+        defer gpa.free(result.sha256);
+
+        const esc_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(esc_path);
+        const esc_sha = try root.allocJsonEscape(gpa, result.sha256);
+        defer gpa.free(esc_sha);
+
+        try out.print(
+            "{{\n  \"path\": \"{s}\",\n  \"sha256\": \"{s}\",\n  \"bytes\": {d}\n}}\n",
+            .{ esc_path, esc_sha, result.bytes },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-scan")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools context-scan <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeContextScan(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            if (result.entryPoint) |ep| gpa.free(ep);
+            for (result.topFiles) |f| gpa.free(f.path);
+            gpa.free(result.topFiles);
+            for (result.keyFiles) |f| gpa.free(f);
+            gpa.free(result.keyFiles);
+            for (result.dirs) |d| gpa.free(d);
+            gpa.free(result.dirs);
+        }
+
+        const esc_fw = try root.allocJsonEscape(gpa, result.framework);
+        defer gpa.free(esc_fw);
+
+        try out.print("{{\n  \"framework\": \"{s}\",\n", .{esc_fw});
+
+        if (result.entryPoint) |ep| {
+            const esc_ep = try root.allocJsonEscape(gpa, ep);
+            defer gpa.free(esc_ep);
+            try out.print("  \"entryPoint\": \"{s}\",\n", .{esc_ep});
+        } else {
+            try out.writeAll("  \"entryPoint\": null,\n");
+        }
+
+        try out.print(
+            "  \"fileCount\": {d},\n  \"summary\": {{\"source\": {d}, \"test\": {d}, \"config\": {d}, \"docs\": {d}, \"other\": {d}}},\n",
+            .{ result.fileCount, result.summary.source, result.summary.@"test", result.summary.config, result.summary.docs, result.summary.other },
+        );
+
+        try out.writeAll("  \"topFiles\": [\n");
+        for (result.topFiles, 0..) |f, i| {
+            const esc_p = try root.allocJsonEscape(gpa, f.path);
+            defer gpa.free(esc_p);
+            try out.print("    {{\"path\": \"{s}\", \"bytes\": {d}}}", .{ esc_p, f.bytes });
+            if (i + 1 < result.topFiles.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ],\n  \"keyFiles\": [");
+        for (result.keyFiles, 0..) |f, i| {
+            const esc = try root.allocJsonEscape(gpa, f);
+            defer gpa.free(esc);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{esc});
+        }
+        try out.writeAll("],\n  \"dirs\": [");
+        for (result.dirs, 0..) |d, i| {
+            const esc = try root.allocJsonEscape(gpa, d);
+            defer gpa.free(esc);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{esc});
+        }
+        try out.writeAll("]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "cache-check")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools cache-check <file-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeCacheCheck(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                error.NoHome       => try err.print("error: HOME environment variable not set\n", .{}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.path);
+        defer gpa.free(result.sha256);
+
+        const esc_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(esc_path);
+        const esc_sha = try root.allocJsonEscape(gpa, result.sha256);
+        defer gpa.free(esc_sha);
+
+        try out.print(
+            "{{\n  \"path\": \"{s}\",\n  \"sha256\": \"{s}\",\n  \"changed\": {s},\n  \"cached\": {s}\n}}\n",
+            .{
+                esc_path,
+                esc_sha,
+                if (result.changed) "true" else "false",
+                if (result.cached) "true" else "false",
+            },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "cache-store")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_rdr = std.Io.File.stdin().reader(io, &stdin_buf);
+        const value_json = stdin_rdr.interface.allocRemaining(gpa, .limited(512 * 1024)) catch |e| {
+            try err.print("error reading stdin: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(value_json);
+
+        const result = root.computeCacheStore(gpa, io, args[2], args[3], value_json) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                error.NoHome       => try err.print("error: HOME environment variable not set\n", .{}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.path);
+        defer gpa.free(result.subKey);
+
+        const esc_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(esc_path);
+        const esc_key = try root.allocJsonEscape(gpa, result.subKey);
+        defer gpa.free(esc_key);
+
+        try out.print(
+            "{{\n  \"path\": \"{s}\",\n  \"subKey\": \"{s}\",\n  \"stored\": {s}\n}}\n",
+            .{ esc_path, esc_key, if (result.stored) "true" else "false" },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "cache-fetch")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools cache-fetch <file-path> <sub-key>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeCacheFetch(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                error.NoHome       => try err.print("error: HOME environment variable not set\n", .{}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.path);
+        defer gpa.free(result.subKey);
+        defer if (result.value) |v| gpa.free(v);
+
+        const esc_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(esc_path);
+        const esc_key = try root.allocJsonEscape(gpa, result.subKey);
+        defer gpa.free(esc_key);
+
+        if (result.hit) {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"subKey\": \"{s}\",\n  \"hit\": true,\n  \"value\": {s}\n}}\n",
+                .{ esc_path, esc_key, result.value.? },
+            );
+        } else {
+            try out.print(
+                "{{\n  \"path\": \"{s}\",\n  \"subKey\": \"{s}\",\n  \"hit\": false,\n  \"value\": null\n}}\n",
+                .{ esc_path, esc_key },
+            );
+        }
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

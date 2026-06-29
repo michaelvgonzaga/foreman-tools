@@ -6,7 +6,7 @@ A native Zig CLI binary that offloads mechanical data-gathering from Claude's to
 
 ## Spec
 
-See `spec.md` for the full spec. Key facts:
+See `spec.md` for milestones and decisions. See `api-schema.md` for the locked JSON output contract — any field change requires a version bump. Key facts:
 
 - **Goal:** Replace Claude's inline shell reasoning with a native binary; Claude reads one JSON blob instead of parsing git/gh output token-by-token
 - **User:** Foreman command files running inside Claude Code sessions — never invoked directly by the user
@@ -105,3 +105,9 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | validate-hooks returns false on missing/malformed file, not an error (v0.18.0) | Callers (/setup-automation, /first-run) already handle the false case; erroring adds no new information and complicates caller logic |
 | 2026-06-29 | validate-hooks uses std.c.getenv for HOME (v0.18.0) | std.posix.getenv doesn't exist in Zig 0.16; std.c.getenv is the correct path for libc-backed targets |
 | 2026-06-29 | gh-release passes --notes-file to gh, not --notes (v0.19.0) | --notes requires shell escaping of newlines/quotes/backticks; --notes-file lets gh read content directly, eliminating the escaping problem entirely |
+| 2026-06-29 | api-schema.md locks all 24 subcommand output shapes | Schema drift is the highest-cost failure mode for downstream modules (Context Builder, Cache Engine); a single source of truth forces a version bump before any shape change |
+| 2026-06-29 | file-hash computes SHA256 of a local file (v0.20.0) | Reuses existing sha256Hex helper from tarball-sha; foundation for cache-engine M2 change detection; pure read, no persistent state yet |
+| 2026-06-29 | cache-check persists hash to ~/.cache/foreman-tools/ (v0.21.0) | First write operation in foreman-tools; uses std.Io.Dir.createDirAbsolute(.default_dir) + createFileAbsolute; write failures silently ignored so the result is always correct even if caching fails; one file per tracked path keyed by SHA256(file_path) |
+| 2026-06-29 | cache-store/cache-fetch keyed by SHA256(file_path + ":" + sub_key) (v0.22.0) | Cache entry format: "<sha256>\n<value>"; auto-invalidates on file change; std.mem.trimEnd (not trimRight) for trailing newline strip; value capped at 512KB |
+| 2026-06-29 | context-scan builds on computeScan, distills to top-10 + kind counts (v0.23.0) | Avoids duplicating scan logic; calls computeScan internally and frees the full result after extracting the compact summary |
+| 2026-06-29 | KindCounts.test field must be declared and accessed as @"test" in Zig 0.16 | `test` is a reserved keyword; `test: u32` in a struct body and `counts.test` in expressions both fail to parse — must use `@"test": u32` and `counts.@"test"` throughout |

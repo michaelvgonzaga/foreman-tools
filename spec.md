@@ -1,5 +1,7 @@
 # foreman-tools Spec
 
+See `api-schema.md` for the locked JSON output contract for all subcommands.
+
 ---
 
 **The real goal:** Replace Claude's inline token-expensive shell reasoning with a native binary that hands back a JSON blob — Claude reads, not reasons.
@@ -90,3 +92,7 @@ A single binary with two subcommands. `status` runs on every session open — th
 | M15 — formula-info subcommand | Homebrew formula fields in one call | `foreman-tools formula-info <tap-path> <formula-name>` reads the `.rb` file, parses `url`, `sha256`, `version` fields; returns `{"formulaPath": "string", "url": "string", "sha256": "string", "version": "string"}`; `/brew-release` uses it instead of manual Ruby file parsing |
 | M16 — validate-hooks subcommand | Claude Code Stop hooks check in one call | `foreman-tools validate-hooks` reads `~/.claude/settings.json`, checks that both Stop hooks (memory-sync + auto-push) exist by `statusMessage`; returns `{"memorySync": bool, "autoPush": bool}`; `/setup-automation` and `/first-run` use it instead of `jq` traversal |
 | M17 — gh-release subcommand | GitHub release creation without shell escaping | `foreman-tools gh-release <owner> <repo> <tag> <title> <notes-file>` reads release notes from a file (avoiding heredoc/quote escaping), calls `gh release create`; returns `{"url": "string"}`; `/release` and `/brew-release` use it instead of inline `gh release create --notes "..."` |
+| M18 — file-hash subcommand | SHA256 of any file in one call | `foreman-tools file-hash <file-path>` returns `{"path": "string", "sha256": "string", "bytes": N}`; foundation for cache-engine change detection — callers store hashes and compare on subsequent calls to skip unchanged reads |
+| M19 — cache-check subcommand | Persistent change detection in one call | `foreman-tools cache-check <file-path>` returns `{"path": "string", "sha256": "string", "changed": bool, "cached": bool}`; persists hash to `~/.cache/foreman-tools/<sha256-of-path>`; `changed: false` means file is identical to last check — caller can skip the read |
+| M20 — cache-store/cache-fetch subcommands | Store and retrieve arbitrary JSON values keyed to a file's content hash | `cache-store <file-path> <sub-key>` (value via stdin) persists `sha256+value`; `cache-fetch <file-path> <sub-key>` returns `{"hit": bool, "value": <raw json>}`; `hit: true` = file unchanged + value cached; auto-invalidates when file changes |
+| M21 — context-scan subcommand (Context Builder M12 M1) | Compact project summary in one call; replaces full `scan` for context-loading | `foreman-tools context-scan <path>` returns `{"framework", "entryPoint", "fileCount", "summary": {source/test/config/docs/other counts}, "topFiles": [{path, bytes}] (top 10), "keyFiles", "dirs"}`; Claude reads this instead of `scan` when it only needs structure, not the full file inventory |

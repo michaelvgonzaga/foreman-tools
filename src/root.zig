@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.19.0";
+pub const VERSION = "0.23.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -2054,6 +2054,269 @@ pub fn computeGhRelease(
     const url = try gpa.dupe(u8, trimmed);
     gpa.free(result.stdout);
     return .{ .url = url };
+}
+
+// --- file-hash subcommand ---
+
+pub const FileHashResult = struct {
+    path: []u8,   // owned by caller
+    sha256: []u8, // owned by caller, lowercase hex
+    bytes: u64,
+};
+
+pub fn computeFileHash(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8) !FileHashResult {
+    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch return error.FileNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(500 * 1024 * 1024));
+    defer gpa.free(content);
+    const hex = sha256Hex(content);
+    return .{
+        .path = try gpa.dupe(u8, file_path),
+        .sha256 = try gpa.dupe(u8, &hex),
+        .bytes = @intCast(content.len),
+    };
+}
+
+// --- cache-check subcommand ---
+
+pub const CacheCheckResult = struct {
+    path: []u8,   // owned by caller
+    sha256: []u8, // owned by caller, lowercase hex
+    changed: bool,
+    cached: bool,
+};
+
+// Cache store: one file per tracked path, keyed by SHA256(file_path).
+// Location: ~/.cache/foreman-tools/<sha256-of-path> contains the last known content sha256.
+// Write failures are silently ignored — the result is still correct, just not cached.
+pub fn computeCacheCheck(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8) !CacheCheckResult {
+    // Hash the file contents
+    const fh = try computeFileHash(gpa, io, file_path);
+    defer gpa.free(fh.path);
+    const new_sha = fh.sha256; // caller takes ownership via result
+    errdefer gpa.free(new_sha);
+
+    // Build cache entry path: ~/.cache/foreman-tools/<sha256-of-path>
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const path_key = sha256Hex(file_path);
+    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    defer gpa.free(cache_dir);
+    const entry_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ cache_dir, &path_key });
+    defer gpa.free(entry_path);
+
+    // Read stored hash (if any)
+    var old_sha: ?[]u8 = null;
+    defer if (old_sha) |s| gpa.free(s);
+    if (std.Io.Dir.openFileAbsolute(io, entry_path, .{})) |cf| {
+        var rbuf: [4096]u8 = undefined;
+        var rdr = cf.reader(io, &rbuf);
+        if (rdr.interface.allocRemaining(gpa, .limited(128))) |content| {
+            const trimmed = std.mem.trim(u8, content, " \t\n\r");
+            if (trimmed.len == 64) old_sha = gpa.dupe(u8, trimmed) catch null;
+            gpa.free(content);
+        } else |_| {}
+        cf.close(io);
+    } else |_| {}
+
+    const was_cached = old_sha != null;
+    const changed = if (old_sha) |s| !std.mem.eql(u8, s, new_sha) else true;
+
+    // Write new hash (best effort — ignore failures)
+    writeCacheEntry(io, cache_dir, entry_path, new_sha);
+
+    return .{
+        .path = try gpa.dupe(u8, file_path),
+        .sha256 = new_sha,
+        .changed = changed,
+        .cached = was_cached,
+    };
+}
+
+fn writeCacheEntry(io: std.Io, cache_dir: []const u8, entry_path: []const u8, sha: []const u8) void {
+    std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch {};
+    const cf = std.Io.Dir.createFileAbsolute(io, entry_path, .{}) catch return;
+    defer cf.close(io);
+    var wbuf: [128]u8 = undefined;
+    var w = cf.writerStreaming(io, &wbuf);
+    w.interface.writeAll(sha) catch return;
+    w.interface.flush() catch {};
+}
+
+// --- context-scan subcommand ---
+
+pub const KindCounts = struct {
+    source: u32,
+    @"test": u32,
+    config: u32,
+    docs: u32,
+    other: u32,
+};
+
+pub const ContextScanResult = struct {
+    framework: []const u8, // static string literal — do not free
+    entryPoint: ?[]u8,     // owned by caller
+    fileCount: u32,
+    summary: KindCounts,
+    topFiles: []FileEntry, // owned by caller (paths owned); top 10 by bytes
+    keyFiles: [][]u8,      // owned by caller
+    dirs: [][]u8,          // owned by caller
+};
+
+const CONTEXT_TOP_FILES: usize = 10;
+
+pub fn computeContextScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ContextScanResult {
+    const scan = try computeScan(gpa, io, path);
+    defer {
+        for (scan.keyFiles) |f| gpa.free(f);
+        gpa.free(scan.keyFiles);
+        for (scan.dirMap) |d| gpa.free(d);
+        gpa.free(scan.dirMap);
+        if (scan.entryPoint) |ep| gpa.free(ep);
+        for (scan.files) |f| gpa.free(f.path);
+        gpa.free(scan.files);
+    }
+
+    // Count files by kind
+    var counts = KindCounts{ .source = 0, .@"test" = 0, .config = 0, .docs = 0, .other = 0 };
+    for (scan.files) |f| {
+        if (std.mem.eql(u8, f.kind, "source"))      counts.source += 1
+        else if (std.mem.eql(u8, f.kind, "test"))   counts.@"test" += 1
+        else if (std.mem.eql(u8, f.kind, "config")) counts.config += 1
+        else if (std.mem.eql(u8, f.kind, "docs"))   counts.docs += 1
+        else                                         counts.other += 1;
+    }
+
+    // Top N files (scan.files is already sorted largest-first)
+    const top_n = @min(CONTEXT_TOP_FILES, scan.files.len);
+    const top_files = try gpa.alloc(FileEntry, top_n);
+    for (0..top_n) |i| {
+        top_files[i] = .{
+            .path = try gpa.dupe(u8, scan.files[i].path),
+            .bytes = scan.files[i].bytes,
+            .kind = scan.files[i].kind,
+        };
+    }
+
+    // Dupe keyFiles and dirMap
+    const key_files = try gpa.alloc([]u8, scan.keyFiles.len);
+    for (scan.keyFiles, 0..) |f, i| key_files[i] = try gpa.dupe(u8, f);
+
+    const dirs = try gpa.alloc([]u8, scan.dirMap.len);
+    for (scan.dirMap, 0..) |d, i| dirs[i] = try gpa.dupe(u8, d);
+
+    return .{
+        .framework  = scan.framework,
+        .entryPoint = if (scan.entryPoint) |ep| try gpa.dupe(u8, ep) else null,
+        .fileCount  = scan.fileCount,
+        .summary    = counts,
+        .topFiles   = top_files,
+        .keyFiles   = key_files,
+        .dirs       = dirs,
+    };
+}
+
+// --- cache-store / cache-fetch subcommands ---
+
+pub const CacheStoreResult = struct {
+    path: []u8,   // owned by caller
+    subKey: []u8, // owned by caller
+    stored: bool,
+};
+
+pub const CacheFetchResult = struct {
+    path: []u8,   // owned by caller
+    subKey: []u8, // owned by caller
+    hit: bool,
+    value: ?[]u8, // owned by caller; present only when hit: true
+};
+
+// Cache entry format: "<sha256-of-file-content>\n<value-json>"
+// Stored at: ~/.cache/foreman-tools/<sha256(file_path + ":" + sub_key)>
+// When the file's content hash no longer matches the stored hash, fetch returns hit: false.
+
+fn cacheEntryPath(gpa: std.mem.Allocator, home: []const u8, file_path: []const u8, sub_key: []const u8) ![]u8 {
+    const combined = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ file_path, sub_key });
+    defer gpa.free(combined);
+    const key_hex = sha256Hex(combined);
+    return std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools/{s}", .{ home, &key_hex });
+}
+
+pub fn computeCacheStore(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8, sub_key: []const u8, value_json: []const u8) !CacheStoreResult {
+    const fh = try computeFileHash(gpa, io, file_path);
+    defer gpa.free(fh.path);
+    defer gpa.free(fh.sha256);
+
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    defer gpa.free(cache_dir);
+    const entry_path = try cacheEntryPath(gpa, home, file_path, sub_key);
+    defer gpa.free(entry_path);
+
+    std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch {};
+    const cf = std.Io.Dir.createFileAbsolute(io, entry_path, .{}) catch {
+        return .{
+            .path = try gpa.dupe(u8, file_path),
+            .subKey = try gpa.dupe(u8, sub_key),
+            .stored = false,
+        };
+    };
+    defer cf.close(io);
+    var wbuf: [4096]u8 = undefined;
+    var w = cf.writerStreaming(io, &wbuf);
+    w.interface.writeAll(fh.sha256) catch {
+        return .{ .path = try gpa.dupe(u8, file_path), .subKey = try gpa.dupe(u8, sub_key), .stored = false };
+    };
+    w.interface.writeAll("\n") catch {};
+    w.interface.writeAll(value_json) catch {};
+    w.interface.flush() catch {};
+
+    return .{
+        .path = try gpa.dupe(u8, file_path),
+        .subKey = try gpa.dupe(u8, sub_key),
+        .stored = true,
+    };
+}
+
+pub fn computeCacheFetch(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8, sub_key: []const u8) !CacheFetchResult {
+    const fh = try computeFileHash(gpa, io, file_path);
+    defer gpa.free(fh.path);
+    const new_sha = fh.sha256;
+    defer gpa.free(new_sha);
+
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const entry_path = try cacheEntryPath(gpa, home, file_path, sub_key);
+    defer gpa.free(entry_path);
+
+    const miss = CacheFetchResult{
+        .path = try gpa.dupe(u8, file_path),
+        .subKey = try gpa.dupe(u8, sub_key),
+        .hit = false,
+        .value = null,
+    };
+
+    const cf = std.Io.Dir.openFileAbsolute(io, entry_path, .{}) catch return miss;
+    defer cf.close(io);
+    var rbuf: [4096]u8 = undefined;
+    var r = cf.reader(io, &rbuf);
+    const content = r.interface.allocRemaining(gpa, .limited(512 * 1024)) catch return miss;
+    defer gpa.free(content);
+
+    const nl = std.mem.indexOfScalar(u8, content, '\n') orelse return miss;
+    const stored_hash = content[0..nl];
+    const stored_value = std.mem.trimEnd(u8, content[nl + 1 ..], " \t\n\r");
+    if (!std.mem.eql(u8, stored_hash, new_sha)) return miss;
+
+    return .{
+        .path = try gpa.dupe(u8, file_path),
+        .subKey = try gpa.dupe(u8, sub_key),
+        .hit = true,
+        .value = try gpa.dupe(u8, stored_value),
+    };
 }
 
 // --- Tests ---
