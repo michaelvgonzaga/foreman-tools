@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.46.0";
+pub const VERSION = "0.47.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6974,6 +6974,131 @@ pub fn computeRoute(gpa: std.mem.Allocator, task: []const u8) !RouteResult {
         .steps    = steps,
         .fallback = "",
         .reason   = "",
+    };
+}
+
+// --- report ---
+
+pub const ReportIssue = struct { source: []const u8, message: []const u8, severity: []const u8 };
+
+pub const ReportResult = struct {
+    path: []const u8,
+    status: []const u8,          // "clean" | "issues" | "blocked"
+    confidence: []const u8,      // "high" | "medium" | "low"
+    git_branch: []const u8,
+    git_dirty: bool,
+    build_ok: bool,
+    tests_ok: bool,
+    secrets_found: bool,
+    issues: []ReportIssue,
+    next_action: []const u8,
+};
+
+pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ReportResult {
+    var issues: std.ArrayList(ReportIssue) = .empty;
+
+    // Git state
+    const git_opt: ?GitCacheResult = blk: {
+        const r = computeGitCache(gpa, io, path) catch { break :blk null; };
+        break :blk r;
+    };
+    const git_branch = if (git_opt) |g| g.branch else "";
+    const git_dirty  = if (git_opt) |g| g.dirty  else false;
+
+    // Build + tests via quality-gate
+    const qg_opt: ?QualityGateResult = blk: {
+        const r = computeQualityGate(gpa, io, path) catch { break :blk null; };
+        break :blk r;
+    };
+    const build_ok = if (qg_opt) |q| blk2: {
+        if (!q.build_ran) break :blk2 true; // no build system → treat as ok
+        break :blk2 q.critical.len == 0 and q.high.len == 0;
+    } else true;
+    const tests_ok = if (qg_opt) |q| blk2: {
+        if (!q.tests_ran) break :blk2 true; // no test framework → treat as ok
+        break :blk2 q.tests_failed == 0;
+    } else true;
+
+    if (qg_opt) |q| {
+        for (q.critical) |f| {
+            if (issues.items.len >= 20) break;
+            try issues.append(gpa, .{
+                .source   = try gpa.dupe(u8, f.source),
+                .message  = try gpa.dupe(u8, f.message),
+                .severity = "critical",
+            });
+        }
+        for (q.high) |f| {
+            if (issues.items.len >= 20) break;
+            try issues.append(gpa, .{
+                .source   = try gpa.dupe(u8, f.source),
+                .message  = try gpa.dupe(u8, f.message),
+                .severity = "high",
+            });
+        }
+        for (q.medium) |f| {
+            if (issues.items.len >= 20) break;
+            try issues.append(gpa, .{
+                .source   = try gpa.dupe(u8, f.source),
+                .message  = try gpa.dupe(u8, f.message),
+                .severity = "medium",
+            });
+        }
+    }
+
+    // Secrets
+    const sec_opt: ?SecretScanResult = blk: {
+        const r = computeSecretScan(gpa, io, path) catch { break :blk null; };
+        break :blk r;
+    };
+    const secrets_found = if (sec_opt) |s| s.findings.len > 0 else false;
+    if (sec_opt) |s| {
+        if (s.findings.len > 0 and issues.items.len < 20) {
+            const msg = try std.fmt.allocPrint(gpa, "{d} hardcoded secret(s) found", .{s.findings.len});
+            try issues.append(gpa, .{ .source = "secret-scan", .message = msg, .severity = "critical" });
+        }
+    }
+
+    // Derive status + confidence
+    var has_critical = secrets_found;
+    var has_high = false;
+    if (!build_ok) { has_critical = true; }
+    if (!tests_ok) { has_high = true; }
+    for (issues.items) |iss| {
+        if (std.mem.eql(u8, iss.severity, "critical")) has_critical = true;
+        if (std.mem.eql(u8, iss.severity, "high"))     has_high = true;
+    }
+    const status: []const u8 = if (has_critical) "blocked"
+        else if (has_high or issues.items.len > 0) "issues"
+        else "clean";
+
+    const confidence: []const u8 = if (qg_opt != null) "high"
+        else if (git_opt != null) "medium"
+        else "low";
+
+    // Next action
+    const next_action: []const u8 = if (has_critical)
+        "fix critical issues before proceeding"
+    else if (has_high)
+        "fix high-severity issues, then re-run /quality-gate"
+    else if (git_dirty)
+        "commit or stash uncommitted changes"
+    else if (issues.items.len > 0)
+        "review medium findings, then run /prod-ready"
+    else
+        "run /prod-ready before deploying";
+
+    return .{
+        .path          = try gpa.dupe(u8, path),
+        .status        = status,
+        .confidence    = confidence,
+        .git_branch    = if (git_branch.len > 0) try gpa.dupe(u8, git_branch) else "",
+        .git_dirty     = git_dirty,
+        .build_ok      = build_ok,
+        .tests_ok      = tests_ok,
+        .secrets_found = secrets_found,
+        .issues        = try issues.toOwnedSlice(gpa),
+        .next_action   = next_action,
     };
 }
 

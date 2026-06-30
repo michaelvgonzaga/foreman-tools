@@ -70,6 +70,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  registry\n", .{});
         try err.print("  capability-check <query...>\n", .{});
         try err.print("  route <task...>\n", .{});
+        try err.print("  report <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1916,6 +1917,38 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.known_patterns.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"lastBuildResult\": null,\n  \"lastTestResult\": null\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "report")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools report <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const result = try root.computeReport(gpa, io, args[2]);
+        const path_esc = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(path_esc);
+        const branch_esc = try root.allocJsonEscape(gpa, result.git_branch);
+        defer gpa.free(branch_esc);
+        const action_esc = try root.allocJsonEscape(gpa, result.next_action);
+        defer gpa.free(action_esc);
+        try out.print(
+            "{{\n  \"path\": \"{s}\",\n  \"status\": \"{s}\",\n  \"confidence\": \"{s}\",\n  \"gitBranch\": \"{s}\",\n  \"gitDirty\": {s},\n  \"buildOk\": {s},\n  \"testsOk\": {s},\n  \"secretsFound\": {s},\n  \"issues\": [",
+            .{ path_esc, result.status, result.confidence, branch_esc,
+               if (result.git_dirty) "true" else "false",
+               if (result.build_ok) "true" else "false",
+               if (result.tests_ok) "true" else "false",
+               if (result.secrets_found) "true" else "false" },
+        );
+        for (result.issues, 0..) |iss, i| {
+            const comma: []const u8 = if (i + 1 < result.issues.len) "," else "";
+            const src_esc = try root.allocJsonEscape(gpa, iss.source);
+            defer gpa.free(src_esc);
+            const msg_esc = try root.allocJsonEscape(gpa, iss.message);
+            defer gpa.free(msg_esc);
+            try out.print("\n    {{\"source\": \"{s}\", \"severity\": \"{s}\", \"message\": \"{s}\"}}{s}", .{ src_esc, iss.severity, msg_esc, comma });
+        }
+        if (result.issues.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"nextAction\": \"{s}\"\n}}\n", .{action_esc});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "route")) {
         if (args.len < 3) {

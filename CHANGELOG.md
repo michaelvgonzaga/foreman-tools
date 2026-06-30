@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.47.0] — 2026-06-30
+
+### New
+- `report <path>` — composite project status report; runs git-cache + quality-gate + secret-scan in sequence; returns `{ path, status, confidence, gitBranch, gitDirty, buildOk, testsOk, secretsFound, issues: [{source, severity, message}], nextAction }`; status: "clean" / "issues" / "blocked"; confidence: "high" (quality-gate ran) / "medium" (git-cache only) / "low" (nothing ran); nextAction: prescribed string based on issue severity; issues capped at 20; each sub-call fault-tolerant; foundation for Module 23 (Reporting Layer)
+
 ## [0.46.0] — 2026-06-30
 
 ### New
