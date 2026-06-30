@@ -64,6 +64,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  project-state <path> [record-decision <what> [<why>]]\n", .{});
         try err.print("  project-state <path> [record-pattern <pattern>]\n", .{});
         try err.print("  shell-run [--timeout <ms>] <shell-command>\n", .{});
+        try err.print("  quality-gate <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1703,6 +1704,43 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.commits.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "quality-gate")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools quality-gate <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const result = try root.computeQualityGate(gpa, io, args[2]);
+        // Helper to print a findings array
+        try out.print("{{\n  \"verdict\": \"{s}\",\n", .{result.verdict});
+        const levels = [_]struct { name: []const u8, items: []const root.QualityFinding }{
+            .{ .name = "critical", .items = result.critical },
+            .{ .name = "high",     .items = result.high     },
+            .{ .name = "medium",   .items = result.medium   },
+            .{ .name = "low",      .items = result.low      },
+        };
+        for (levels) |level| {
+            try out.print("  \"{s}\": [", .{level.name});
+            for (level.items, 0..) |f, i| {
+                if (i > 0) try out.print(",", .{});
+                const msg_esc = try root.allocJsonEscape(gpa, f.message);
+                defer gpa.free(msg_esc);
+                const file_esc = try root.allocJsonEscape(gpa, f.file);
+                defer gpa.free(file_esc);
+                try out.print("\n    {{\"source\": \"{s}\", \"file\": \"{s}\", \"line\": {d}, \"message\": \"{s}\"}}", .{
+                    f.source, file_esc, f.line, msg_esc,
+                });
+            }
+            if (level.items.len > 0) try out.print("\n  ", .{});
+            try out.print("],\n", .{});
+        }
+        try out.print("  \"buildRan\": {s},\n  \"buildTool\": \"{s}\",\n  \"testsRan\": {s},\n  \"testFramework\": \"{s}\",\n  \"testsPassed\": {d},\n  \"testsFailed\": {d}\n}}\n",
+            .{
+                if (result.build_ran) "true" else "false", result.build_tool,
+                if (result.tests_ran) "true" else "false", result.test_fw,
+                result.tests_passed, result.tests_failed,
+            });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "shell-run")) {
         var timeout_ms: u64 = 30_000;

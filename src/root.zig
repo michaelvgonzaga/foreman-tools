@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.40.0";
+pub const VERSION = "0.41.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5880,6 +5880,136 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
         .ahead   = ahead,
         .behind  = behind,
         .commits = try commits.toOwnedSlice(gpa),
+    };
+}
+
+// --- quality-gate ---
+
+const QUALITY_GATE_MAX_PER_LEVEL: usize = 50;
+
+pub const QualityFinding = struct {
+    source:  []const u8,
+    file:    []const u8,
+    line:    u32,
+    message: []const u8,
+};
+
+pub const QualityGateResult = struct {
+    verdict:      []const u8, // "pass" or "fail"
+    critical:     []QualityFinding,
+    high:         []QualityFinding,
+    medium:       []QualityFinding,
+    low:          []QualityFinding,
+    build_ran:    bool,
+    build_tool:   []const u8,
+    tests_ran:    bool,
+    test_fw:      []const u8,
+    tests_passed: u32,
+    tests_failed: u32,
+};
+
+pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !QualityGateResult {
+    var critical: std.ArrayList(QualityFinding) = .empty;
+    var high:     std.ArrayList(QualityFinding) = .empty;
+    var medium:   std.ArrayList(QualityFinding) = .empty;
+    var low:      std.ArrayList(QualityFinding) = .empty;
+
+    var build_ran  = false;
+    var build_tool: []const u8 = "";
+    var tests_ran  = false;
+    var test_fw:    []const u8 = "";
+    var tests_passed: u32 = 0;
+    var tests_failed: u32 = 0;
+
+    // Build phase
+    const build_opt: ?BuildResult = blk: {
+        const r = computeBuild(gpa, io, path) catch |e| switch (e) {
+            error.NoBuildSystem => break :blk null,
+            else => return e,
+        };
+        break :blk r;
+    };
+    if (build_opt) |br| {
+        build_ran  = true;
+        build_tool = br.tool;
+        if (!br.success) {
+            if (br.errors.len > 0) {
+                for (br.errors) |berr| {
+                    if (high.items.len >= QUALITY_GATE_MAX_PER_LEVEL) break;
+                    try high.append(gpa, .{
+                        .source  = "build",
+                        .file    = berr.file,
+                        .line    = berr.line,
+                        .message = berr.message,
+                    });
+                }
+            } else {
+                try critical.append(gpa, .{
+                    .source  = "build",
+                    .file    = "",
+                    .line    = 0,
+                    .message = try std.fmt.allocPrint(gpa, "build failed: {s} exited non-zero", .{br.tool}),
+                });
+            }
+        }
+        for (br.warnings) |bw| {
+            if (medium.items.len >= QUALITY_GATE_MAX_PER_LEVEL) break;
+            try medium.append(gpa, .{
+                .source  = "build",
+                .file    = bw.file,
+                .line    = bw.line,
+                .message = bw.message,
+            });
+        }
+    }
+
+    // Test phase
+    const tests_opt: ?RunTestsResult = blk: {
+        const r = computeRunTests(gpa, io, path) catch |e| switch (e) {
+            error.NoTestFramework => break :blk null,
+            else => return e,
+        };
+        break :blk r;
+    };
+    if (tests_opt) |tr| {
+        tests_ran    = true;
+        test_fw      = tr.framework;
+        tests_passed = tr.passed;
+        tests_failed = tr.failed;
+        if (!tr.success and tr.failures.len == 0 and tr.failed == 0) {
+            try critical.append(gpa, .{
+                .source  = "tests",
+                .file    = "",
+                .line    = 0,
+                .message = try std.fmt.allocPrint(gpa, "test runner crashed: {s}", .{tr.framework}),
+            });
+        } else {
+            for (tr.failures) |tf| {
+                if (high.items.len >= QUALITY_GATE_MAX_PER_LEVEL) break;
+                try high.append(gpa, .{
+                    .source  = "tests",
+                    .file    = tf.file,
+                    .line    = tf.line,
+                    .message = tf.message,
+                });
+            }
+        }
+    }
+
+    const verdict: []const u8 = if (critical.items.len > 0 or high.items.len > 0) "fail" else "pass";
+
+    return .{
+        .verdict      = verdict,
+        .critical     = try critical.toOwnedSlice(gpa),
+        .high         = try high.toOwnedSlice(gpa),
+        .medium       = try medium.toOwnedSlice(gpa),
+        .low          = try low.toOwnedSlice(gpa),
+        .build_ran    = build_ran,
+        .build_tool   = build_tool,
+        .tests_ran    = tests_ran,
+        .test_fw      = test_fw,
+        .tests_passed = tests_passed,
+        .tests_failed = tests_failed,
     };
 }
 

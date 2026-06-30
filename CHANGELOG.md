@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.41.0] — 2026-06-30
+
+### New
+- `quality-gate <path>` — runs build + tests for a project and returns a severity-bucketed verdict; auto-detects build system and test framework (same as `build` and `run-tests`); skips gracefully if neither is present; categorizes: build errors → `high`, build crash (non-zero exit, no parsed errors) → `critical`, test failures → `high`, test runner crash (non-zero exit, no parsed failures) → `critical`, build warnings → `medium`; verdict is `fail` on any critical or high finding, `pass` otherwise; returns `{ verdict, critical, high, medium, low, buildRan, buildTool, testsRan, testFramework, testsPassed, testsFailed }` with each finding as `{ source, file, line, message }`; findings capped at 50 per level
+
 ## [0.40.0] — 2026-06-30
 
 ### New
