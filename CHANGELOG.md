@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.53.1] — 2026-06-30
+
+### Dev tooling
+- `src/stress.zig` + `zig build stress` — three-tier stress tester (56 tests) that runs against the freshly built binary; Tier 1: smoke (exit 0 + valid JSON for every major subcommand); Tier 2: real-data field assertions (framework contains "Zig", git-cache branch="main", sha256 len=64, registry ≥55 subcommands, etc.); Tier 3: adversarial (bad inputs exit 1, edge inputs exit 0 gracefully); exits 1 on any failure so `zig build stress` fails the build gate
+
 ## [0.53.0] — 2026-06-30
 
 ### New
