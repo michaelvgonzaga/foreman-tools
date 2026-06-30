@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.42.0] — 2026-06-30
+
+### New
+- `validate-schema <file> <schema>` — validates a JSON file against a JSON Schema (subset); returns `{ valid, violations: [{path, expected, got}], file, schema }`; supported constraints: `type` (null/boolean/integer/number/string/array/object), `required`, `properties` (recursive up to depth 6), `enum`, `minLength`/`maxLength`, `minimum`/`maximum`, `minItems`/`maxItems`, `items`, `additionalProperties: false`; violations capped at 50; uses `$` as root path with dot-notation for properties and bracket-notation for array indices
+
 ## [0.41.0] — 2026-06-30
 
 ### New

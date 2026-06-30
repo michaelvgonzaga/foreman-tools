@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.41.0";
+pub const VERSION = "0.42.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5880,6 +5880,290 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
         .ahead   = ahead,
         .behind  = behind,
         .commits = try commits.toOwnedSlice(gpa),
+    };
+}
+
+// --- validate-schema ---
+
+const VALIDATE_MAX_VIOLATIONS: usize = 50;
+const VALIDATE_MAX_DEPTH: u32 = 6;
+
+pub const SchemaViolation = struct {
+    path:     []const u8,
+    expected: []const u8,
+    got:      []const u8,
+};
+
+pub const ValidateSchemaResult = struct {
+    valid:      bool,
+    violations: []SchemaViolation,
+    file:       []const u8,
+    schema:     []const u8,
+};
+
+fn jsonMatchesType(v: std.json.Value, t: []const u8) bool {
+    return switch (v) {
+        .null          => std.mem.eql(u8, t, "null"),
+        .bool          => std.mem.eql(u8, t, "boolean") or std.mem.eql(u8, t, "bool"),
+        .integer       => std.mem.eql(u8, t, "integer") or std.mem.eql(u8, t, "number"),
+        .float, .number_string => std.mem.eql(u8, t, "number"),
+        .string        => std.mem.eql(u8, t, "string"),
+        .array         => std.mem.eql(u8, t, "array"),
+        .object        => std.mem.eql(u8, t, "object"),
+    };
+}
+
+fn jsonValuesEqual(a: std.json.Value, b: std.json.Value) bool {
+    return switch (a) {
+        .null          => b == .null,
+        .bool          => |av| switch (b) { .bool => |bv| av == bv, else => false },
+        .integer       => |av| switch (b) { .integer => |bv| av == bv, else => false },
+        .float         => |av| switch (b) { .float => |bv| av == bv, else => false },
+        .number_string => |av| switch (b) { .number_string => |bv| std.mem.eql(u8, av, bv), else => false },
+        .string        => |av| switch (b) { .string => |bv| std.mem.eql(u8, av, bv), else => false },
+        else           => false,
+    };
+}
+
+fn validateValue(
+    gpa: std.mem.Allocator,
+    violations: *std.ArrayList(SchemaViolation),
+    data: std.json.Value,
+    schema: std.json.Value,
+    path: []const u8,
+    depth: u32,
+) !void {
+    if (violations.items.len >= VALIDATE_MAX_VIOLATIONS) return;
+    if (depth >= VALIDATE_MAX_DEPTH) return;
+    if (schema != .object) return;
+    const sch = schema.object;
+
+    // Type check
+    if (sch.get("type")) |type_node| {
+        if (type_node == .string) {
+            if (!jsonMatchesType(data, type_node.string)) {
+                try violations.append(gpa, .{
+                    .path     = try gpa.dupe(u8, path),
+                    .expected = try gpa.dupe(u8, type_node.string),
+                    .got      = jsonTypeName(data),
+                });
+                return; // type mismatch — skip further checks
+            }
+        }
+    }
+
+    // Enum check
+    if (sch.get("enum")) |enum_node| {
+        if (enum_node == .array) {
+            var found = false;
+            for (enum_node.array.items) |item| {
+                if (jsonValuesEqual(data, item)) { found = true; break; }
+            }
+            if (!found) {
+                try violations.append(gpa, .{
+                    .path     = try gpa.dupe(u8, path),
+                    .expected = "one of enum values",
+                    .got      = jsonTypeName(data),
+                });
+            }
+        }
+    }
+
+    // String constraints
+    if (data == .string) {
+        if (sch.get("minLength")) |ml| {
+            if (ml == .integer) min_len: {
+                const min: usize = @intCast(@max(0, ml.integer));
+                if (data.string.len < min) {
+                    try violations.append(gpa, .{
+                        .path     = try gpa.dupe(u8, path),
+                        .expected = try std.fmt.allocPrint(gpa, "minLength {d}", .{min}),
+                        .got      = try std.fmt.allocPrint(gpa, "length {d}", .{data.string.len}),
+                    });
+                }
+                break :min_len;
+            }
+        }
+        if (sch.get("maxLength")) |ml| {
+            if (ml == .integer) max_len: {
+                const max: usize = @intCast(@max(0, ml.integer));
+                if (data.string.len > max) {
+                    try violations.append(gpa, .{
+                        .path     = try gpa.dupe(u8, path),
+                        .expected = try std.fmt.allocPrint(gpa, "maxLength {d}", .{max}),
+                        .got      = try std.fmt.allocPrint(gpa, "length {d}", .{data.string.len}),
+                    });
+                }
+                break :max_len;
+            }
+        }
+    }
+
+    // Number constraints
+    if (data == .integer or data == .float) {
+        const val: f64 = switch (data) {
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            .float   => |f| f,
+            else     => unreachable,
+        };
+        if (sch.get("minimum")) |mn| min_num: {
+            const min: f64 = switch (mn) {
+                .integer => |n| @as(f64, @floatFromInt(n)),
+                .float   => |f| f,
+                else     => break :min_num,
+            };
+            if (val < min) {
+                try violations.append(gpa, .{
+                    .path     = try gpa.dupe(u8, path),
+                    .expected = try std.fmt.allocPrint(gpa, ">= {d}", .{min}),
+                    .got      = try std.fmt.allocPrint(gpa, "{d}", .{val}),
+                });
+            }
+        }
+        if (sch.get("maximum")) |mx| max_num: {
+            const max: f64 = switch (mx) {
+                .integer => |n| @as(f64, @floatFromInt(n)),
+                .float   => |f| f,
+                else     => break :max_num,
+            };
+            if (val > max) {
+                try violations.append(gpa, .{
+                    .path     = try gpa.dupe(u8, path),
+                    .expected = try std.fmt.allocPrint(gpa, "<= {d}", .{max}),
+                    .got      = try std.fmt.allocPrint(gpa, "{d}", .{val}),
+                });
+            }
+        }
+    }
+
+    // Object: required + properties + additionalProperties
+    if (data == .object) {
+        if (sch.get("required")) |req_node| {
+            if (req_node == .array) {
+                for (req_node.array.items) |req| {
+                    if (violations.items.len >= VALIDATE_MAX_VIOLATIONS) break;
+                    if (req != .string) continue;
+                    if (data.object.get(req.string) == null) {
+                        const vpath = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ path, req.string });
+                        try violations.append(gpa, .{
+                            .path     = vpath,
+                            .expected = "present",
+                            .got      = "missing",
+                        });
+                    }
+                }
+            }
+        }
+        if (sch.get("properties")) |props_node| {
+            if (props_node == .object) {
+                var it = props_node.object.iterator();
+                while (it.next()) |entry| {
+                    if (violations.items.len >= VALIDATE_MAX_VIOLATIONS) break;
+                    const key = entry.key_ptr.*;
+                    const prop_schema = entry.value_ptr.*;
+                    if (data.object.get(key)) |prop_data| {
+                        const vpath = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ path, key });
+                        defer gpa.free(vpath);
+                        try validateValue(gpa, violations, prop_data, prop_schema, vpath, depth + 1);
+                    }
+                }
+            }
+        }
+        if (sch.get("additionalProperties")) |ap| {
+            if (ap == .bool and !ap.bool) {
+                if (sch.get("properties")) |props_node| {
+                    if (props_node == .object) {
+                        var it = data.object.iterator();
+                        while (it.next()) |entry| {
+                            if (violations.items.len >= VALIDATE_MAX_VIOLATIONS) break;
+                            const key = entry.key_ptr.*;
+                            if (props_node.object.get(key) == null) {
+                                const vpath = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ path, key });
+                                try violations.append(gpa, .{
+                                    .path     = vpath,
+                                    .expected = "not present",
+                                    .got      = "unexpected key",
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Array: minItems + maxItems + items
+    if (data == .array) {
+        if (sch.get("minItems")) |mi| {
+            if (mi == .integer) min_items: {
+                const min: usize = @intCast(@max(0, mi.integer));
+                if (data.array.items.len < min) {
+                    try violations.append(gpa, .{
+                        .path     = try gpa.dupe(u8, path),
+                        .expected = try std.fmt.allocPrint(gpa, "minItems {d}", .{min}),
+                        .got      = try std.fmt.allocPrint(gpa, "{d} items", .{data.array.items.len}),
+                    });
+                }
+                break :min_items;
+            }
+        }
+        if (sch.get("maxItems")) |mi| {
+            if (mi == .integer) max_items: {
+                const max: usize = @intCast(@max(0, mi.integer));
+                if (data.array.items.len > max) {
+                    try violations.append(gpa, .{
+                        .path     = try gpa.dupe(u8, path),
+                        .expected = try std.fmt.allocPrint(gpa, "maxItems {d}", .{max}),
+                        .got      = try std.fmt.allocPrint(gpa, "{d} items", .{data.array.items.len}),
+                    });
+                }
+                break :max_items;
+            }
+        }
+        if (sch.get("items")) |items_schema| {
+            for (data.array.items, 0..) |item, idx| {
+                if (violations.items.len >= VALIDATE_MAX_VIOLATIONS) break;
+                const vpath = try std.fmt.allocPrint(gpa, "{s}[{d}]", .{ path, idx });
+                defer gpa.free(vpath);
+                try validateValue(gpa, violations, item, items_schema, vpath, depth + 1);
+            }
+        }
+    }
+}
+
+pub fn computeValidateSchema(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    schema_path: []const u8,
+) !ValidateSchemaResult {
+    const data_file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch return error.FileNotFound;
+    defer data_file.close(io);
+    var rbuf1: [4096]u8 = undefined;
+    var r1 = data_file.reader(io, &rbuf1);
+    const data_content = try r1.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+    defer gpa.free(data_content);
+
+    const schema_file = std.Io.Dir.openFileAbsolute(io, schema_path, .{}) catch return error.SchemaNotFound;
+    defer schema_file.close(io);
+    var rbuf2: [4096]u8 = undefined;
+    var r2 = schema_file.reader(io, &rbuf2);
+    const schema_content = try r2.interface.allocRemaining(gpa, .limited(1 * 1024 * 1024));
+    defer gpa.free(schema_content);
+
+    const data_parsed   = std.json.parseFromSlice(std.json.Value, gpa, data_content,   .{}) catch return error.InvalidJson;
+    defer data_parsed.deinit();
+    const schema_parsed = std.json.parseFromSlice(std.json.Value, gpa, schema_content, .{}) catch return error.InvalidSchema;
+    defer schema_parsed.deinit();
+
+    var violations: std.ArrayList(SchemaViolation) = .empty;
+    try validateValue(gpa, &violations, data_parsed.value, schema_parsed.value, "$", 0);
+
+    return .{
+        .valid      = violations.items.len == 0,
+        .violations = try violations.toOwnedSlice(gpa),
+        .file       = file_path,
+        .schema     = schema_path,
     };
 }
 

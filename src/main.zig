@@ -65,6 +65,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  project-state <path> [record-pattern <pattern>]\n", .{});
         try err.print("  shell-run [--timeout <ms>] <shell-command>\n", .{});
         try err.print("  quality-gate <path>\n", .{});
+        try err.print("  validate-schema <file> <schema>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1703,6 +1704,56 @@ pub fn main(init: std.process.Init) !void {
                 .{ c.hash, c.subject, c.author, c.date });
         }
         if (result.commits.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "validate-schema")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools validate-schema <file> <schema>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const result = root.computeValidateSchema(gpa, io, args[2], args[3]) catch |e| switch (e) {
+            error.FileNotFound => {
+                try err.print("error: file not found: {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.SchemaNotFound => {
+                try err.print("error: schema not found: {s}\n", .{args[3]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.InvalidJson => {
+                try err.print("error: invalid JSON in file: {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.InvalidSchema => {
+                try err.print("error: invalid JSON in schema: {s}\n", .{args[3]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        const file_esc   = try root.allocJsonEscape(gpa, result.file);
+        defer gpa.free(file_esc);
+        const schema_esc = try root.allocJsonEscape(gpa, result.schema);
+        defer gpa.free(schema_esc);
+        try out.print("{{\n  \"valid\": {s},\n  \"file\": \"{s}\",\n  \"schema\": \"{s}\",\n  \"violations\": [",
+            .{ if (result.valid) "true" else "false", file_esc, schema_esc });
+        for (result.violations, 0..) |v, i| {
+            if (i > 0) try out.print(",", .{});
+            const path_esc = try root.allocJsonEscape(gpa, v.path);
+            defer gpa.free(path_esc);
+            const exp_esc  = try root.allocJsonEscape(gpa, v.expected);
+            defer gpa.free(exp_esc);
+            const got_esc  = try root.allocJsonEscape(gpa, v.got);
+            defer gpa.free(got_esc);
+            try out.print("\n    {{\"path\": \"{s}\", \"expected\": \"{s}\", \"got\": \"{s}\"}}", .{
+                path_esc, exp_esc, got_esc,
+            });
+        }
+        if (result.violations.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "quality-gate")) {
