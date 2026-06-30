@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.43.0] — 2026-06-30
+
+### New
+- `prod-ready <path>` — composite production readiness gate; runs quality-gate (build + tests), secret-scan, and env-inspect in sequence; returns `{ ready: bool, blockers: [{source, message}], warnings: [{source, message}] }`; blockers: quality-gate critical/high findings, any secret-scan findings; warnings: build warnings, no-build-system, no-test-framework, missing deps from env-inspect, secret-scan truncated; `ready: true` only when blockers array is empty; each check is fault-tolerant — if one fails to run, a warning is added and the others continue
+
 ## [0.42.0] — 2026-06-30
 
 ### New

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.42.0";
+pub const VERSION = "0.43.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5880,6 +5880,126 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
         .ahead   = ahead,
         .behind  = behind,
         .commits = try commits.toOwnedSlice(gpa),
+    };
+}
+
+// --- prod-ready ---
+
+pub const ProdReadyItem = struct {
+    source:  []const u8,
+    message: []const u8,
+};
+
+pub const ProdReadyResult = struct {
+    ready:    bool,
+    blockers: []ProdReadyItem,
+    warnings: []ProdReadyItem,
+};
+
+pub fn computeProdReady(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ProdReadyResult {
+    var blockers: std.ArrayList(ProdReadyItem) = .empty;
+    var warnings: std.ArrayList(ProdReadyItem) = .empty;
+
+    // 1. Quality gate (build + tests)
+    const qg_opt: ?QualityGateResult = blk: {
+        const r = computeQualityGate(gpa, io, path) catch |e| switch (e) {
+            else => {
+                warnings.append(gpa, .{
+                    .source  = "quality-gate",
+                    .message = "could not run quality gate",
+                }) catch {};
+                break :blk null;
+            },
+        };
+        break :blk r;
+    };
+    if (qg_opt) |qg| {
+        if (qg.critical.len > 0) {
+            try blockers.append(gpa, .{
+                .source  = "quality-gate",
+                .message = try std.fmt.allocPrint(gpa, "{d} critical issue(s): build or test runner crashed", .{qg.critical.len}),
+            });
+        }
+        if (qg.high.len > 0) {
+            var build_errors: usize = 0;
+            var test_fails:   usize = 0;
+            for (qg.high) |f| {
+                if (std.mem.eql(u8, f.source, "build")) build_errors += 1
+                else test_fails += 1;
+            }
+            try blockers.append(gpa, .{
+                .source  = "quality-gate",
+                .message = try std.fmt.allocPrint(gpa, "{d} build error(s), {d} test failure(s)", .{ build_errors, test_fails }),
+            });
+        }
+        if (qg.medium.len > 0) {
+            try warnings.append(gpa, .{
+                .source  = "quality-gate",
+                .message = try std.fmt.allocPrint(gpa, "{d} build warning(s)", .{qg.medium.len}),
+            });
+        }
+        if (!qg.build_ran) {
+            try warnings.append(gpa, .{
+                .source  = "quality-gate",
+                .message = "no build system detected — build not verified",
+            });
+        }
+        if (!qg.tests_ran) {
+            try warnings.append(gpa, .{
+                .source  = "quality-gate",
+                .message = "no test framework detected — tests not verified",
+            });
+        }
+    }
+
+    // 2. Secret scan
+    const ss_opt: ?SecretScanResult = blk: {
+        const r = computeSecretScan(gpa, io, path) catch |e| switch (e) {
+            else => {
+                warnings.append(gpa, .{
+                    .source  = "secret-scan",
+                    .message = "could not run secret scan",
+                }) catch {};
+                break :blk null;
+            },
+        };
+        break :blk r;
+    };
+    if (ss_opt) |ss| {
+        if (ss.findings.len > 0) {
+            try blockers.append(gpa, .{
+                .source  = "secret-scan",
+                .message = try std.fmt.allocPrint(gpa, "{d} hardcoded secret(s) found", .{ss.findings.len}),
+            });
+        }
+        if (ss.truncated) {
+            try warnings.append(gpa, .{
+                .source  = "secret-scan",
+                .message = "scan truncated at 200 findings — more may exist",
+            });
+        }
+    }
+
+    // 3. Missing runtime deps
+    const ei_opt: ?EnvInspectResult = blk: {
+        const r = computeEnvInspect(gpa, io, path) catch {
+            break :blk null;
+        };
+        break :blk r;
+    };
+    if (ei_opt) |ei| {
+        for (ei.missing) |dep| {
+            try warnings.append(gpa, .{
+                .source  = "env-inspect",
+                .message = try std.fmt.allocPrint(gpa, "missing: {s}", .{dep}),
+            });
+        }
+    }
+
+    return .{
+        .ready    = blockers.items.len == 0,
+        .blockers = try blockers.toOwnedSlice(gpa),
+        .warnings = try warnings.toOwnedSlice(gpa),
     };
 }
 

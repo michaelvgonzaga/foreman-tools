@@ -66,6 +66,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  shell-run [--timeout <ms>] <shell-command>\n", .{});
         try err.print("  quality-gate <path>\n", .{});
         try err.print("  validate-schema <file> <schema>\n", .{});
+        try err.print("  prod-ready <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1704,6 +1705,31 @@ pub fn main(init: std.process.Init) !void {
                 .{ c.hash, c.subject, c.author, c.date });
         }
         if (result.commits.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "prod-ready")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools prod-ready <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const result = try root.computeProdReady(gpa, io, args[2]);
+        try out.print("{{\n  \"ready\": {s},\n  \"blockers\": [", .{if (result.ready) "true" else "false"});
+        for (result.blockers, 0..) |b, i| {
+            if (i > 0) try out.print(",", .{});
+            const msg_esc = try root.allocJsonEscape(gpa, b.message);
+            defer gpa.free(msg_esc);
+            try out.print("\n    {{\"source\": \"{s}\", \"message\": \"{s}\"}}", .{ b.source, msg_esc });
+        }
+        if (result.blockers.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"warnings\": [", .{});
+        for (result.warnings, 0..) |w, i| {
+            if (i > 0) try out.print(",", .{});
+            const msg_esc = try root.allocJsonEscape(gpa, w.message);
+            defer gpa.free(msg_esc);
+            try out.print("\n    {{\"source\": \"{s}\", \"message\": \"{s}\"}}", .{ w.source, msg_esc });
+        }
+        if (result.warnings.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "validate-schema")) {
