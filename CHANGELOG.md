@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.33.0] — 2026-06-30
+
+### New
+- `env-inspect <path>` — detects languages present in the project (go/python/node/rust/zig/ruby/java via manifests), checks runtime presence + version, reports all package managers (npm/pip/cargo/brew/yarn/pnpm), lists missing deps (node_modules, .venv, vendor/bundle), and returns env var keys from `.env*` files; one call replaces `which` + `--version` loops
+
 ## [0.32.0] — 2026-06-30
 
 ### New

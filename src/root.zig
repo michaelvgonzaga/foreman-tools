@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.32.0";
+pub const VERSION = "0.33.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -4237,6 +4237,242 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
         .duration_ms = duration_ms,
         .failures    = failures,
         .truncated   = truncated,
+    };
+}
+
+// --- env-inspect subcommand ---
+
+pub const LangEntry = struct {
+    name:    []const u8,
+    version: []u8,
+    present: bool,
+};
+
+pub const PmEntry = struct {
+    name:    []const u8,
+    version: []u8,
+    present: bool,
+};
+
+pub const EnvInspectResult = struct {
+    languages:       []LangEntry,
+    packageManagers: []PmEntry,
+    missing:         [][]u8,
+    envVars:         [][]u8,
+};
+
+// Finds the first N.N[.N...] pattern in output (handles v/V prefix, go1.X.Y, etc.)
+fn extractVersionStr(output: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < output.len) {
+        const c = output[i];
+        const sv = (c == 'v' or c == 'V') and i + 1 < output.len and
+            output[i + 1] >= '0' and output[i + 1] <= '9';
+        const sd = c >= '0' and c <= '9';
+        if (sv or sd) {
+            const begin = if (sv) i + 1 else i;
+            var j = begin;
+            while (j < output.len and (output[j] >= '0' and output[j] <= '9' or output[j] == '.')) j += 1;
+            const found = output[begin..j];
+            if (std.mem.indexOfScalar(u8, found, '.') != null and found.len >= 3) return found;
+        }
+        i += 1;
+    }
+    return "";
+}
+
+fn dirExists(io: std.Io, path: []const u8) bool {
+    const d = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
+    d.close(io);
+    return true;
+}
+
+const BinaryInfo = struct { present: bool, version: []u8 };
+
+fn checkBinary(gpa: std.mem.Allocator, io: std.Io, binary: []const u8, flag: []const u8) !BinaryInfo {
+    const r = std.process.run(gpa, io, .{ .argv = &.{ binary, flag } }) catch {
+        return BinaryInfo{ .present = false, .version = try gpa.dupe(u8, "") };
+    };
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+    const combined = try std.fmt.allocPrint(gpa, "{s} {s}", .{ r.stdout, r.stderr });
+    defer gpa.free(combined);
+    return BinaryInfo{ .present = true, .version = try gpa.dupe(u8, extractVersionStr(combined)) };
+}
+
+pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !EnvInspectResult {
+    var lang_buf: [7]LangEntry = undefined;
+    var n_lang: usize = 0;
+    var pm_buf: [6]PmEntry = undefined;
+    var n_pm: usize = 0;
+    var miss_buf: [20][]u8 = undefined;
+    var n_miss: usize = 0;
+
+    // --- Language detection (manifest-gated) ---
+
+    // Go
+    {
+        const m = try std.fmt.allocPrint(gpa, "{s}/go.mod", .{path});
+        defer gpa.free(m);
+        if (fileExists(io, m)) {
+            const info = try checkBinary(gpa, io, "go", "version");
+            lang_buf[n_lang] = .{ .name = "go", .version = info.version, .present = info.present };
+            n_lang += 1;
+            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "go runtime"); n_miss += 1; }
+        }
+    }
+
+    // Python
+    {
+        const has = blk: {
+            const p1 = try std.fmt.allocPrint(gpa, "{s}/requirements.txt", .{path}); defer gpa.free(p1);
+            if (fileExists(io, p1)) break :blk true;
+            const p2 = try std.fmt.allocPrint(gpa, "{s}/pyproject.toml", .{path}); defer gpa.free(p2);
+            if (fileExists(io, p2)) break :blk true;
+            const p3 = try std.fmt.allocPrint(gpa, "{s}/setup.py", .{path}); defer gpa.free(p3);
+            break :blk fileExists(io, p3);
+        };
+        if (has) {
+            const info = try checkBinary(gpa, io, "python3", "--version");
+            lang_buf[n_lang] = .{ .name = "python", .version = info.version, .present = info.present };
+            n_lang += 1;
+            if (!info.present) {
+                miss_buf[n_miss] = try gpa.dupe(u8, "python3 runtime"); n_miss += 1;
+            } else {
+                const v1 = try std.fmt.allocPrint(gpa, "{s}/.venv", .{path}); defer gpa.free(v1);
+                const v2 = try std.fmt.allocPrint(gpa, "{s}/venv", .{path});  defer gpa.free(v2);
+                if (!dirExists(io, v1) and !dirExists(io, v2)) {
+                    miss_buf[n_miss] = try gpa.dupe(u8, ".venv (run: python3 -m venv .venv && pip install -r requirements.txt)");
+                    n_miss += 1;
+                }
+            }
+        }
+    }
+
+    // Node
+    {
+        const m = try std.fmt.allocPrint(gpa, "{s}/package.json", .{path}); defer gpa.free(m);
+        if (fileExists(io, m)) {
+            const info = try checkBinary(gpa, io, "node", "--version");
+            lang_buf[n_lang] = .{ .name = "node", .version = info.version, .present = info.present };
+            n_lang += 1;
+            if (!info.present) {
+                miss_buf[n_miss] = try gpa.dupe(u8, "node runtime"); n_miss += 1;
+            } else {
+                const nm = try std.fmt.allocPrint(gpa, "{s}/node_modules", .{path}); defer gpa.free(nm);
+                if (!dirExists(io, nm)) {
+                    miss_buf[n_miss] = try gpa.dupe(u8, "node_modules (run: npm install)"); n_miss += 1;
+                }
+            }
+        }
+    }
+
+    // Rust
+    {
+        const m = try std.fmt.allocPrint(gpa, "{s}/Cargo.toml", .{path}); defer gpa.free(m);
+        if (fileExists(io, m)) {
+            const info = try checkBinary(gpa, io, "rustc", "--version");
+            lang_buf[n_lang] = .{ .name = "rust", .version = info.version, .present = info.present };
+            n_lang += 1;
+            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "rust runtime (rustup)"); n_miss += 1; }
+        }
+    }
+
+    // Zig
+    {
+        const m = try std.fmt.allocPrint(gpa, "{s}/build.zig", .{path}); defer gpa.free(m);
+        if (fileExists(io, m)) {
+            const info = try checkBinary(gpa, io, "zig", "version");
+            lang_buf[n_lang] = .{ .name = "zig", .version = info.version, .present = info.present };
+            n_lang += 1;
+            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "zig runtime"); n_miss += 1; }
+        }
+    }
+
+    // Ruby
+    {
+        const m = try std.fmt.allocPrint(gpa, "{s}/Gemfile", .{path}); defer gpa.free(m);
+        if (fileExists(io, m)) {
+            const info = try checkBinary(gpa, io, "ruby", "--version");
+            lang_buf[n_lang] = .{ .name = "ruby", .version = info.version, .present = info.present };
+            n_lang += 1;
+            if (!info.present) {
+                miss_buf[n_miss] = try gpa.dupe(u8, "ruby runtime"); n_miss += 1;
+            } else {
+                const vb = try std.fmt.allocPrint(gpa, "{s}/vendor/bundle", .{path}); defer gpa.free(vb);
+                if (!dirExists(io, vb)) {
+                    miss_buf[n_miss] = try gpa.dupe(u8, "vendor/bundle (run: bundle install)"); n_miss += 1;
+                }
+            }
+        }
+    }
+
+    // Java
+    {
+        const has = blk: {
+            const p1 = try std.fmt.allocPrint(gpa, "{s}/pom.xml", .{path});       defer gpa.free(p1);
+            if (fileExists(io, p1)) break :blk true;
+            const p2 = try std.fmt.allocPrint(gpa, "{s}/build.gradle", .{path});  defer gpa.free(p2);
+            break :blk fileExists(io, p2);
+        };
+        if (has) {
+            const info = try checkBinary(gpa, io, "java", "--version");
+            lang_buf[n_lang] = .{ .name = "java", .version = info.version, .present = info.present };
+            n_lang += 1;
+            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "java runtime"); n_miss += 1; }
+        }
+    }
+
+    // --- Package managers (always checked) ---
+
+    const pm_specs = [_]struct { name: []const u8, bin: []const u8, flag: []const u8 }{
+        .{ .name = "npm",   .bin = "npm",   .flag = "--version" },
+        .{ .name = "pip",   .bin = "pip3",  .flag = "--version" },
+        .{ .name = "cargo", .bin = "cargo", .flag = "--version" },
+        .{ .name = "brew",  .bin = "brew",  .flag = "--version" },
+        .{ .name = "yarn",  .bin = "yarn",  .flag = "--version" },
+        .{ .name = "pnpm",  .bin = "pnpm",  .flag = "--version" },
+    };
+    for (pm_specs) |s| {
+        const info = try checkBinary(gpa, io, s.bin, s.flag);
+        pm_buf[n_pm] = .{ .name = s.name, .version = info.version, .present = info.present };
+        n_pm += 1;
+    }
+
+    // --- Env vars from .env* files ---
+
+    var env_keys: std.ArrayList([]u8) = .empty;
+    errdefer { for (env_keys.items) |k| gpa.free(k); env_keys.deinit(gpa); }
+
+    if (computeEnvScan(gpa, io, path)) |er| {
+        defer {
+            for (er.files) |ef| {
+                gpa.free(ef.file);
+                for (ef.keys) |k| gpa.free(k);
+                gpa.free(ef.keys);
+            }
+            gpa.free(er.files);
+        }
+        for (er.files) |ef| {
+            for (ef.keys) |k| try env_keys.append(gpa, try gpa.dupe(u8, k));
+        }
+    } else |_| {}
+
+    // --- Allocate final slices ---
+
+    const languages = try gpa.alloc(LangEntry, n_lang);
+    for (lang_buf[0..n_lang], 0..) |l, i| languages[i] = l;
+    const packageManagers = try gpa.alloc(PmEntry, n_pm);
+    for (pm_buf[0..n_pm], 0..) |p, i| packageManagers[i] = p;
+    const missing = try gpa.alloc([]u8, n_miss);
+    for (miss_buf[0..n_miss], 0..) |m, i| missing[i] = m;
+    const envVars = try env_keys.toOwnedSlice(gpa);
+
+    return .{
+        .languages       = languages,
+        .packageManagers = packageManagers,
+        .missing         = missing,
+        .envVars         = envVars,
     };
 }
 

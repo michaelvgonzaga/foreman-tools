@@ -55,6 +55,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  compat-check [--baseline | --update-baseline]\n", .{});
         try err.print("  run-tests <path>\n", .{});
         try err.print("  build <path>\n", .{});
+        try err.print("  env-inspect <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1429,6 +1430,67 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.failures.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"truncated\": {s}\n}}\n", .{if (result.truncated) "true" else "false"});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "env-inspect")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools env-inspect <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeEnvInspect(gpa, io, args[2]) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.languages) |l| gpa.free(l.version);
+            gpa.free(result.languages);
+            for (result.packageManagers) |p| gpa.free(p.version);
+            gpa.free(result.packageManagers);
+            for (result.missing) |m| gpa.free(m);
+            gpa.free(result.missing);
+            for (result.envVars) |v| gpa.free(v);
+            gpa.free(result.envVars);
+        }
+
+        try out.print("{{\n  \"languages\": [", .{});
+        for (result.languages, 0..) |l, i| {
+            const esc_ver = try root.allocJsonEscape(gpa, l.version);
+            defer gpa.free(esc_ver);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"name\": \"{s}\", \"version\": \"{s}\", \"present\": {s}}}",
+                .{ l.name, esc_ver, if (l.present) "true" else "false" },
+            );
+        }
+        if (result.languages.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"packageManagers\": [", .{});
+        for (result.packageManagers, 0..) |p, i| {
+            const esc_ver = try root.allocJsonEscape(gpa, p.version);
+            defer gpa.free(esc_ver);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"name\": \"{s}\", \"version\": \"{s}\", \"present\": {s}}}",
+                .{ p.name, esc_ver, if (p.present) "true" else "false" },
+            );
+        }
+        if (result.packageManagers.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"missing\": [", .{});
+        for (result.missing, 0..) |m, i| {
+            const esc = try root.allocJsonEscape(gpa, m);
+            defer gpa.free(esc);
+            if (i > 0) try out.print(", ", .{});
+            try out.print("\"{s}\"", .{esc});
+        }
+        try out.print("],\n  \"envVars\": [", .{});
+        for (result.envVars, 0..) |v, i| {
+            const esc = try root.allocJsonEscape(gpa, v);
+            defer gpa.free(esc);
+            if (i > 0) try out.print(", ", .{});
+            try out.print("\"{s}\"", .{esc});
+        }
+        try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "build")) {
         if (args.len < 3) {
