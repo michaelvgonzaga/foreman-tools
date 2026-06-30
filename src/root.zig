@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.47.0";
+pub const VERSION = "0.48.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7099,6 +7099,96 @@ pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Repo
         .secrets_found = secrets_found,
         .issues        = try issues.toOwnedSlice(gpa),
         .next_action   = next_action,
+    };
+}
+
+// --- metrics ---
+
+pub const MetricsResult = struct {
+    cache_entries: u32,
+    project_states: u32,
+    total_decisions: u32,
+    total_patterns: u32,
+    device_profiled: bool,
+    compat_baseline_set: bool,
+    estimated_token_savings: u32,
+};
+
+pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home: []const u8 = std.mem.span(home_ptr);
+
+    // --- Cache entries ---
+    const cache_dir_path = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    defer gpa.free(cache_dir_path);
+    var cache_entries: u32 = 0;
+    cache_walk: {
+        var dir = std.Io.Dir.openDirAbsolute(io, cache_dir_path, .{ .iterate = true }) catch break :cache_walk;
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch break :cache_walk) |entry| {
+            if (entry.kind != .file) continue;
+            cache_entries += 1;
+        }
+    }
+
+    // --- Project states (decisions + patterns) ---
+    const state_dir_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/state", .{home});
+    defer gpa.free(state_dir_path);
+    var project_states: u32 = 0;
+    var total_decisions: u32 = 0;
+    var total_patterns: u32 = 0;
+    state_walk: {
+        var dir = std.Io.Dir.openDirAbsolute(io, state_dir_path, .{ .iterate = true }) catch break :state_walk;
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch break :state_walk) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
+            project_states += 1;
+            const file_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ state_dir_path, entry.name });
+            defer gpa.free(file_path);
+            const content: []u8 = blk: {
+                var f = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch break :blk &.{};
+                var rbuf: [4096]u8 = undefined;
+                var r = f.reader(io, &rbuf);
+                break :blk r.interface.allocRemaining(gpa, .limited(65536)) catch &.{};
+            };
+            defer if (content.len > 0) gpa.free(content);
+            if (content.len == 0) continue;
+            const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch continue;
+            defer parsed.deinit();
+            if (parsed.value != .object) continue;
+            const obj = parsed.value.object;
+            if (obj.get("decisions")) |dv| {
+                if (dv == .array) total_decisions += @intCast(dv.array.items.len);
+            }
+            if (obj.get("known_patterns")) |pv| {
+                if (pv == .array) total_patterns += @intCast(pv.array.items.len);
+            }
+        }
+    }
+
+    // --- Profile and baseline ---
+    const profile_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/profile.json", .{home});
+    defer gpa.free(profile_path);
+    const baseline_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/compat-baseline.json", .{home});
+    defer gpa.free(baseline_path);
+    const device_profiled    = fileExists(io, profile_path);
+    const compat_baseline_set = fileExists(io, baseline_path);
+
+    // Estimated token savings: each cache entry represents ~200 tokens saved on a hit
+    // Assuming the documented 80% cache-hit-rate target: savings = entries × 0.8 × 200 = entries × 160
+    const estimated_token_savings = cache_entries *% 160;
+
+    return .{
+        .cache_entries         = cache_entries,
+        .project_states        = project_states,
+        .total_decisions       = total_decisions,
+        .total_patterns        = total_patterns,
+        .device_profiled       = device_profiled,
+        .compat_baseline_set   = compat_baseline_set,
+        .estimated_token_savings = estimated_token_savings,
     };
 }
 

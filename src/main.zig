@@ -71,6 +71,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  capability-check <query...>\n", .{});
         try err.print("  route <task...>\n", .{});
         try err.print("  report <path>\n", .{});
+        try err.print("  metrics\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1917,6 +1918,17 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.known_patterns.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"lastBuildResult\": null,\n  \"lastTestResult\": null\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "metrics")) {
+        const result = try root.computeMetrics(gpa, io);
+        try out.print(
+            "{{\n  \"cacheEntries\": {d},\n  \"projectStates\": {d},\n  \"totalDecisions\": {d},\n  \"totalPatterns\": {d},\n  \"deviceProfiled\": {s},\n  \"compatBaselineSet\": {s},\n  \"estimatedTokenSavings\": {d},\n  \"note\": \"savings estimated at 80% hit rate x 200 tokens/hit\"\n}}\n",
+            .{ result.cache_entries, result.project_states,
+               result.total_decisions, result.total_patterns,
+               if (result.device_profiled) "true" else "false",
+               if (result.compat_baseline_set) "true" else "false",
+               result.estimated_token_savings },
+        );
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "report")) {
         if (args.len < 3) {

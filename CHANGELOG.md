@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.48.0] — 2026-06-30
+
+### New
+- `metrics` — telemetry snapshot of foreman-tools runtime state; returns `{ cacheEntries, projectStates, totalDecisions, totalPatterns, deviceProfiled, compatBaselineSet, estimatedTokenSavings, note }`; walks `~/.cache/foreman-tools/` for cache entry count and `~/.foreman/state/` for project-state JSON files, counting decisions and known_patterns per file; checks `~/.foreman/profile.json` and `~/.foreman/compat-baseline.json` for device/compat status; estimates token savings at 80% hit rate × 200 tokens/hit; all sub-walks fault-tolerant (missing dirs → zeros); foundation for Module 26 (Telemetry / Metrics)
+
 ## [0.47.0] — 2026-06-30
 
 ### New
