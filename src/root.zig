@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.33.0";
+pub const VERSION = "0.34.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -4826,6 +4826,191 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
         .warnings    = warnings,
         .duration_ms = duration_ms,
         .truncated   = truncated,
+    };
+}
+
+// --- symbol-find subcommand ---
+
+const SYMBOL_FIND_MAX_REFS: usize = 100;
+const SYMBOL_FIND_MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
+
+pub const SymbolRef = struct { file: []u8, line: u32 };
+
+pub const SymbolFindResult = struct {
+    symbol:     []const u8,
+    kind:       []const u8,
+    definition: ?SymbolRef,
+    references: []SymbolRef,
+    capped:     bool,
+};
+
+fn isWordChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+           (c >= '0' and c <= '9') or c == '_';
+}
+
+fn wholeWordPos(line: []const u8, name: []const u8) ?usize {
+    if (name.len == 0) return null;
+    var start: usize = 0;
+    while (start + name.len <= line.len) {
+        const rel = std.mem.indexOf(u8, line[start..], name) orelse return null;
+        const pos = start + rel;
+        const before_ok = pos == 0 or !isWordChar(line[pos - 1]);
+        const after_ok  = pos + name.len >= line.len or !isWordChar(line[pos + name.len]);
+        if (before_ok and after_ok) return pos;
+        start = pos + 1;
+    }
+    return null;
+}
+
+// Returns true if `kw` appears in `line` at a word boundary, immediately
+// followed (after optional " \t*&") by `name` at a word boundary.
+fn kwdMatch(line: []const u8, kw: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (i + kw.len <= line.len) : (i += 1) {
+        if (!std.mem.eql(u8, line[i .. i + kw.len], kw)) continue;
+        if (i > 0 and isWordChar(line[i - 1])) continue;
+        const after = std.mem.trimStart(u8, line[i + kw.len..], " \t*&");
+        if (std.mem.startsWith(u8, after, name) and
+            (after.len == name.len or !isWordChar(after[name.len]))) return true;
+    }
+    return false;
+}
+
+fn declarationKind(line: []const u8, name: []const u8) ?[]const u8 {
+    const t = std.mem.trimStart(u8, line, " \t");
+    if (t.len == 0) return null;
+    if (std.mem.startsWith(u8, t, "//") or std.mem.startsWith(u8, t, "#") or
+        std.mem.startsWith(u8, t, "*") or std.mem.startsWith(u8, t, "--")) return null;
+
+    if (kwdMatch(t, "fn ", name) or kwdMatch(t, "def ", name) or
+        kwdMatch(t, "function ", name) or kwdMatch(t, "func ", name) or
+        kwdMatch(t, "fun ", name) or kwdMatch(t, "proc ", name) or
+        kwdMatch(t, "method ", name) or kwdMatch(t, "sub ", name)) return "function";
+
+    if (kwdMatch(t, "class ", name) or kwdMatch(t, "struct ", name) or
+        kwdMatch(t, "trait ", name) or kwdMatch(t, "interface ", name) or
+        kwdMatch(t, "enum ", name) or kwdMatch(t, "protocol ", name) or
+        kwdMatch(t, "module ", name)) return "type";
+
+    if (kwdMatch(t, "type ", name)) return "type";
+
+    if (kwdMatch(t, "const ", name) or kwdMatch(t, "var ", name) or
+        kwdMatch(t, "let ", name) or kwdMatch(t, "val ", name)) return "constant";
+
+    return null;
+}
+
+fn scanFileForSymbol(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    abs_path: []const u8,
+    rel_path: []const u8,
+    name: []const u8,
+    def: *?SymbolRef,
+    def_kind: *[]const u8,
+    refs: *std.ArrayList(SymbolRef),
+    capped: *bool,
+) !void {
+    const file = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch return;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(SYMBOL_FIND_MAX_FILE_BYTES)) catch return;
+    defer gpa.free(content);
+    // Skip binary files (Mach-O, ELF, fat binary)
+    if (content.len >= 4 and (
+        std.mem.eql(u8, content[0..4], "\xcf\xfa\xed\xfe") or
+        std.mem.eql(u8, content[0..4], "\xfe\xed\xfa\xcf") or
+        std.mem.eql(u8, content[0..4], "\xca\xfe\xba\xbe") or
+        std.mem.eql(u8, content[0..4], "\x7fELF"))) return;
+
+    var line_num: u32 = 1;
+    var line_start: usize = 0;
+    while (line_start < content.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
+        const line = content[line_start..line_end];
+
+        if (wholeWordPos(line, name) != null) {
+            if (declarationKind(line, name)) |kind| {
+                if (def.* == null) {
+                    def.* = .{ .file = try gpa.dupe(u8, rel_path), .line = line_num };
+                    def_kind.* = kind;
+                }
+                // definition line is not added to refs
+            } else if (refs.items.len < SYMBOL_FIND_MAX_REFS) {
+                try refs.append(gpa, .{ .file = try gpa.dupe(u8, rel_path), .line = line_num });
+            } else {
+                capped.* = true;
+            }
+        }
+
+        line_num += 1;
+        line_start = line_end + 1;
+    }
+}
+
+fn walkSymbolFind(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    rel_prefix: []const u8,
+    root: []const u8,
+    name: []const u8,
+    def: *?SymbolRef,
+    def_kind: *[]const u8,
+    refs: *std.ArrayList(SymbolRef),
+    capped: *bool,
+) !void {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .file) {
+            if (shouldSkipGrepFile(entry.name)) continue;
+            const rel_path: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(rel_path);
+            const abs_path = try std.fs.path.join(gpa, &.{ root, rel_path });
+            defer gpa.free(abs_path);
+            try scanFileForSymbol(gpa, io, abs_path, rel_path, name, def, def_kind, refs, capped);
+        } else if (entry.kind == .directory) {
+            if (shouldSkipScanDir(entry.name)) continue;
+            const sub_prefix: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(sub_prefix);
+            var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            try walkSymbolFind(gpa, io, sub, sub_prefix, root, name, def, def_kind, refs, capped);
+        }
+    }
+}
+
+pub fn computeSymbolFind(gpa: std.mem.Allocator, io: std.Io, root: []const u8, name: []const u8) !SymbolFindResult {
+    var dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch
+        return error.RootNotFound;
+    defer dir.close(io);
+
+    var def: ?SymbolRef = null;
+    var def_kind: []const u8 = "unknown";
+    var refs: std.ArrayList(SymbolRef) = .empty;
+    errdefer {
+        if (def) |d| gpa.free(d.file);
+        for (refs.items) |rf| gpa.free(rf.file);
+        refs.deinit(gpa);
+    }
+    var capped = false;
+
+    try walkSymbolFind(gpa, io, dir, "", root, name, &def, &def_kind, &refs, &capped);
+
+    return .{
+        .symbol     = name,
+        .kind       = def_kind,
+        .definition = def,
+        .references = try refs.toOwnedSlice(gpa),
+        .capped     = capped,
     };
 }
 

@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.34.0] — 2026-06-30
+
+### New
+- `symbol-find <path> <symbol>` — single-pass directory walk that locates a symbol's definition and all references; returns `{ symbol, kind, definition: {file, line} | null, references: [{file, line}], capped }`; keyword-based declaration detection (fn/def/function/func/class/struct/trait/const/var/let/etc) with whole-word boundary matching; skips binary files via magic-byte check (Mach-O + ELF); references capped at 100; replaces `grep + read N files` pattern for symbol lookup
+
 ## [0.33.0] — 2026-06-30
 
 ### New
