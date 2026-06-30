@@ -69,6 +69,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  prod-ready <path>\n", .{});
         try err.print("  registry\n", .{});
         try err.print("  capability-check <query...>\n", .{});
+        try err.print("  route <task...>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1915,6 +1916,38 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.known_patterns.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"lastBuildResult\": null,\n  \"lastTestResult\": null\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "route")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools route <task...>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const task = try std.mem.join(gpa, " ", args[2..]);
+        defer gpa.free(task);
+        const result = try root.computeRoute(gpa, task);
+        defer gpa.free(result.task);
+        defer gpa.free(result.steps);
+        const task_esc = try root.allocJsonEscape(gpa, result.task);
+        defer gpa.free(task_esc);
+        try out.print("{{\n  \"task\": \"{s}\",\n  \"routed\": {s},\n  \"steps\": [", .{ task_esc, if (result.routed) "true" else "false" });
+        for (result.steps, 0..) |step, i| {
+            const comma: []const u8 = if (i + 1 < result.steps.len) "," else "";
+            const reason_esc = try root.allocJsonEscape(gpa, step.reason);
+            defer gpa.free(reason_esc);
+            try out.print(
+                "\n    {{\"step\": {d}, \"layer\": \"{s}\", \"subcommand\": \"{s}\", \"argHint\": \"{s}\", \"confidence\": \"{s}\", \"reason\": \"{s}\"}}{s}",
+                .{ step.step, step.layer, step.subcommand, step.arg_hint, step.confidence, reason_esc, comma },
+            );
+        }
+        if (result.steps.len > 0) try out.print("\n  ", .{});
+        if (result.routed) {
+            try out.print("],\n  \"fallback\": null\n}}\n", .{});
+        } else {
+            const reason_esc = try root.allocJsonEscape(gpa, result.reason);
+            defer gpa.free(reason_esc);
+            try out.print("],\n  \"fallback\": \"claude\",\n  \"reason\": \"{s}\"\n}}\n", .{reason_esc});
+        }
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "capability-check")) {
         if (args.len < 3) {

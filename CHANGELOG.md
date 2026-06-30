@@ -2,6 +2,14 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.46.0] — 2026-06-30
+
+### New
+- `route <task...>` — given a task description, returns an ordered execution plan: `{ task, routed, steps: [{step, layer, subcommand, argHint, confidence, reason}], fallback }`; reuses capability-check matching logic + enrichment table of 25 subcommands with context-aware arg hints and reasons; scoring: exact name=100, substring=80, all-words-in-name=70, all-in-desc=60, name-words≥2=50, desc-words≥2=45, any-in-name=35, any-in-desc=30; tie-breaking by total name+desc match count; `routed: false` → `fallback: "claude"` with reason; foundation for Module 3 (Tool Router)
+
+### Improved
+- `capability-check` — scoring now distinguishes multi-word name matches (≥2 words → 50) from multi-word description matches (≥2 words → 45), giving higher weight to semantically dense description matches than single-word name hits; tie-breaking by total match count prevents registry-order bias
+
 ## [0.45.0] — 2026-06-30
 
 ### New

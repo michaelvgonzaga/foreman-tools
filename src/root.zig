@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.45.0";
+pub const VERSION = "0.46.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6790,6 +6790,7 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
     for (query, 0..) |c, i| q_lower[i] = std.ascii.toLower(c);
 
     var best_score: u32 = 0;
+    var best_total: u32 = 0; // tie-breaker: total name+desc word matches
     var best_idx: usize = reg.subcommands.len;
 
     for (reg.subcommands, 0..) |cmd, idx| {
@@ -6802,6 +6803,8 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
         for (cmd.description, 0..) |c, i| desc_lower[i] = std.ascii.toLower(c);
 
         var score: u32 = 0;
+        var name_match_count: u32 = 0;
+        var desc_match_count: u32 = 0;
 
         if (std.mem.eql(u8, name_lower, q_lower)) {
             score = 100;
@@ -6816,29 +6819,35 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
             var word_count: u32 = 0;
             var it = std.mem.tokenizeScalar(u8, q_lower, ' ');
             while (it.next()) |word| {
-                if (word.len < 3) continue; // skip stop words (to, of, a, ...)
+                if (word.len < 3) continue; // skip stop words
                 word_count += 1;
                 if (std.mem.indexOf(u8, name_lower, word) != null) {
                     any_in_name = true;
+                    name_match_count += 1;
                 } else {
                     all_in_name = false;
                 }
                 if (std.mem.indexOf(u8, desc_lower, word) != null) {
                     any_in_desc = true;
+                    desc_match_count += 1;
                 } else {
                     all_in_desc = false;
                 }
             }
             if (word_count > 0) {
-                if (all_in_name)       score = 70
-                else if (all_in_desc)  score = 50
-                else if (any_in_name)  score = 40
-                else if (any_in_desc)  score = 30;
+                if (all_in_name)              score = 70
+                else if (all_in_desc)         score = 60
+                else if (name_match_count >= 2) score = 50
+                else if (desc_match_count >= 2) score = 45
+                else if (any_in_name)         score = 35
+                else if (any_in_desc)         score = 30;
             }
         }
 
-        if (score > best_score) {
+        const total = name_match_count + desc_match_count;
+        if (score > best_score or (score == best_score and total > best_total)) {
             best_score = score;
+            best_total = total;
             best_idx = idx;
         }
     }
@@ -6868,6 +6877,103 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
         .description = "",
         .args        = "",
         .confidence  = "none",
+    };
+}
+
+// --- route ---
+
+pub const RouteStep = struct {
+    step: u32,
+    layer: []const u8,
+    subcommand: []const u8,
+    arg_hint: []const u8,
+    reason: []const u8,
+    confidence: []const u8,
+};
+
+pub const RouteResult = struct {
+    task: []const u8,
+    routed: bool,
+    steps: []RouteStep,   // gpa-owned slice; strings within are borrowed from static data
+    fallback: []const u8, // "claude" or ""
+    reason: []const u8,   // fallback explanation or ""
+};
+
+const RouteEnrichment = struct {
+    subcommand: []const u8,
+    arg_hint: []const u8,
+    reason: []const u8,
+};
+
+const ROUTE_ENRICHMENTS: []const RouteEnrichment = &[_]RouteEnrichment{
+    .{ .subcommand = "git-cache",       .arg_hint = "<repo-path>",           .reason = "cached branch/HEAD/dirty/commits — hit:true means zero git subprocesses this session" },
+    .{ .subcommand = "status",          .arg_hint = "<workspace>",            .reason = "workspace up-to-date vs origin in one call; use before git operations" },
+    .{ .subcommand = "run-tests",       .arg_hint = "<abs-path>",             .reason = "auto-detects framework, runs tests, returns structured failures — read verdict + failures array" },
+    .{ .subcommand = "build",           .arg_hint = "<abs-path>",             .reason = "auto-detects build system, returns structured errors with file:line — read success + errors array" },
+    .{ .subcommand = "quality-gate",    .arg_hint = "<abs-path>",             .reason = "runs build + tests, severity-bucketed verdict — call before promoting or merging" },
+    .{ .subcommand = "prod-ready",      .arg_hint = "<abs-path>",             .reason = "composite gate (quality-gate + secret-scan + env-inspect) — call before any deploy" },
+    .{ .subcommand = "secret-scan",     .arg_hint = "<abs-path>",             .reason = "walks project tree, flags hardcoded secrets by pattern — read findings array" },
+    .{ .subcommand = "outline",         .arg_hint = "<abs-file-path>",        .reason = "function/class/struct names + line numbers — use instead of reading the full file" },
+    .{ .subcommand = "context-scan",    .arg_hint = "<abs-path>",             .reason = "compact project summary (structure + top files by size) — use before reading any source" },
+    .{ .subcommand = "context-rank",    .arg_hint = "<abs-root> <query>",     .reason = "score and rank files by query relevance — read highest-ranked files first" },
+    .{ .subcommand = "context-evidence",.arg_hint = "<abs-file> <pattern>",   .reason = "relevant excerpts (±10 lines) without reading the whole file" },
+    .{ .subcommand = "symbol-find",     .arg_hint = "<abs-root> <symbol>",    .reason = "definition + all references in one call — replaces grep + read N files" },
+    .{ .subcommand = "deps",            .arg_hint = "<abs-root>",             .reason = "declared dependencies from any manifest — replaces reading the full manifest file" },
+    .{ .subcommand = "env-inspect",     .arg_hint = "<abs-root>",             .reason = "detects languages, runtimes, package managers, missing deps — replaces which + --version loops" },
+    .{ .subcommand = "project-state",   .arg_hint = "<abs-path>",             .reason = "persisted decisions and known patterns across sessions from ~/.foreman/state/" },
+    .{ .subcommand = "cache-fetch",     .arg_hint = "<abs-file> <sub-key>",   .reason = "hit:true → skip the read entirely and use value; hit:false → read file + cache-store" },
+    .{ .subcommand = "delta-context",   .arg_hint = "<repo-path> [ref]",      .reason = "changed symbols + callers — targeted impact analysis without reading raw git diffs" },
+    .{ .subcommand = "validate-schema", .arg_hint = "<abs-file> <abs-schema>",.reason = "JSON Schema compliance check — returns violations with $-rooted paths" },
+    .{ .subcommand = "shell-run",       .arg_hint = "[--timeout <ms>] <cmd>", .reason = "safe shell execution with destructive-pattern blocking and structured output" },
+    .{ .subcommand = "scan",            .arg_hint = "<abs-path>",             .reason = "project structure, entry point, file inventory — use context-scan when only structure is needed" },
+    .{ .subcommand = "git-diff",        .arg_hint = "<repo> [ref]",           .reason = "structured diff summary — use instead of reading raw git diff output" },
+    .{ .subcommand = "doctor",          .arg_hint = "",                        .reason = "session deps check (claude/git/gh present + versions) — run once at session start" },
+    .{ .subcommand = "release-info",    .arg_hint = "<repo>",                 .reason = "latest tag, next version, dirty state in one call — use before /release or /brew-release" },
+    .{ .subcommand = "file-hash",       .arg_hint = "<abs-file>",             .reason = "SHA256 of a local file — foundation for change detection before re-reading" },
+    .{ .subcommand = "capability-check",.arg_hint = "<query...>",             .reason = "check if a task is natively handled before deciding whether to shell out" },
+};
+
+pub fn computeRoute(gpa: std.mem.Allocator, task: []const u8) !RouteResult {
+    const cap = try computeCapabilityCheck(gpa, task);
+    defer gpa.free(cap.query);
+
+    if (!cap.available) {
+        return .{
+            .task     = try gpa.dupe(u8, task),
+            .routed   = false,
+            .steps    = try gpa.alloc(RouteStep, 0),
+            .fallback = "claude",
+            .reason   = "no native subcommand matches this task",
+        };
+    }
+
+    // Find enrichment for the matched subcommand
+    var arg_hint: []const u8 = cap.args;
+    var reason: []const u8 = cap.description;
+    for (ROUTE_ENRICHMENTS) |enrich| {
+        if (std.mem.eql(u8, enrich.subcommand, cap.subcommand)) {
+            arg_hint = enrich.arg_hint;
+            reason   = enrich.reason;
+            break;
+        }
+    }
+
+    const steps = try gpa.alloc(RouteStep, 1);
+    steps[0] = .{
+        .step       = 1,
+        .layer      = "native",
+        .subcommand = cap.subcommand,
+        .arg_hint   = arg_hint,
+        .reason     = reason,
+        .confidence = cap.confidence,
+    };
+
+    return .{
+        .task     = try gpa.dupe(u8, task),
+        .routed   = true,
+        .steps    = steps,
+        .fallback = "",
+        .reason   = "",
     };
 }
 
