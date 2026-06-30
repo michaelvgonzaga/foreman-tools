@@ -53,6 +53,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  outline <file-path>\n", .{});
         try err.print("  deps <root-path>\n", .{});
         try err.print("  compat-check [--baseline | --update-baseline]\n", .{});
+        try err.print("  run-tests <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1381,6 +1382,53 @@ pub fn main(init: std.process.Init) !void {
             try out.print("],\n  \"advice\": \"{s}\"\n}}\n", .{esc_advice});
             try out.flush();
         }
+    } else if (std.mem.eql(u8, args[1], "run-tests")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools run-tests <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeRunTests(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.NoTestFramework => try err.print("error: no supported test framework found in: {s}\n", .{args[2]}),
+                else                  => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.failures) |f| { gpa.free(f.file); gpa.free(f.@"test"); gpa.free(f.message); }
+            gpa.free(result.failures);
+            gpa.free(result.command);
+        }
+
+        const esc_fw  = try root.allocJsonEscape(gpa, result.framework);
+        defer gpa.free(esc_fw);
+        const esc_cmd = try root.allocJsonEscape(gpa, result.command);
+        defer gpa.free(esc_cmd);
+
+        try out.print(
+            "{{\n  \"framework\": \"{s}\",\n  \"command\": \"{s}\",\n  \"success\": {s},\n  \"passed\": {d},\n  \"failed\": {d},\n  \"skipped\": {d},\n  \"duration_ms\": {d},\n  \"failures\": [",
+            .{ esc_fw, esc_cmd, if (result.success) "true" else "false",
+               result.passed, result.failed, result.skipped, result.duration_ms },
+        );
+        for (result.failures, 0..) |f, i| {
+            const esc_file = try root.allocJsonEscape(gpa, f.file);
+            defer gpa.free(esc_file);
+            const esc_test = try root.allocJsonEscape(gpa, f.@"test");
+            defer gpa.free(esc_test);
+            const esc_msg  = try root.allocJsonEscape(gpa, f.message);
+            defer gpa.free(esc_msg);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"file\": \"{s}\", \"line\": {d}, \"test\": \"{s}\", \"message\": \"{s}\"}}",
+                .{ esc_file, f.line, esc_test, esc_msg },
+            );
+        }
+        if (result.failures.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"truncated\": {s}\n}}\n", .{if (result.truncated) "true" else "false"});
+        try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
         try err.flush();

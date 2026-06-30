@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.30.0";
+pub const VERSION = "0.31.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -3795,6 +3795,448 @@ pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult
         .baseline_age = baseline_age,
         .drifted      = drifted,
         .advice       = advice,
+    };
+}
+
+// --- run-tests subcommand ---
+
+const MAX_TEST_FAILURES: usize = 50;
+
+pub const TestFailure = struct {
+    file:     []u8,
+    line:     u32,
+    @"test":  []u8,
+    message:  []u8,
+};
+
+pub const RunTestsResult = struct {
+    framework:   []const u8,
+    command:     []u8,
+    success:     bool,
+    passed:      u32,
+    failed:      u32,
+    skipped:     u32,
+    duration_ms: u64,
+    failures:    []TestFailure,
+    truncated:   bool,
+};
+
+fn detectTestFramework(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]const u8 {
+    // jest/vitest: package.json
+    const pkg = try std.fmt.allocPrint(gpa, "{s}/package.json", .{path});
+    defer gpa.free(pkg);
+    if (std.Io.Dir.openFileAbsolute(io, pkg, .{})) |f| {
+        var rbuf: [4096]u8 = undefined;
+        var r = f.reader(io, &rbuf);
+        const c = r.interface.allocRemaining(gpa, .limited(128 * 1024)) catch { f.close(io); return null; };
+        f.close(io);
+        defer gpa.free(c);
+        if (std.mem.indexOf(u8, c, "\"vitest\"") != null) return "vitest";
+        if (std.mem.indexOf(u8, c, "\"jest\"") != null) return "jest";
+    } else |_| {}
+
+    // pytest: pytest.ini, conftest.py, or pyproject.toml with "pytest"
+    const pytest_files = [_][]const u8{ "pytest.ini", "conftest.py" };
+    for (pytest_files) |pf| {
+        const p = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ path, pf });
+        defer gpa.free(p);
+        if (fileExists(io, p)) return "pytest";
+    }
+    const ppt = try std.fmt.allocPrint(gpa, "{s}/pyproject.toml", .{path});
+    defer gpa.free(ppt);
+    if (std.Io.Dir.openFileAbsolute(io, ppt, .{})) |f| {
+        var rbuf: [4096]u8 = undefined;
+        var r = f.reader(io, &rbuf);
+        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch { f.close(io); return null; };
+        f.close(io);
+        defer gpa.free(c);
+        if (std.mem.indexOf(u8, c, "pytest") != null) return "pytest";
+    } else |_| {}
+
+    // go test
+    const gomod = try std.fmt.allocPrint(gpa, "{s}/go.mod", .{path});
+    defer gpa.free(gomod);
+    if (fileExists(io, gomod)) return "go";
+
+    // cargo test
+    const cargo_toml = try std.fmt.allocPrint(gpa, "{s}/Cargo.toml", .{path});
+    defer gpa.free(cargo_toml);
+    if (fileExists(io, cargo_toml)) return "cargo";
+
+    // zig build test
+    const build_zig = try std.fmt.allocPrint(gpa, "{s}/build.zig", .{path});
+    defer gpa.free(build_zig);
+    if (fileExists(io, build_zig)) return "zig";
+
+    return null;
+}
+
+fn appendTestFailure(
+    gpa: std.mem.Allocator,
+    buf: []TestFailure,
+    n: *usize,
+    truncated: *bool,
+    file: []const u8,
+    line: u32,
+    name: []const u8,
+    msg: []const u8,
+) void {
+    if (n.* >= MAX_TEST_FAILURES) { truncated.* = true; return; }
+    buf[n.*] = .{
+        .file    = gpa.dupe(u8, file) catch return,
+        .line    = line,
+        .@"test" = gpa.dupe(u8, name) catch return,
+        .message = gpa.dupe(u8, msg)  catch return,
+    };
+    n.* += 1;
+}
+
+// Returns the first run of digits in s as a u32.
+fn firstUintIn(s: []const u8) u32 {
+    var i: usize = 0;
+    while (i < s.len and (s[i] < '0' or s[i] > '9')) i += 1;
+    if (i >= s.len) return 0;
+    var acc: u32 = 0;
+    while (i < s.len and s[i] >= '0' and s[i] <= '9') : (i += 1) acc = acc * 10 + (s[i] - '0');
+    return acc;
+}
+
+// Returns the integer immediately before `marker` in s (e.g. "5" before " passed").
+fn uintBefore(s: []const u8, marker: []const u8) u32 {
+    const pos = std.mem.indexOf(u8, s, marker) orelse return 0;
+    var end = pos;
+    while (end > 0 and s[end - 1] == ' ') end -= 1;
+    var start = end;
+    while (start > 0 and s[start - 1] >= '0' and s[start - 1] <= '9') start -= 1;
+    if (start == end) return 0;
+    return std.fmt.parseInt(u32, s[start..end], 10) catch 0;
+}
+
+fn parseZigOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    passed: *u32,
+    failed: *u32,
+    skipped: *u32,
+    buf: []TestFailure,
+    n: *usize,
+    truncated: *bool,
+) void {
+    _ = skipped;
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    var pending_name: [256]u8 = undefined;
+    var pending_len: usize = 0;
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        // "All N tests passed."
+        if (std.mem.startsWith(u8, t, "All ") and std.mem.indexOf(u8, t, " tests passed") != null) {
+            passed.* = firstUintIn(t[4..]);
+            failed.* = 0;
+            continue;
+        }
+        // "N passed; M failed."
+        if (std.mem.indexOf(u8, t, " passed") != null and std.mem.indexOf(u8, t, " failed") != null and
+            std.mem.indexOf(u8, t, "Test [") == null) {
+            passed.* = firstUintIn(t);
+            failed.* = uintBefore(t, " failed");
+            continue;
+        }
+        // "Test [n/total] name... PASS/ok/FAIL"
+        if (std.mem.startsWith(u8, t, "Test [")) {
+            const dots = std.mem.lastIndexOf(u8, t, "...") orelse continue;
+            const status = std.mem.trim(u8, t[dots + 3..], " \t");
+            const brk = std.mem.indexOf(u8, t, "] ") orelse continue;
+            const name = t[brk + 2 .. dots];
+            if (std.mem.startsWith(u8, status, "FAIL") or std.mem.startsWith(u8, status, "fail")) {
+                const cl = @min(name.len, 255);
+                @memcpy(pending_name[0..cl], name[0..cl]);
+                pending_len = cl;
+            } else {
+                pending_len = 0;
+            }
+            continue;
+        }
+        // File ref after a FAIL: "path/file.zig:line:col: ..."
+        if (pending_len > 0 and std.mem.indexOf(u8, t, ".zig:") != null) {
+            const c1 = std.mem.indexOf(u8, t, ":") orelse t.len;
+            const file = t[0..c1];
+            const rest = if (c1 + 1 < t.len) t[c1 + 1..] else "";
+            const c2 = std.mem.indexOf(u8, rest, ":") orelse rest.len;
+            const ln = std.fmt.parseInt(u32, rest[0..c2], 10) catch 0;
+            appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], t);
+            pending_len = 0;
+        }
+    }
+}
+
+fn parseCargoOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    passed: *u32,
+    failed: *u32,
+    skipped: *u32,
+    buf: []TestFailure,
+    n: *usize,
+    truncated: *bool,
+) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    var pending_name: [256]u8 = undefined;
+    var pending_len: usize = 0;
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        // "test result: ok. N passed; M failed; K ignored"
+        if (std.mem.startsWith(u8, t, "test result:")) {
+            if (std.mem.indexOf(u8, t, "passed") != null) passed.* += firstUintIn(t[12..]);
+            if (std.mem.indexOf(u8, t, "ignored") != null) skipped.* += uintBefore(t, " ignored");
+            if (std.mem.indexOf(u8, t, "FAILED") != null) failed.* += uintBefore(t, " failed");
+            continue;
+        }
+        // "test name ... FAILED"
+        if (std.mem.startsWith(u8, t, "test ") and std.mem.endsWith(u8, t, "FAILED")) {
+            const dots = std.mem.lastIndexOf(u8, t, " ... ") orelse t.len;
+            const name = t[5..dots];
+            const cl = @min(name.len, 255);
+            @memcpy(pending_name[0..cl], name[0..cl]);
+            pending_len = cl;
+            continue;
+        }
+        // "thread '...' panicked at '...', src/lib.rs:N:M"
+        if (pending_len > 0 and std.mem.indexOf(u8, t, "panicked at") != null) {
+            var file: []const u8 = "";
+            var ln: u32 = 0;
+            const rs_pos  = std.mem.indexOf(u8, t, ".rs:");
+            const zig_pos = std.mem.indexOf(u8, t, ".zig:");
+            const ext_pos = rs_pos orelse zig_pos;
+            if (ext_pos) |ep| {
+                const el: usize = if (rs_pos != null) 3 else 4;
+                var start = ep;
+                while (start > 0 and t[start - 1] != ' ' and t[start - 1] != '\'' and t[start - 1] != '"') start -= 1;
+                file = t[start..ep + el];
+                const after = t[ep + el..];
+                if (after.len > 0 and after[0] == ':') {
+                    const c2 = std.mem.indexOf(u8, after[1..], ":") orelse after.len - 1;
+                    ln = std.fmt.parseInt(u32, after[1..c2 + 1], 10) catch 0;
+                }
+            }
+            appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], t);
+            pending_len = 0;
+        }
+    }
+}
+
+fn parseGoOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    passed: *u32,
+    failed: *u32,
+    skipped: *u32,
+    buf: []TestFailure,
+    n: *usize,
+    truncated: *bool,
+) void {
+    _ = skipped;
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    var pending_name: [256]u8 = undefined;
+    var pending_len: usize = 0;
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "--- PASS:")) {
+            passed.* += 1;
+            pending_len = 0;
+        } else if (std.mem.startsWith(u8, t, "--- FAIL:")) {
+            failed.* += 1;
+            const rest = t[9..];
+            const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse rest.len;
+            const name = std.mem.trim(u8, rest[0..sp], " \t");
+            const cl = @min(name.len, 255);
+            @memcpy(pending_name[0..cl], name[0..cl]);
+            pending_len = cl;
+        } else if (pending_len > 0 and (std.mem.indexOf(u8, t, ".go:") != null or
+            std.mem.indexOf(u8, t, "_test.go:") != null)) {
+            const c1 = std.mem.indexOf(u8, t, ":") orelse t.len;
+            const file = t[0..c1];
+            const rest2 = if (c1 + 1 < t.len) t[c1 + 1..] else "";
+            const c2 = std.mem.indexOf(u8, rest2, ":") orelse rest2.len;
+            const ln = std.fmt.parseInt(u32, rest2[0..c2], 10) catch 0;
+            const msg = if (c2 + 1 < rest2.len) std.mem.trim(u8, rest2[c2 + 1..], " \t") else "";
+            appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], msg);
+            pending_len = 0;
+        }
+    }
+}
+
+fn parsePytestOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    passed: *u32,
+    failed: *u32,
+    skipped: *u32,
+    buf: []TestFailure,
+    n: *usize,
+    truncated: *bool,
+) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    var pass_line: u32 = 0;
+    var fail_line: u32 = 0;
+    var skip_line: u32 = 0;
+    var got_summary = false;
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "PASSED ")) {
+            pass_line += 1;
+        } else if (std.mem.startsWith(u8, t, "FAILED ")) {
+            fail_line += 1;
+            const rest = t[7..];
+            const dash = std.mem.indexOf(u8, rest, " - ") orelse rest.len;
+            const test_ref = rest[0..dash];
+            const msg = if (dash + 3 < rest.len) rest[dash + 3..] else "";
+            const dcolon = std.mem.indexOf(u8, test_ref, "::") orelse test_ref.len;
+            const file = test_ref[0..dcolon];
+            const name = if (dcolon + 2 < test_ref.len) test_ref[dcolon + 2..] else test_ref;
+            appendTestFailure(gpa, buf, n, truncated, file, 0, name, msg);
+        } else if (std.mem.startsWith(u8, t, "SKIPPED ") or std.mem.startsWith(u8, t, "XFAIL ")) {
+            skip_line += 1;
+        } else if (std.mem.indexOf(u8, t, " passed") != null and std.mem.indexOf(u8, t, " in ") != null) {
+            got_summary = true;
+            if (std.mem.indexOf(u8, t, "failed") != null) {
+                failed.* = firstUintIn(t);
+                passed.* = uintBefore(t, " passed");
+            } else {
+                passed.* = firstUintIn(t);
+            }
+            if (std.mem.indexOf(u8, t, "skipped") != null) skipped.* = uintBefore(t, " skipped");
+        }
+    }
+    if (!got_summary) {
+        passed.*  = pass_line;
+        failed.*  = fail_line;
+        skipped.* = skip_line;
+    }
+}
+
+fn parseJestOutput(
+    output: []const u8,
+    passed: *u32,
+    failed: *u32,
+    skipped: *u32,
+) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        // "Tests:       1 failed, 10 passed, 11 total"
+        if (std.mem.startsWith(u8, t, "Tests:")) {
+            const rest = t[6..];
+            if (std.mem.indexOf(u8, rest, "failed") != null) failed.* = firstUintIn(rest);
+            if (std.mem.indexOf(u8, rest, "passed") != null) passed.* = uintBefore(rest, " passed");
+            const sk_marker: ?[]const u8 =
+                if (std.mem.indexOf(u8, rest, " skipped") != null) " skipped"
+                else if (std.mem.indexOf(u8, rest, " pending") != null) " pending"
+                else null;
+            if (sk_marker) |m| skipped.* = uintBefore(rest, m);
+        }
+    }
+}
+
+pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !RunTestsResult {
+    const fw = try detectTestFramework(gpa, io, path) orelse return error.NoTestFramework;
+
+    const fw_argv: []const []const u8 = if (std.mem.eql(u8, fw, "jest"))
+        &.{ "env", "-C", path, "npx", "jest" }
+    else if (std.mem.eql(u8, fw, "vitest"))
+        &.{ "env", "-C", path, "npx", "vitest", "run" }
+    else if (std.mem.eql(u8, fw, "pytest"))
+        &.{ "env", "-C", path, "python3", "-m", "pytest", "--tb=short", "-q" }
+    else if (std.mem.eql(u8, fw, "go"))
+        &.{ "env", "-C", path, "go", "test", "./..." }
+    else if (std.mem.eql(u8, fw, "cargo"))
+        &.{ "env", "-C", path, "cargo", "test" }
+    else // zig
+        &.{ "env", "-C", path, "zig", "build", "test" };
+
+    const command: []u8 = if (std.mem.eql(u8, fw, "jest"))
+        try gpa.dupe(u8, "npx jest")
+    else if (std.mem.eql(u8, fw, "vitest"))
+        try gpa.dupe(u8, "npx vitest run")
+    else if (std.mem.eql(u8, fw, "pytest"))
+        try gpa.dupe(u8, "python3 -m pytest --tb=short -q")
+    else if (std.mem.eql(u8, fw, "go"))
+        try gpa.dupe(u8, "go test ./...")
+    else if (std.mem.eql(u8, fw, "cargo"))
+        try gpa.dupe(u8, "cargo test")
+    else
+        try gpa.dupe(u8, "zig build test");
+    errdefer gpa.free(command);
+
+    var ts_start: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_start);
+
+    const r = std.process.run(gpa, io, .{ .argv = fw_argv }) catch {
+        const failures = try gpa.alloc(TestFailure, 0);
+        return RunTestsResult{
+            .framework   = fw,
+            .command     = command,
+            .success     = false,
+            .passed      = 0,
+            .failed      = 1,
+            .skipped     = 0,
+            .duration_ms = 0,
+            .failures    = failures,
+            .truncated   = false,
+        };
+    };
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    var ts_end: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
+    const duration_ms: u64 = blk: {
+        const start_ms = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
+        const end_ms   = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        break :blk if (end_ms > start_ms) end_ms - start_ms else 0;
+    };
+
+    const success = switch (r.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+
+    const combined = try std.fmt.allocPrint(gpa, "{s}\n{s}", .{ r.stdout, r.stderr });
+    defer gpa.free(combined);
+
+    var passed: u32 = 0;
+    var failed: u32 = 0;
+    var skipped: u32 = 0;
+    var fbuf: [MAX_TEST_FAILURES]TestFailure = undefined;
+    var fn_count: usize = 0;
+    var truncated = false;
+
+    if (std.mem.eql(u8, fw, "zig")) {
+        parseZigOutput(gpa, combined, &passed, &failed, &skipped, &fbuf, &fn_count, &truncated);
+    } else if (std.mem.eql(u8, fw, "cargo")) {
+        parseCargoOutput(gpa, combined, &passed, &failed, &skipped, &fbuf, &fn_count, &truncated);
+    } else if (std.mem.eql(u8, fw, "go")) {
+        parseGoOutput(gpa, combined, &passed, &failed, &skipped, &fbuf, &fn_count, &truncated);
+    } else if (std.mem.eql(u8, fw, "pytest")) {
+        parsePytestOutput(gpa, combined, &passed, &failed, &skipped, &fbuf, &fn_count, &truncated);
+    } else {
+        parseJestOutput(combined, &passed, &failed, &skipped);
+    }
+
+    if (passed == 0 and failed == 0 and !success) failed = 1;
+
+    const failures = try gpa.alloc(TestFailure, fn_count);
+    for (fbuf[0..fn_count], 0..) |f, i| failures[i] = f;
+
+    return .{
+        .framework   = fw,
+        .command     = command,
+        .success     = success,
+        .passed      = passed,
+        .failed      = failed,
+        .skipped     = skipped,
+        .duration_ms = duration_ms,
+        .failures    = failures,
+        .truncated   = truncated,
     };
 }
 

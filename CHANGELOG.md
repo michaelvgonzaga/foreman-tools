@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.31.0] — 2026-06-30
+
+### New
+- `run-tests <path>` — auto-detects test framework (jest/vitest/pytest/go/cargo/zig), runs tests, returns `{ framework, command, success, passed, failed, skipped, duration_ms, failures: [{file, line, test, message}], truncated }`; failures capped at 50; uses `env -C <path>` as working-directory mechanism; Claude reads verdict + structured failures without seeing raw test runner output
+
 ## [0.30.0] — 2026-06-30
 
 ### New
