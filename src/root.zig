@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.31.0";
+pub const VERSION = "0.32.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -4236,6 +4236,359 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
         .skipped     = skipped,
         .duration_ms = duration_ms,
         .failures    = failures,
+        .truncated   = truncated,
+    };
+}
+
+// --- build subcommand ---
+
+const MAX_BUILD_ERRORS: usize = 50;
+const MAX_BUILD_WARNINGS: usize = 20;
+
+pub const BuildError = struct {
+    file:     []u8,
+    line:     u32,
+    col:      u32,
+    message:  []u8,
+    severity: []const u8,
+};
+
+pub const BuildWarning = struct {
+    file:    []u8,
+    line:    u32,
+    col:     u32,
+    message: []u8,
+};
+
+pub const BuildResult = struct {
+    tool:        []const u8,
+    command:     []u8,
+    success:     bool,
+    errors:      []BuildError,
+    warnings:    []BuildWarning,
+    duration_ms: u64,
+    truncated:   bool,
+};
+
+fn appendBuildError(
+    gpa: std.mem.Allocator,
+    buf: []BuildError,
+    n: *usize,
+    truncated: *bool,
+    file: []const u8,
+    line: u32,
+    col: u32,
+    msg: []const u8,
+    sev: []const u8,
+) void {
+    if (n.* >= buf.len) { truncated.* = true; return; }
+    buf[n.*] = .{
+        .file     = gpa.dupe(u8, file) catch return,
+        .line     = line,
+        .col      = col,
+        .message  = gpa.dupe(u8, msg) catch return,
+        .severity = sev,
+    };
+    n.* += 1;
+}
+
+fn appendBuildWarning(
+    gpa: std.mem.Allocator,
+    buf: []BuildWarning,
+    n: *usize,
+    truncated: *bool,
+    file: []const u8,
+    line: u32,
+    col: u32,
+    msg: []const u8,
+) void {
+    if (n.* >= buf.len) { truncated.* = true; return; }
+    buf[n.*] = .{
+        .file    = gpa.dupe(u8, file) catch return,
+        .line    = line,
+        .col     = col,
+        .message = gpa.dupe(u8, msg) catch return,
+    };
+    n.* += 1;
+}
+
+fn detectBuildTool(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]const u8 {
+    const cargo_toml = try std.fmt.allocPrint(gpa, "{s}/Cargo.toml", .{path});
+    defer gpa.free(cargo_toml);
+    if (fileExists(io, cargo_toml)) return "cargo";
+
+    const build_zig = try std.fmt.allocPrint(gpa, "{s}/build.zig", .{path});
+    defer gpa.free(build_zig);
+    if (fileExists(io, build_zig)) return "zig";
+
+    const gomod = try std.fmt.allocPrint(gpa, "{s}/go.mod", .{path});
+    defer gpa.free(gomod);
+    if (fileExists(io, gomod)) return "go";
+
+    const pkg = try std.fmt.allocPrint(gpa, "{s}/package.json", .{path});
+    defer gpa.free(pkg);
+    if (std.Io.Dir.openFileAbsolute(io, pkg, .{})) |f| {
+        var rbuf: [4096]u8 = undefined;
+        var r = f.reader(io, &rbuf);
+        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch { f.close(io); return null; };
+        f.close(io);
+        defer gpa.free(c);
+        if (std.mem.indexOf(u8, c, "\"scripts\"") != null and
+            std.mem.indexOf(u8, c, "\"build\"") != null) return "npm";
+    } else |_| {}
+
+    const makefile = try std.fmt.allocPrint(gpa, "{s}/Makefile", .{path});
+    defer gpa.free(makefile);
+    if (fileExists(io, makefile)) return "make";
+
+    return null;
+}
+
+// Cargo build output: state machine pairing "error[Exx]: msg" with " --> file:N:M".
+fn parseCargoBuildOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    errbuf: []BuildError,
+    n_err: *usize,
+    warnbuf: []BuildWarning,
+    n_warn: *usize,
+    truncated: *bool,
+) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    var pmsg: [512]u8 = undefined;
+    var pmsg_len: usize = 0;
+    var psev: []const u8 = "";
+
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, t, "error[") or std.mem.startsWith(u8, t, "error: ")) {
+            const colon = std.mem.indexOf(u8, t, ": ") orelse t.len;
+            const msg = if (colon + 2 < t.len) t[colon + 2..] else t;
+            const cl = @min(msg.len, pmsg.len);
+            @memcpy(pmsg[0..cl], msg[0..cl]);
+            pmsg_len = cl;
+            psev = "error";
+        } else if (std.mem.startsWith(u8, t, "warning[") or std.mem.startsWith(u8, t, "warning: ")) {
+            const colon = std.mem.indexOf(u8, t, ": ") orelse t.len;
+            const msg = if (colon + 2 < t.len) t[colon + 2..] else t;
+            const cl = @min(msg.len, pmsg.len);
+            @memcpy(pmsg[0..cl], msg[0..cl]);
+            pmsg_len = cl;
+            psev = "warning";
+        } else if (pmsg_len > 0 and std.mem.startsWith(u8, t, "--> ")) {
+            const loc = t[4..];
+            const c2_opt = std.mem.lastIndexOf(u8, loc, ":");
+            if (c2_opt == null) { pmsg_len = 0; psev = ""; continue; }
+            const c2 = c2_opt.?;
+            const c1_opt = std.mem.lastIndexOf(u8, loc[0..c2], ":");
+            const file: []const u8 = if (c1_opt) |c1| loc[0..c1] else loc[0..c2];
+            const ln_s: []const u8 = if (c1_opt) |c1| loc[c1 + 1..c2] else loc[c2 + 1..];
+            const col_s: []const u8 = if (c1_opt != null) loc[c2 + 1..] else "";
+            const ln = std.fmt.parseInt(u32, ln_s, 10) catch 0;
+            const col_num = std.fmt.parseInt(u32, col_s, 10) catch 0;
+            if (std.mem.eql(u8, psev, "error")) {
+                appendBuildError(gpa, errbuf, n_err, truncated, file, ln, col_num, pmsg[0..pmsg_len], "error");
+            } else {
+                appendBuildWarning(gpa, warnbuf, n_warn, truncated, file, ln, col_num, pmsg[0..pmsg_len]);
+            }
+            pmsg_len = 0;
+            psev = "";
+        }
+    }
+}
+
+// Zig/gcc/clang build output: "path:N:M: error: message" or "path:N: error: message".
+fn parseZigBuildOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    errbuf: []BuildError,
+    n_err: *usize,
+    warnbuf: []BuildWarning,
+    n_warn: *usize,
+    truncated: *bool,
+) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        const is_err = std.mem.indexOf(u8, t, ": error: ") != null;
+        const is_warn = std.mem.indexOf(u8, t, ": warning: ") != null;
+        if (!is_err and !is_warn) continue;
+        const sev_marker: []const u8 = if (is_err) ": error: " else ": warning: ";
+        const sev_pos = std.mem.indexOf(u8, t, sev_marker) orelse continue;
+        const loc = t[0..sev_pos];
+        const c2_opt = std.mem.lastIndexOf(u8, loc, ":");
+        if (c2_opt == null) continue;
+        const c2 = c2_opt.?;
+        const c1_opt = std.mem.lastIndexOf(u8, loc[0..c2], ":");
+        const file: []const u8 = if (c1_opt) |c1| loc[0..c1] else loc[0..c2];
+        if (file.len == 0) continue;
+        const ln_s: []const u8 = if (c1_opt) |c1| loc[c1 + 1..c2] else loc[c2 + 1..];
+        const col_s: []const u8 = if (c1_opt != null) loc[c2 + 1..] else "";
+        const ln = std.fmt.parseInt(u32, ln_s, 10) catch 0;
+        const col_num = std.fmt.parseInt(u32, col_s, 10) catch 0;
+        const msg = t[sev_pos + sev_marker.len..];
+        if (is_err) {
+            appendBuildError(gpa, errbuf, n_err, truncated, file, ln, col_num, msg, "error");
+        } else {
+            appendBuildWarning(gpa, warnbuf, n_warn, truncated, file, ln, col_num, msg);
+        }
+    }
+}
+
+// Go build output: "./file.go:N:M: message".
+fn parseGoBuildOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    errbuf: []BuildError,
+    n_err: *usize,
+    truncated: *bool,
+) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.indexOf(u8, t, ".go:") == null) continue;
+        if (!std.mem.startsWith(u8, t, "./") and !std.mem.startsWith(u8, t, "/")) continue;
+        const c1 = std.mem.indexOf(u8, t, ":") orelse continue;
+        const file = t[0..c1];
+        const rest1 = if (c1 + 1 < t.len) t[c1 + 1..] else continue;
+        const c2 = std.mem.indexOf(u8, rest1, ":") orelse continue;
+        const ln = std.fmt.parseInt(u32, rest1[0..c2], 10) catch continue;
+        const rest2 = if (c2 + 1 < rest1.len) rest1[c2 + 1..] else continue;
+        const c3_opt = std.mem.indexOf(u8, rest2, ":");
+        const col_num: u32 = if (c3_opt) |c3| std.fmt.parseInt(u32, rest2[0..c3], 10) catch 0 else 0;
+        const msg_raw: []const u8 = if (c3_opt) |c3| (if (c3 + 1 < rest2.len) rest2[c3 + 1..] else rest2) else rest2;
+        const msg = std.mem.trim(u8, msg_raw, " \t");
+        appendBuildError(gpa, errbuf, n_err, truncated, file, ln, col_num, msg, "error");
+    }
+}
+
+// TypeScript compiler output: "file.ts(N,M): error TSXXXX: message".
+fn parseTscOutput(
+    gpa: std.mem.Allocator,
+    output: []const u8,
+    errbuf: []BuildError,
+    n_err: *usize,
+    warnbuf: []BuildWarning,
+    n_warn: *usize,
+    truncated: *bool,
+) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        const is_err = std.mem.indexOf(u8, t, "): error ") != null;
+        const is_warn = std.mem.indexOf(u8, t, "): warning ") != null;
+        if (!is_err and !is_warn) continue;
+        const paren = std.mem.indexOf(u8, t, "(") orelse continue;
+        const file = t[0..paren];
+        if (!std.mem.endsWith(u8, file, ".ts") and
+            !std.mem.endsWith(u8, file, ".tsx") and
+            !std.mem.endsWith(u8, file, ".js")) continue;
+        const inner_start = paren + 1;
+        const close_off = std.mem.indexOf(u8, t[inner_start..], ")") orelse continue;
+        const coords = t[inner_start .. inner_start + close_off];
+        const comma = std.mem.indexOf(u8, coords, ",") orelse coords.len;
+        const ln = std.fmt.parseInt(u32, coords[0..comma], 10) catch 0;
+        const col_num: u32 = if (comma + 1 < coords.len) std.fmt.parseInt(u32, coords[comma + 1..], 10) catch 0 else 0;
+        const sev_marker: []const u8 = if (is_err) "): error " else "): warning ";
+        const sev_pos = std.mem.indexOf(u8, t, sev_marker) orelse continue;
+        const msg = t[sev_pos + sev_marker.len..];
+        if (is_err) {
+            appendBuildError(gpa, errbuf, n_err, truncated, file, ln, col_num, msg, "error");
+        } else {
+            appendBuildWarning(gpa, warnbuf, n_warn, truncated, file, ln, col_num, msg);
+        }
+    }
+}
+
+pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !BuildResult {
+    const tool = try detectBuildTool(gpa, io, path) orelse return error.NoBuildSystem;
+
+    const argv: []const []const u8 = if (std.mem.eql(u8, tool, "cargo"))
+        &.{ "env", "-C", path, "cargo", "build" }
+    else if (std.mem.eql(u8, tool, "zig"))
+        &.{ "env", "-C", path, "zig", "build" }
+    else if (std.mem.eql(u8, tool, "go"))
+        &.{ "env", "-C", path, "go", "build", "./..." }
+    else if (std.mem.eql(u8, tool, "npm"))
+        &.{ "env", "-C", path, "npm", "run", "build" }
+    else
+        &.{ "env", "-C", path, "make" };
+
+    const command: []u8 = if (std.mem.eql(u8, tool, "cargo"))
+        try gpa.dupe(u8, "cargo build")
+    else if (std.mem.eql(u8, tool, "zig"))
+        try gpa.dupe(u8, "zig build")
+    else if (std.mem.eql(u8, tool, "go"))
+        try gpa.dupe(u8, "go build ./...")
+    else if (std.mem.eql(u8, tool, "npm"))
+        try gpa.dupe(u8, "npm run build")
+    else
+        try gpa.dupe(u8, "make");
+    errdefer gpa.free(command);
+
+    var ts_start: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_start);
+
+    const r = std.process.run(gpa, io, .{ .argv = argv }) catch {
+        const errors = try gpa.alloc(BuildError, 0);
+        const warnings = try gpa.alloc(BuildWarning, 0);
+        return BuildResult{
+            .tool        = tool,
+            .command     = command,
+            .success     = false,
+            .errors      = errors,
+            .warnings    = warnings,
+            .duration_ms = 0,
+            .truncated   = false,
+        };
+    };
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    var ts_end: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
+    const duration_ms: u64 = blk: {
+        const start_ms = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
+        const end_ms   = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        break :blk if (end_ms > start_ms) end_ms - start_ms else 0;
+    };
+
+    const success = switch (r.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+
+    const combined = try std.fmt.allocPrint(gpa, "{s}\n{s}", .{ r.stdout, r.stderr });
+    defer gpa.free(combined);
+
+    var errbuf: [MAX_BUILD_ERRORS]BuildError = undefined;
+    var warnbuf: [MAX_BUILD_WARNINGS]BuildWarning = undefined;
+    var n_err: usize = 0;
+    var n_warn: usize = 0;
+    var truncated: bool = false;
+
+    if (std.mem.eql(u8, tool, "cargo")) {
+        parseCargoBuildOutput(gpa, combined, errbuf[0..], &n_err, warnbuf[0..], &n_warn, &truncated);
+    } else if (std.mem.eql(u8, tool, "zig") or std.mem.eql(u8, tool, "make")) {
+        parseZigBuildOutput(gpa, combined, errbuf[0..], &n_err, warnbuf[0..], &n_warn, &truncated);
+    } else if (std.mem.eql(u8, tool, "go")) {
+        parseGoBuildOutput(gpa, combined, errbuf[0..], &n_err, &truncated);
+    } else {
+        parseTscOutput(gpa, combined, errbuf[0..], &n_err, warnbuf[0..], &n_warn, &truncated);
+    }
+
+    const errors = try gpa.alloc(BuildError, n_err);
+    for (errbuf[0..n_err], 0..) |e, i| errors[i] = e;
+    const warnings = try gpa.alloc(BuildWarning, n_warn);
+    for (warnbuf[0..n_warn], 0..) |w, i| warnings[i] = w;
+
+    return .{
+        .tool        = tool,
+        .command     = command,
+        .success     = success,
+        .errors      = errors,
+        .warnings    = warnings,
+        .duration_ms = duration_ms,
         .truncated   = truncated,
     };
 }

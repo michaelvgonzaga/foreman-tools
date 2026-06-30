@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.32.0] — 2026-06-30
+
+### New
+- `build <path>` — auto-detects build system (Cargo.toml→cargo, build.zig→zig, go.mod→go, package.json with "build" script→npm, Makefile→make), runs the build, returns `{ tool, command, success, errors: [{file, line, col, message, severity}], warnings: [{file, line, col, message}], duration_ms, truncated }`; errors capped at 50, warnings at 20; uses `env -C <path>` as working-directory mechanism; per-toolchain parsers (cargo state-machine via " --> ", zig/gcc/clang colon-separated, go dotted-path, TypeScript paren-coords)
+
 ## [0.31.0] — 2026-06-30
 
 ### New

@@ -54,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  deps <root-path>\n", .{});
         try err.print("  compat-check [--baseline | --update-baseline]\n", .{});
         try err.print("  run-tests <path>\n", .{});
+        try err.print("  build <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1428,6 +1429,66 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.failures.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"truncated\": {s}\n}}\n", .{if (result.truncated) "true" else "false"});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "build")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools build <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeBuild(gpa, io, args[2]) catch |e| {
+            switch (e) {
+                error.NoBuildSystem => try err.print("error: no supported build system found in: {s}\n", .{args[2]}),
+                else                => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.errors) |be| { gpa.free(be.file); gpa.free(be.message); }
+            gpa.free(result.errors);
+            for (result.warnings) |bw| { gpa.free(bw.file); gpa.free(bw.message); }
+            gpa.free(result.warnings);
+            gpa.free(result.command);
+        }
+
+        const esc_tool = try root.allocJsonEscape(gpa, result.tool);
+        defer gpa.free(esc_tool);
+        const esc_cmd = try root.allocJsonEscape(gpa, result.command);
+        defer gpa.free(esc_cmd);
+
+        try out.print(
+            "{{\n  \"tool\": \"{s}\",\n  \"command\": \"{s}\",\n  \"success\": {s},\n  \"errors\": [",
+            .{ esc_tool, esc_cmd, if (result.success) "true" else "false" },
+        );
+        for (result.errors, 0..) |be, i| {
+            const esc_file = try root.allocJsonEscape(gpa, be.file);
+            defer gpa.free(esc_file);
+            const esc_msg = try root.allocJsonEscape(gpa, be.message);
+            defer gpa.free(esc_msg);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"file\": \"{s}\", \"line\": {d}, \"col\": {d}, \"message\": \"{s}\", \"severity\": \"{s}\"}}",
+                .{ esc_file, be.line, be.col, esc_msg, be.severity },
+            );
+        }
+        if (result.errors.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"warnings\": [", .{});
+        for (result.warnings, 0..) |bw, i| {
+            const esc_file = try root.allocJsonEscape(gpa, bw.file);
+            defer gpa.free(esc_file);
+            const esc_msg = try root.allocJsonEscape(gpa, bw.message);
+            defer gpa.free(esc_msg);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"file\": \"{s}\", \"line\": {d}, \"col\": {d}, \"message\": \"{s}\"}}",
+                .{ esc_file, bw.line, bw.col, esc_msg },
+            );
+        }
+        if (result.warnings.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s}\n}}\n",
+            .{ result.duration_ms, if (result.truncated) "true" else "false" });
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
