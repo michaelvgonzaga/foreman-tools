@@ -423,19 +423,19 @@ pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
 // --- scan subcommand ---
 
 pub const FileEntry = struct {
-    path: []u8,           // owned by caller
+    path: []u8, // owned by caller
     bytes: u64,
-    kind: []const u8,     // static string literal — do not free
+    kind: []const u8, // static string literal — do not free
 };
 
 pub const ScanResult = struct {
     framework: []const u8, // static string literal — do not free
-    keyFiles: [][]u8,      // owned by caller
+    keyFiles: [][]u8, // owned by caller
     depCount: u32,
-    dirMap: [][]u8,        // owned by caller
-    entryPoint: ?[]u8,     // owned by caller, null if not detected
-    fileCount: u32,        // total file count before 500-file cap
-    files: []FileEntry,    // owned by caller
+    dirMap: [][]u8, // owned by caller
+    entryPoint: ?[]u8, // owned by caller, null if not detected
+    fileCount: u32, // total file count before 500-file cap
+    files: []FileEntry, // owned by caller
 };
 
 // Comptime hash maps — O(1) lookups replacing O(n) linear scans.
@@ -443,45 +443,39 @@ pub const ScanResult = struct {
 // which is faster than linear scan for any set larger than ~4 entries.
 
 const FRAMEWORK_MAP = std.StaticStringMap([]const u8).initComptime(&.{
-    .{ "package.json",    "Node.js" },
-    .{ "go.mod",          "Go" },
-    .{ "build.zig",       "Zig" },
-    .{ "Cargo.toml",      "Rust" },
-    .{ "pyproject.toml",  "Python" },
-    .{ "requirements.txt","Python" },
-    .{ "setup.py",        "Python" },
-    .{ "Gemfile",         "Ruby" },
-    .{ "composer.json",   "PHP" },
-    .{ "pom.xml",         "Java (Maven)" },
-    .{ "build.gradle",    "Java (Gradle)" },
-    .{ "pubspec.yaml",    "Flutter/Dart" },
-    .{ "mix.exs",         "Elixir" },
+    .{ "package.json", "Node.js" },
+    .{ "go.mod", "Go" },
+    .{ "build.zig", "Zig" },
+    .{ "Cargo.toml", "Rust" },
+    .{ "pyproject.toml", "Python" },
+    .{ "requirements.txt", "Python" },
+    .{ "setup.py", "Python" },
+    .{ "Gemfile", "Ruby" },
+    .{ "composer.json", "PHP" },
+    .{ "pom.xml", "Java (Maven)" },
+    .{ "build.gradle", "Java (Gradle)" },
+    .{ "pubspec.yaml", "Flutter/Dart" },
+    .{ "mix.exs", "Elixir" },
 });
 
 const CONFIG_FILE_MAP = std.StaticStringMap(void).initComptime(&.{
-    .{ "package.json", {} },    .{ "package-lock.json", {} }, .{ "yarn.lock", {} },     .{ "pnpm-lock.yaml", {} },
-    .{ "pyproject.toml", {} },  .{ "requirements.txt", {} },  .{ "setup.py", {} },      .{ "setup.cfg", {} },
-    .{ "go.mod", {} },          .{ "go.sum", {} },
-    .{ "build.zig", {} },       .{ "build.zig.zon", {} },
-    .{ "Cargo.toml", {} },      .{ "Cargo.lock", {} },
-    .{ "Gemfile", {} },         .{ "Gemfile.lock", {} },
-    .{ "composer.json", {} },   .{ "composer.lock", {} },
-    .{ "pom.xml", {} },         .{ "build.gradle", {} },      .{ "build.gradle.kts", {} },
-    .{ "pubspec.yaml", {} },    .{ "mix.exs", {} },
-    .{ "Dockerfile", {} },      .{ "docker-compose.yml", {} }, .{ "docker-compose.yaml", {} },
-    .{ ".env.example", {} },    .{ ".env.sample", {} },
-    .{ "tsconfig.json", {} },   .{ "jsconfig.json", {} },
-    .{ ".eslintrc.json", {} },  .{ ".eslintrc.js", {} },
-    .{ ".prettierrc", {} },     .{ ".prettierrc.json", {} },
-    .{ "Makefile", {} },        .{ "justfile", {} },           .{ "Taskfile.yml", {} },
-    .{ "netlify.toml", {} },    .{ "vercel.json", {} },
+    .{ "package.json", {} },       .{ "package-lock.json", {} },   .{ "yarn.lock", {} },      .{ "pnpm-lock.yaml", {} },
+    .{ "pyproject.toml", {} },     .{ "requirements.txt", {} },    .{ "setup.py", {} },       .{ "setup.cfg", {} },
+    .{ "go.mod", {} },             .{ "go.sum", {} },              .{ "build.zig", {} },      .{ "build.zig.zon", {} },
+    .{ "Cargo.toml", {} },         .{ "Cargo.lock", {} },          .{ "Gemfile", {} },        .{ "Gemfile.lock", {} },
+    .{ "composer.json", {} },      .{ "composer.lock", {} },       .{ "pom.xml", {} },        .{ "build.gradle", {} },
+    .{ "build.gradle.kts", {} },   .{ "pubspec.yaml", {} },        .{ "mix.exs", {} },        .{ "Dockerfile", {} },
+    .{ "docker-compose.yml", {} }, .{ "docker-compose.yaml", {} }, .{ ".env.example", {} },   .{ ".env.sample", {} },
+    .{ "tsconfig.json", {} },      .{ "jsconfig.json", {} },       .{ ".eslintrc.json", {} }, .{ ".eslintrc.js", {} },
+    .{ ".prettierrc", {} },        .{ ".prettierrc.json", {} },    .{ "Makefile", {} },       .{ "justfile", {} },
+    .{ "Taskfile.yml", {} },       .{ "netlify.toml", {} },        .{ "vercel.json", {} },
 });
 
 const SKIP_DIR_SET = std.StaticStringMap(void).initComptime(&.{
-    .{ "node_modules", {} }, .{ ".git", {} },      .{ "vendor", {} },    .{ "__pycache__", {} },
-    .{ ".next", {} },        .{ "dist", {} },       .{ "target", {} },    .{ "zig-out", {} },
-    .{ ".zig-cache", {} },   .{ ".cache", {} },     .{ "coverage", {} },  .{ ".venv", {} },
-    .{ "venv", {} },         .{ ".tox", {} },       .{ "tmp", {} },       .{ "temp", {} },
+    .{ "node_modules", {} }, .{ ".git", {} },   .{ "vendor", {} },   .{ "__pycache__", {} },
+    .{ ".next", {} },        .{ "dist", {} },   .{ "target", {} },   .{ "zig-out", {} },
+    .{ ".zig-cache", {} },   .{ ".cache", {} }, .{ "coverage", {} }, .{ ".venv", {} },
+    .{ "venv", {} },         .{ ".tox", {} },   .{ "tmp", {} },      .{ "temp", {} },
 });
 
 fn shouldSkipScanDir(name: []const u8) bool {
@@ -499,13 +493,13 @@ fn shouldSkipScanFile(name: []const u8) bool {
 }
 
 const BINARY_EXT_SET = std.StaticStringMap(void).initComptime(&.{
-    .{ ".png", {} }, .{ ".jpg", {} }, .{ ".jpeg", {} }, .{ ".gif", {} }, .{ ".webp", {} },
-    .{ ".ico", {} }, .{ ".bmp", {} }, .{ ".tiff", {} },
-    .{ ".woff", {} }, .{ ".woff2", {} }, .{ ".ttf", {} }, .{ ".eot", {} }, .{ ".otf", {} },
-    .{ ".mp3", {} }, .{ ".mp4", {} }, .{ ".wav", {} }, .{ ".ogg", {} }, .{ ".avi", {} }, .{ ".mov", {} },
-    .{ ".pdf", {} }, .{ ".zip", {} }, .{ ".tar", {} }, .{ ".gz", {} }, .{ ".bz2", {} }, .{ ".xz", {} },
-    .{ ".wasm", {} }, .{ ".bin", {} }, .{ ".exe", {} }, .{ ".dylib", {} }, .{ ".so", {} }, .{ ".a", {} },
-    .{ ".map", {} }, .{ ".pyc", {} }, .{ ".class", {} }, .{ ".o", {} },
+    .{ ".png", {} },  .{ ".jpg", {} }, .{ ".jpeg", {} }, .{ ".gif", {} },   .{ ".webp", {} },
+    .{ ".ico", {} },  .{ ".bmp", {} }, .{ ".tiff", {} }, .{ ".woff", {} },  .{ ".woff2", {} },
+    .{ ".ttf", {} },  .{ ".eot", {} }, .{ ".otf", {} },  .{ ".mp3", {} },   .{ ".mp4", {} },
+    .{ ".wav", {} },  .{ ".ogg", {} }, .{ ".avi", {} },  .{ ".mov", {} },   .{ ".pdf", {} },
+    .{ ".zip", {} },  .{ ".tar", {} }, .{ ".gz", {} },   .{ ".bz2", {} },   .{ ".xz", {} },
+    .{ ".wasm", {} }, .{ ".bin", {} }, .{ ".exe", {} },  .{ ".dylib", {} }, .{ ".so", {} },
+    .{ ".a", {} },    .{ ".map", {} }, .{ ".pyc", {} },  .{ ".class", {} }, .{ ".o", {} },
 });
 
 fn shouldSkipGrepFile(name: []const u8) bool {
@@ -557,8 +551,14 @@ fn countGoDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) u32 {
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         const t = std.mem.trim(u8, line, " \t\r");
-        if (std.mem.startsWith(u8, t, "require (")) { in_require = true; continue; }
-        if (in_require and std.mem.eql(u8, t, ")")) { in_require = false; continue; }
+        if (std.mem.startsWith(u8, t, "require (")) {
+            in_require = true;
+            continue;
+        }
+        if (in_require and std.mem.eql(u8, t, ")")) {
+            in_require = false;
+            continue;
+        }
         const dep: []const u8 = if (std.mem.startsWith(u8, t, "require ")) t["require ".len..] else if (in_require) t else continue;
         const sp = std.mem.indexOfScalar(u8, dep, ' ') orelse dep.len;
         const name = std.mem.trim(u8, dep[0..sp], " \t");
@@ -575,8 +575,14 @@ fn countCargoDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) u32 {
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         const t = std.mem.trim(u8, line, " \t\r");
-        if (std.mem.eql(u8, t, "[dependencies]") or std.mem.eql(u8, t, "[dev-dependencies]")) { in_deps = true; continue; }
-        if (t.len > 0 and t[0] == '[') { in_deps = false; continue; }
+        if (std.mem.eql(u8, t, "[dependencies]") or std.mem.eql(u8, t, "[dev-dependencies]")) {
+            in_deps = true;
+            continue;
+        }
+        if (t.len > 0 and t[0] == '[') {
+            in_deps = false;
+            continue;
+        }
         if (!in_deps or t.len == 0 or t[0] == '#') continue;
         if (std.mem.indexOfScalar(u8, t, '=') != null) count += 1;
     }
@@ -748,8 +754,9 @@ pub fn computeScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ScanRe
     const repo_basename = std.fs.path.basename(path);
     const entry_point: ?[]u8 = ep: {
         const static_candidates = [_][]const u8{
-            "main.go", "index.js", "index.ts",
-            "src/index.js", "src/index.ts", "app.py", "main.py",
+            "main.go",      "index.js",     "index.ts",
+            "src/index.js", "src/index.ts", "app.py",
+            "main.py",
         };
         for (static_candidates) |candidate| {
             for (all_files.items) |f| {
@@ -802,15 +809,15 @@ pub fn computeScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ScanRe
 // --- diff-dirs subcommand ---
 
 pub const DiffEntry = struct {
-    path: []u8,  // owned by caller
+    path: []u8, // owned by caller
     bytesA: u64,
     bytesB: u64,
     same: bool,
 };
 
 pub const DiffDirsResult = struct {
-    onlyInA: [][]u8,     // owned by caller
-    onlyInB: [][]u8,     // owned by caller
+    onlyInA: [][]u8, // owned by caller
+    onlyInB: [][]u8, // owned by caller
     inBoth: []DiffEntry, // owned by caller
 };
 
@@ -905,8 +912,14 @@ pub fn computeDiffDirs(gpa: std.mem.Allocator, io: std.Io, path_a: []const u8, p
         const a = a_entries.items[i];
         const b = b_entries.items[j];
         switch (std.mem.order(u8, a.path, b.path)) {
-            .lt => { try only_a.append(gpa, try gpa.dupe(u8, a.path)); i += 1; },
-            .gt => { try only_b.append(gpa, try gpa.dupe(u8, b.path)); j += 1; },
+            .lt => {
+                try only_a.append(gpa, try gpa.dupe(u8, a.path));
+                i += 1;
+            },
+            .gt => {
+                try only_b.append(gpa, try gpa.dupe(u8, b.path));
+                j += 1;
+            },
             .eq => {
                 try in_both.append(gpa, .{
                     .path = try gpa.dupe(u8, a.path),
@@ -1033,7 +1046,10 @@ pub fn computeGrep(
     defer dir.close(io);
     var matches: std.ArrayList(GrepMatch) = .empty;
     errdefer {
-        for (matches.items) |m| { gpa.free(m.file); gpa.free(m.text); }
+        for (matches.items) |m| {
+            gpa.free(m.file);
+            gpa.free(m.text);
+        }
         matches.deinit(gpa);
     }
     const capped = try walkGrep(gpa, io, dir, "", root, pattern, ext_filter, &matches);
@@ -1095,20 +1111,24 @@ fn parseStackLine(gpa: std.mem.Allocator, raw: []const u8) !?StackFrame {
             const lparen = std.mem.lastIndexOfScalar(u8, rest, '(') orelse return null;
             const fn_name = std.mem.trim(u8, rest[0..lparen], " ");
             const inner = rest[lparen + 1 .. rest.len - 1];
-            var out_line: u32 = 0; var out_col: u32 = 0;
+            var out_line: u32 = 0;
+            var out_col: u32 = 0;
             const colon_pos = parseFileLine(inner, &out_line, &out_col) orelse return null;
             return .{
                 .file = try gpa.dupe(u8, inner[0..colon_pos]),
-                .line = out_line, .col = out_col,
+                .line = out_line,
+                .col = out_col,
                 .func = try gpa.dupe(u8, fn_name),
             };
         }
         // "at file:line:col"
-        var out_line: u32 = 0; var out_col: u32 = 0;
+        var out_line: u32 = 0;
+        var out_col: u32 = 0;
         const colon_pos = parseFileLine(rest, &out_line, &out_col) orelse return null;
         return .{
             .file = try gpa.dupe(u8, rest[0..colon_pos]),
-            .line = out_line, .col = out_col,
+            .line = out_line,
+            .col = out_col,
             .func = try gpa.dupe(u8, "<anonymous>"),
         };
     }
@@ -1140,7 +1160,8 @@ fn parseStackLine(gpa: std.mem.Allocator, raw: []const u8) !?StackFrame {
         // strip trailing " +0x..."
         const space = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
         const part = line[0..space];
-        var out_line: u32 = 0; var out_col: u32 = 0;
+        var out_line: u32 = 0;
+        var out_col: u32 = 0;
         const colon_pos = parseFileLine(part, &out_line, &out_col) orelse return null;
         return .{ .file = try gpa.dupe(u8, part[0..colon_pos]), .line = out_line, .col = out_col, .func = try gpa.dupe(u8, "<go>") };
     }
@@ -1151,11 +1172,13 @@ fn parseStackLine(gpa: std.mem.Allocator, raw: []const u8) !?StackFrame {
         const file_line_part = line[0..in_pos];
         const fn_part = line[in_pos + 5 ..];
         const fn_end = std.mem.indexOfScalar(u8, fn_part, '\'') orelse fn_part.len;
-        var out_line: u32 = 0; var out_col: u32 = 0;
+        var out_line: u32 = 0;
+        var out_col: u32 = 0;
         const colon_pos = parseFileLine(file_line_part, &out_line, &out_col) orelse return null;
         return .{
             .file = try gpa.dupe(u8, file_line_part[0..colon_pos]),
-            .line = out_line, .col = out_col,
+            .line = out_line,
+            .col = out_col,
             .func = try gpa.dupe(u8, fn_part[0..fn_end]),
         };
     }
@@ -1166,7 +1189,10 @@ fn parseStackLine(gpa: std.mem.Allocator, raw: []const u8) !?StackFrame {
 pub fn computeParseStack(gpa: std.mem.Allocator, input: []const u8) !ParseStackResult {
     var frames: std.ArrayList(StackFrame) = .empty;
     errdefer {
-        for (frames.items) |f| { gpa.free(f.file); gpa.free(f.func); }
+        for (frames.items) |f| {
+            gpa.free(f.file);
+            gpa.free(f.func);
+        }
         frames.deinit(gpa);
     }
     var lines = std.mem.splitScalar(u8, input, '\n');
@@ -1320,9 +1346,9 @@ pub fn computeListDir(
     while (try it.next(io)) |entry| {
         const kind: []const u8 = switch (entry.kind) {
             .directory => "dir",
-            .file      => "file",
-            .sym_link  => "symlink",
-            else       => "other",
+            .file => "file",
+            .sym_link => "symlink",
+            else => "other",
         };
         const bytes: u64 = if (entry.kind == .file) blk: {
             const f = dir.openFile(io, entry.name, .{}) catch break :blk 0;
@@ -1331,8 +1357,8 @@ pub fn computeListDir(
             break :blk st.size;
         } else 0;
         try entries.append(gpa, .{
-            .name  = try gpa.dupe(u8, entry.name),
-            .kind  = kind,
+            .name = try gpa.dupe(u8, entry.name),
+            .kind = kind,
             .bytes = bytes,
         });
     }
@@ -1360,7 +1386,7 @@ pub const JsonQueryResult = struct {
     path: []const u8,
     found: bool,
     type_name: []const u8, // "string" | "number" | "bool" | "null" | "object" | "array"
-    value_json: ?[]u8,     // raw JSON fragment; null when not found
+    value_json: ?[]u8, // raw JSON fragment; null when not found
 };
 
 fn jsonTypeName(v: std.json.Value) []const u8 {
@@ -1399,24 +1425,32 @@ pub fn computeJsonQuery(
         switch (node) {
             .object => |obj| {
                 node = obj.get(seg) orelse return .{
-                    .path = key_path, .found = false,
-                    .type_name = "null", .value_json = null,
+                    .path = key_path,
+                    .found = false,
+                    .type_name = "null",
+                    .value_json = null,
                 };
             },
             .array => |arr| {
                 const idx = std.fmt.parseInt(usize, seg, 10) catch return .{
-                    .path = key_path, .found = false,
-                    .type_name = "null", .value_json = null,
+                    .path = key_path,
+                    .found = false,
+                    .type_name = "null",
+                    .value_json = null,
                 };
                 if (idx >= arr.items.len) return .{
-                    .path = key_path, .found = false,
-                    .type_name = "null", .value_json = null,
+                    .path = key_path,
+                    .found = false,
+                    .type_name = "null",
+                    .value_json = null,
                 };
                 node = arr.items[idx];
             },
             else => return .{
-                .path = key_path, .found = false,
-                .type_name = "null", .value_json = null,
+                .path = key_path,
+                .found = false,
+                .type_name = "null",
+                .value_json = null,
             },
         }
     }
@@ -1643,11 +1677,11 @@ fn parseTOMLScalar(gpa: std.mem.Allocator, raw: []const u8) !TOMLScalar {
     }
 
     // Boolean
-    if (std.mem.eql(u8, raw, "true"))  return .{ .type_name = "bool", .json = try gpa.dupe(u8, "true") };
+    if (std.mem.eql(u8, raw, "true")) return .{ .type_name = "bool", .json = try gpa.dupe(u8, "true") };
     if (std.mem.eql(u8, raw, "false")) return .{ .type_name = "bool", .json = try gpa.dupe(u8, "false") };
 
     // Array or inline table — return raw as-is (best effort)
-    if (raw[0] == '[') return .{ .type_name = "array",  .json = try gpa.dupe(u8, raw) };
+    if (raw[0] == '[') return .{ .type_name = "array", .json = try gpa.dupe(u8, raw) };
     if (raw[0] == '{') return .{ .type_name = "object", .json = try gpa.dupe(u8, raw) };
 
     // Number — strip trailing inline comment first
@@ -1713,7 +1747,10 @@ fn extractTOMLValue(gpa: std.mem.Allocator, content: []const u8, key_path: []con
         if (cur_depth != section_path.len) continue;
         var sec_match = true;
         for (section_path, 0..) |s, i| {
-            if (!std.mem.eql(u8, cur_sec[i], s)) { sec_match = false; break; }
+            if (!std.mem.eql(u8, cur_sec[i], s)) {
+                sec_match = false;
+                break;
+            }
         }
         if (!sec_match) continue;
 
@@ -1769,7 +1806,7 @@ fn yamlKeyVal(content: []const u8, key: []const u8) ?[]const u8 {
     if (rest.len == 0 or rest[0] != ':') return null;
     if (rest.len > 1 and rest[1] != ' ' and rest[1] != '\t' and
         rest[1] != '\r' and rest[1] != '\n') return null;
-    return std.mem.trimStart(u8,rest[1..], " \t");
+    return std.mem.trimStart(u8, rest[1..], " \t");
 }
 
 fn yamlFindChildIndent(lines: []const []const u8, from: usize, parent_indent: usize) usize {
@@ -1812,7 +1849,7 @@ fn yamlNav(
         if (as_idx) |target| {
             if (c[0] == '-') {
                 if (seq_n == target) {
-                    const inline_part = std.mem.trimStart(u8,c[1..], " \t");
+                    const inline_part = std.mem.trimStart(u8, c[1..], " \t");
                     if (is_last) return yamlStripQuotes(inline_part);
                     // Inline key check: handles "- uses: actions/checkout@v2"
                     if (rest.len >= 1) {
@@ -1870,17 +1907,35 @@ pub fn computeYamlQuery(
 
     // Two-pass line split (no ArrayList needed)
     var lc: usize = 0;
-    { var it = std.mem.splitScalar(u8, content, '\n'); while (it.next() != null) : (lc += 1) {} }
+    {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next() != null) : (lc += 1) {}
+    }
     const lines = try gpa.alloc([]const u8, lc);
     defer gpa.free(lines);
-    { var it = std.mem.splitScalar(u8, content, '\n'); var li: usize = 0; while (it.next()) |ln| : (li += 1) { lines[li] = ln; } }
+    {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        var li: usize = 0;
+        while (it.next()) |ln| : (li += 1) {
+            lines[li] = ln;
+        }
+    }
 
     // Two-pass segment split
     var sc: usize = 0;
-    { var it = std.mem.splitScalar(u8, key_path, '.'); while (it.next() != null) : (sc += 1) {} }
+    {
+        var it = std.mem.splitScalar(u8, key_path, '.');
+        while (it.next() != null) : (sc += 1) {}
+    }
     const segs = try gpa.alloc([]const u8, sc);
     defer gpa.free(segs);
-    { var it = std.mem.splitScalar(u8, key_path, '.'); var si: usize = 0; while (it.next()) |s| : (si += 1) { segs[si] = s; } }
+    {
+        var it = std.mem.splitScalar(u8, key_path, '.');
+        var si: usize = 0;
+        while (it.next()) |s| : (si += 1) {
+            segs[si] = s;
+        }
+    }
 
     const raw = yamlNav(lines, segs, 0, 0);
     if (raw) |val| {
@@ -1893,8 +1948,8 @@ pub fn computeYamlQuery(
 // --- list-projects subcommand ---
 
 pub const ProjectEntry = struct {
-    name: []u8,      // owned by caller
-    url: []u8,       // owned by caller
+    name: []u8, // owned by caller
+    url: []u8, // owned by caller
     isForeman: bool,
     isLocal: bool,
 };
@@ -1984,7 +2039,7 @@ pub fn computeListProjects(gpa: std.mem.Allocator, io: std.Io, foreman_root: []c
 
 pub const TarballShaResult = struct {
     sha256: []u8, // owned by caller, lowercase hex
-    url: []u8,    // owned by caller
+    url: []u8, // owned by caller
 };
 
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb924" ++
@@ -2010,8 +2065,14 @@ fn fetchUrl(gpa: std.mem.Allocator, io: std.Io, url: []const u8) ?[]u8 {
     }) catch return null;
     defer gpa.free(result.stderr);
     switch (result.term) {
-        .exited => |c| if (c != 0) { gpa.free(result.stdout); return null; },
-        else => { gpa.free(result.stdout); return null; },
+        .exited => |c| if (c != 0) {
+            gpa.free(result.stdout);
+            return null;
+        },
+        else => {
+            gpa.free(result.stdout);
+            return null;
+        },
     }
     return result.stdout;
 }
@@ -2042,9 +2103,9 @@ pub fn computeTarballSha(gpa: std.mem.Allocator, io: std.Io, owner: []const u8, 
 
 pub const FormulaInfoResult = struct {
     formulaPath: []u8, // owned by caller
-    url: []u8,         // owned by caller
-    sha256: []u8,      // owned by caller
-    version: []u8,     // owned by caller
+    url: []u8, // owned by caller
+    sha256: []u8, // owned by caller
+    version: []u8, // owned by caller
 };
 
 fn extractQuotedField(line: []const u8, key: []const u8) ?[]const u8 {
@@ -2105,8 +2166,8 @@ pub const ValidateHooksResult = struct {
     autoPush: bool,
 };
 
-const MEMORY_SYNC_MSG = "Syncing memory\u{2026}";    // "Syncing memory…"
-const AUTO_PUSH_MSG   = "Pushing project commits\u{2026}"; // "Pushing project commits…"
+const MEMORY_SYNC_MSG = "Syncing memory\u{2026}"; // "Syncing memory…"
+const AUTO_PUSH_MSG = "Pushing project commits\u{2026}"; // "Pushing project commits…"
 
 fn searchStopHooks(stop: std.json.Value, needle: []const u8) bool {
     const arr = switch (stop) {
@@ -2168,7 +2229,7 @@ pub fn computeValidateHooks(gpa: std.mem.Allocator, io: std.Io) !ValidateHooksRe
 
     return .{
         .memorySync = searchStopHooks(stop_val, MEMORY_SYNC_MSG),
-        .autoPush   = searchStopHooks(stop_val, AUTO_PUSH_MSG),
+        .autoPush = searchStopHooks(stop_val, AUTO_PUSH_MSG),
     };
 }
 
@@ -2202,8 +2263,14 @@ pub fn computeGhRelease(
     defer gpa.free(result.stderr);
 
     switch (result.term) {
-        .exited => |c| if (c != 0) { gpa.free(result.stdout); return error.GhFailed; },
-        else => { gpa.free(result.stdout); return error.GhFailed; },
+        .exited => |c| if (c != 0) {
+            gpa.free(result.stdout);
+            return error.GhFailed;
+        },
+        else => {
+            gpa.free(result.stdout);
+            return error.GhFailed;
+        },
     }
 
     const trimmed = std.mem.trim(u8, result.stdout, " \t\n\r");
@@ -2215,7 +2282,7 @@ pub fn computeGhRelease(
 // --- file-hash subcommand ---
 
 pub const FileHashResult = struct {
-    path: []u8,   // owned by caller
+    path: []u8, // owned by caller
     sha256: []u8, // owned by caller, lowercase hex
     bytes: u64,
 };
@@ -2238,7 +2305,7 @@ pub fn computeFileHash(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8
 // --- cache-check subcommand ---
 
 pub const CacheCheckResult = struct {
-    path: []u8,   // owned by caller
+    path: []u8, // owned by caller
     sha256: []u8, // owned by caller, lowercase hex
     changed: bool,
     cached: bool,
@@ -2327,12 +2394,12 @@ pub const KindCounts = struct {
 
 pub const ContextScanResult = struct {
     framework: []const u8, // static string literal — do not free
-    entryPoint: ?[]u8,     // owned by caller
+    entryPoint: ?[]u8, // owned by caller
     fileCount: u32,
     summary: KindCounts,
     topFiles: []FileEntry, // owned by caller (paths owned); top 10 by bytes
-    keyFiles: [][]u8,      // owned by caller
-    dirs: [][]u8,          // owned by caller
+    keyFiles: [][]u8, // owned by caller
+    dirs: [][]u8, // owned by caller
 };
 
 const CONTEXT_TOP_FILES: usize = 10;
@@ -2352,11 +2419,7 @@ pub fn computeContextScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
     // Count files by kind
     var counts = KindCounts{ .source = 0, .@"test" = 0, .config = 0, .docs = 0, .other = 0 };
     for (scan.files) |f| {
-        if (std.mem.eql(u8, f.kind, "source"))      counts.source += 1
-        else if (std.mem.eql(u8, f.kind, "test"))   counts.@"test" += 1
-        else if (std.mem.eql(u8, f.kind, "config")) counts.config += 1
-        else if (std.mem.eql(u8, f.kind, "docs"))   counts.docs += 1
-        else                                         counts.other += 1;
+        if (std.mem.eql(u8, f.kind, "source")) counts.source += 1 else if (std.mem.eql(u8, f.kind, "test")) counts.@"test" += 1 else if (std.mem.eql(u8, f.kind, "config")) counts.config += 1 else if (std.mem.eql(u8, f.kind, "docs")) counts.docs += 1 else counts.other += 1;
     }
 
     // Top N files (scan.files is already sorted largest-first)
@@ -2378,26 +2441,26 @@ pub fn computeContextScan(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
     for (scan.dirMap, 0..) |d, i| dirs[i] = try gpa.dupe(u8, d);
 
     return .{
-        .framework  = scan.framework,
+        .framework = scan.framework,
         .entryPoint = if (scan.entryPoint) |ep| try gpa.dupe(u8, ep) else null,
-        .fileCount  = scan.fileCount,
-        .summary    = counts,
-        .topFiles   = top_files,
-        .keyFiles   = key_files,
-        .dirs       = dirs,
+        .fileCount = scan.fileCount,
+        .summary = counts,
+        .topFiles = top_files,
+        .keyFiles = key_files,
+        .dirs = dirs,
     };
 }
 
 // --- cache-store / cache-fetch subcommands ---
 
 pub const CacheStoreResult = struct {
-    path: []u8,   // owned by caller
+    path: []u8, // owned by caller
     subKey: []u8, // owned by caller
     stored: bool,
 };
 
 pub const CacheFetchResult = struct {
-    path: []u8,   // owned by caller
+    path: []u8, // owned by caller
     subKey: []u8, // owned by caller
     hit: bool,
     value: ?[]u8, // owned by caller; present only when hit: true
@@ -2499,17 +2562,17 @@ pub fn computeCacheFetch(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
 // --- context-rank subcommand ---
 
 pub const RankedFile = struct {
-    path: []u8,         // owned
+    path: []u8, // owned
     score: u32,
     hits: u32,
     nameMatch: bool,
-    kind: []const u8,   // static string literal — do not free
+    kind: []const u8, // static string literal — do not free
     bytes: u64,
 };
 
 pub const ContextRankResult = struct {
-    root: []u8,           // owned
-    query: []u8,          // owned
+    root: []u8, // owned
+    query: []u8, // owned
     fileCount: u32,
     ranked: []RankedFile, // owned; each .path is owned
 };
@@ -2577,7 +2640,10 @@ pub fn computeContextRank(gpa: std.mem.Allocator, io: std.Io, root_path: []const
         // Check filename/path for term match
         var name_match = false;
         for (query_terms) |term| {
-            if (containsInsensitive(file.path, term)) { name_match = true; break; }
+            if (containsInsensitive(file.path, term)) {
+                name_match = true;
+                break;
+            }
         }
 
         // Read file for content hits (cap at RANK_FILE_READ_CAP)
@@ -2608,13 +2674,19 @@ pub fn computeContextRank(gpa: std.mem.Allocator, io: std.Io, root_path: []const
             top[top_count] = entry;
             top_count += 1;
             top_min = top[0].score;
-            for (1..top_count) |i| if (top[i].score < top_min) { top_min = top[i].score; };
+            for (1..top_count) |i| if (top[i].score < top_min) {
+                top_min = top[i].score;
+            };
         } else if (score > top_min) {
             var min_i: usize = 0;
-            for (1..top_count) |i| if (top[i].score < top[min_i].score) { min_i = i; };
+            for (1..top_count) |i| if (top[i].score < top[min_i].score) {
+                min_i = i;
+            };
             top[min_i] = entry;
             top_min = top[0].score;
-            for (1..top_count) |i| if (top[i].score < top_min) { top_min = top[i].score; };
+            for (1..top_count) |i| if (top[i].score < top_min) {
+                top_min = top[i].score;
+            };
         }
     }
 
@@ -2634,31 +2706,31 @@ pub fn computeContextRank(gpa: std.mem.Allocator, io: std.Io, root_path: []const
     for (top[0..top_count], 0..) |entry, i| {
         const f = scan.files[entry.idx];
         ranked[i] = .{
-            .path      = try gpa.dupe(u8, f.path),
-            .score     = entry.score,
-            .hits      = entry.hits,
+            .path = try gpa.dupe(u8, f.path),
+            .score = entry.score,
+            .hits = entry.hits,
             .nameMatch = entry.nameMatch,
-            .kind      = f.kind,
-            .bytes     = f.bytes,
+            .kind = f.kind,
+            .bytes = f.bytes,
         };
     }
 
     return .{
-        .root      = try gpa.dupe(u8, root_path),
-        .query     = try gpa.dupe(u8, query),
+        .root = try gpa.dupe(u8, root_path),
+        .query = try gpa.dupe(u8, query),
         .fileCount = scan.fileCount,
-        .ranked    = ranked,
+        .ranked = ranked,
     };
 }
 
 // --- context-changed subcommand ---
 
 pub const ChangedFileDiff = struct {
-    path: []u8,         // owned
+    path: []u8, // owned
     status: []const u8, // static: "added"|"modified"|"deleted"|"renamed"
     additions: u32,
     deletions: u32,
-    diff: []u8,         // owned — unified diff capped at CHANGED_MAX_DIFF_LINES
+    diff: []u8, // owned — unified diff capped at CHANGED_MAX_DIFF_LINES
 };
 
 pub const ContextChangedResult = struct {
@@ -2783,21 +2855,21 @@ pub fn computeContextChanged(
         const capped = if (byte_end > diff_raw.len) diff_raw else diff_raw[0..byte_end];
 
         result_files[i] = .{
-            .path       = try gpa.dupe(u8, stat.path),
-            .status     = stat.status,
-            .additions  = stat.additions,
-            .deletions  = stat.deletions,
-            .diff       = try gpa.dupe(u8, capped),
+            .path = try gpa.dupe(u8, stat.path),
+            .status = stat.status,
+            .additions = stat.additions,
+            .deletions = stat.deletions,
+            .diff = try gpa.dupe(u8, capped),
         };
     }
 
     return .{
-        .ref            = if (ref.len == 0) "HEAD" else ref,
-        .totalFiles     = total_files,
+        .ref = if (ref.len == 0) "HEAD" else ref,
+        .totalFiles = total_files,
         .totalAdditions = total_add,
         .totalDeletions = total_del,
-        .truncated      = truncated,
-        .files          = result_files,
+        .truncated = truncated,
+        .files = result_files,
     };
 }
 
@@ -2805,13 +2877,13 @@ pub fn computeContextChanged(
 
 pub const EvidenceChunk = struct {
     startLine: u32, // 1-based
-    endLine: u32,   // 1-based
-    content: []u8,  // owned by caller
+    endLine: u32, // 1-based
+    content: []u8, // owned by caller
 };
 
 pub const ContextEvidenceResult = struct {
-    path: []u8,              // owned
-    pattern: []u8,           // owned
+    path: []u8, // owned
+    pattern: []u8, // owned
     fileBytes: u64,
     matchCount: u32,
     chunks: []EvidenceChunk, // owned; each chunk.content is owned
@@ -2915,15 +2987,15 @@ pub fn computeContextEvidence(gpa: std.mem.Allocator, io: std.Io, file_path: []c
     const chunks = try gpa.alloc(EvidenceChunk, chunk_count);
     for (0..chunk_count) |i| {
         const start = windows[i][0];
-        const end   = windows[i][1];
+        const end = windows[i][1];
         // Calculate byte size of joined lines
         var byte_count: usize = 0;
-        for (lines[start..end + 1]) |line| byte_count += line.len + 1;
+        for (lines[start .. end + 1]) |line| byte_count += line.len + 1;
         if (byte_count > 0) byte_count -= 1; // no trailing \n
         const chunk_buf = try gpa.alloc(u8, byte_count);
         var pos: usize = 0;
-        for (lines[start..end + 1], 0..) |line, li| {
-            @memcpy(chunk_buf[pos..pos + line.len], line);
+        for (lines[start .. end + 1], 0..) |line, li| {
+            @memcpy(chunk_buf[pos .. pos + line.len], line);
             pos += line.len;
             if (li + 1 < end - start + 1) {
                 chunk_buf[pos] = '\n';
@@ -2932,32 +3004,32 @@ pub fn computeContextEvidence(gpa: std.mem.Allocator, io: std.Io, file_path: []c
         }
         chunks[i] = .{
             .startLine = @intCast(start + 1),
-            .endLine   = @intCast(end + 1),
-            .content   = chunk_buf,
+            .endLine = @intCast(end + 1),
+            .content = chunk_buf,
         };
     }
 
     return .{
-        .path       = try gpa.dupe(u8, file_path),
-        .pattern    = try gpa.dupe(u8, pattern),
-        .fileBytes  = file_bytes,
+        .path = try gpa.dupe(u8, file_path),
+        .pattern = try gpa.dupe(u8, pattern),
+        .fileBytes = file_bytes,
         .matchCount = match_count,
-        .chunks     = chunks,
+        .chunks = chunks,
     };
 }
 
 // --- outline subcommand ---
 
 pub const Symbol = struct {
-    name: []u8,          // owned
-    kind: []const u8,    // static: "function"|"method"|"class"|"struct"|"enum"|"trait"|"interface"|"type"|"module"|"impl"
-    line: u32,           // 1-based
+    name: []u8, // owned
+    kind: []const u8, // static: "function"|"method"|"class"|"struct"|"enum"|"trait"|"interface"|"type"|"module"|"impl"
+    line: u32, // 1-based
 };
 
 pub const OutlineResult = struct {
-    path: []u8,          // owned
-    lang: []const u8,    // static
-    symbols: []Symbol,   // owned slice; each name is owned
+    path: []u8, // owned
+    lang: []const u8, // static
+    symbols: []Symbol, // owned slice; each name is owned
 };
 
 const OUTLINE_MAX: usize = 200;
@@ -2965,20 +3037,20 @@ const OUTLINE_MAX: usize = 200;
 fn outlineDetectLang(path: []const u8) []const u8 {
     const dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return "unknown";
     const ext = path[dot..];
-    if (std.mem.eql(u8, ext, ".go"))                                         return "go";
-    if (std.mem.eql(u8, ext, ".py"))                                         return "python";
+    if (std.mem.eql(u8, ext, ".go")) return "go";
+    if (std.mem.eql(u8, ext, ".py")) return "python";
     if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".mjs") or
-        std.mem.eql(u8, ext, ".cjs"))                                        return "javascript";
+        std.mem.eql(u8, ext, ".cjs")) return "javascript";
     if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-        std.mem.eql(u8, ext, ".jsx"))                                        return "typescript";
-    if (std.mem.eql(u8, ext, ".rb"))                                         return "ruby";
-    if (std.mem.eql(u8, ext, ".rs"))                                         return "rust";
-    if (std.mem.eql(u8, ext, ".zig"))                                        return "zig";
-    if (std.mem.eql(u8, ext, ".java"))                                       return "java";
-    if (std.mem.eql(u8, ext, ".kt") or std.mem.eql(u8, ext, ".kts"))        return "kotlin";
-    if (std.mem.eql(u8, ext, ".php"))                                        return "php";
-    if (std.mem.eql(u8, ext, ".swift"))                                      return "swift";
-    if (std.mem.eql(u8, ext, ".cs"))                                         return "csharp";
+        std.mem.eql(u8, ext, ".jsx")) return "typescript";
+    if (std.mem.eql(u8, ext, ".rb")) return "ruby";
+    if (std.mem.eql(u8, ext, ".rs")) return "rust";
+    if (std.mem.eql(u8, ext, ".zig")) return "zig";
+    if (std.mem.eql(u8, ext, ".java")) return "java";
+    if (std.mem.eql(u8, ext, ".kt") or std.mem.eql(u8, ext, ".kts")) return "kotlin";
+    if (std.mem.eql(u8, ext, ".php")) return "php";
+    if (std.mem.eql(u8, ext, ".swift")) return "swift";
+    if (std.mem.eql(u8, ext, ".cs")) return "csharp";
     return "unknown";
 }
 
@@ -2988,7 +3060,7 @@ fn outlineIdent(s: []const u8) []const u8 {
     while (i < s.len) : (i += 1) {
         const c = s[i];
         if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-              (c >= '0' and c <= '9') or c == '_')) break;
+            (c >= '0' and c <= '9') or c == '_')) break;
     }
     return s[0..i];
 }
@@ -3010,7 +3082,7 @@ fn outlineGo(s: []const u8) ?SymHit {
     var rest = outlineKw(s, "func") orelse return null;
     // Optional receiver: (type)
     if (rest.len > 0 and rest[0] == '(') {
-        rest = rest[(std.mem.indexOfScalar(u8, rest, ')') orelse return null) + 1..];
+        rest = rest[(std.mem.indexOfScalar(u8, rest, ')') orelse return null) + 1 ..];
         rest = std.mem.trimStart(u8, rest, " \t");
     }
     const name = outlineIdent(rest);
@@ -3085,7 +3157,7 @@ fn outlineRust(s: []const u8) ?SymHit {
     if (outlineKw(rest, "pub")) |a| rest = a;
     // pub(crate) / pub(super) etc.
     if (rest.len > 0 and rest[0] == '(') {
-        rest = rest[(std.mem.indexOfScalar(u8, rest, ')') orelse return null) + 1..];
+        rest = rest[(std.mem.indexOfScalar(u8, rest, ')') orelse return null) + 1 ..];
         rest = std.mem.trimStart(u8, rest, " \t");
     }
     if (std.mem.startsWith(u8, rest, "async ")) rest = std.mem.trimStart(u8, rest[6..], " \t");
@@ -3133,7 +3205,7 @@ fn outlineZig(s: []const u8) ?SymHit {
         if (name.len == 0) return null;
         // Check rhs contains struct/enum/union keyword
         const eq = std.mem.indexOfScalar(u8, after, '=') orelse return null;
-        const rhs = std.mem.trimStart(u8, after[eq + 1..], " \t");
+        const rhs = std.mem.trimStart(u8, after[eq + 1 ..], " \t");
         if (std.mem.startsWith(u8, rhs, "struct") or
             std.mem.startsWith(u8, rhs, "enum") or
             std.mem.startsWith(u8, rhs, "union"))
@@ -3152,7 +3224,7 @@ fn outlineRuby(s: []const u8) ?SymHit {
         while (i < after.len) : (i += 1) {
             const c = after[i];
             if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-                  (c >= '0' and c <= '9') or c == '_')) break;
+                (c >= '0' and c <= '9') or c == '_')) break;
         }
         if (i < after.len and (after[i] == '?' or after[i] == '!' or after[i] == '=')) i += 1;
         const name = after[0..i];
@@ -3180,7 +3252,10 @@ fn outlineJavaLike(s: []const u8) ?SymHit {
     while (changed) {
         changed = false;
         for (mods) |m| {
-            if (std.mem.startsWith(u8, rest, m)) { rest = rest[m.len..]; changed = true; }
+            if (std.mem.startsWith(u8, rest, m)) {
+                rest = rest[m.len..];
+                changed = true;
+            }
         }
     }
     if (outlineKw(rest, "class")) |after| {
@@ -3237,16 +3312,16 @@ fn outlinePHP(s: []const u8) ?SymHit {
 }
 
 fn outlineExtract(s: []const u8, lang: []const u8) ?SymHit {
-    if (std.mem.eql(u8, lang, "go"))                                          return outlineGo(s);
-    if (std.mem.eql(u8, lang, "python"))                                      return outlinePython(s);
-    if (std.mem.eql(u8, lang, "javascript"))                                  return outlineJS(s);
-    if (std.mem.eql(u8, lang, "typescript"))                                  return outlineTS(s);
-    if (std.mem.eql(u8, lang, "rust"))                                        return outlineRust(s);
-    if (std.mem.eql(u8, lang, "zig"))                                         return outlineZig(s);
-    if (std.mem.eql(u8, lang, "ruby"))                                        return outlineRuby(s);
+    if (std.mem.eql(u8, lang, "go")) return outlineGo(s);
+    if (std.mem.eql(u8, lang, "python")) return outlinePython(s);
+    if (std.mem.eql(u8, lang, "javascript")) return outlineJS(s);
+    if (std.mem.eql(u8, lang, "typescript")) return outlineTS(s);
+    if (std.mem.eql(u8, lang, "rust")) return outlineRust(s);
+    if (std.mem.eql(u8, lang, "zig")) return outlineZig(s);
+    if (std.mem.eql(u8, lang, "ruby")) return outlineRuby(s);
     if (std.mem.eql(u8, lang, "java") or std.mem.eql(u8, lang, "kotlin") or
-        std.mem.eql(u8, lang, "csharp") or std.mem.eql(u8, lang, "swift"))   return outlineJavaLike(s);
-    if (std.mem.eql(u8, lang, "php"))                                         return outlinePHP(s);
+        std.mem.eql(u8, lang, "csharp") or std.mem.eql(u8, lang, "swift")) return outlineJavaLike(s);
+    if (std.mem.eql(u8, lang, "php")) return outlinePHP(s);
     return null;
 }
 
@@ -3299,16 +3374,16 @@ pub fn computeOutline(
 // --- deps subcommand ---
 
 pub const Dep = struct {
-    name: []u8,     // owned
-    version: []u8,  // owned; "" when unspecified
+    name: []u8, // owned
+    version: []u8, // owned; "" when unspecified
     dev: bool,
 };
 
 pub const DepsResult = struct {
-    manifest: []u8,     // owned; relative filename e.g. "package.json"
+    manifest: []u8, // owned; relative filename e.g. "package.json"
     format: []const u8, // static: "npm"|"cargo"|"go"|"pip"|"pyproject"
-    totalCount: u32,    // count before cap
-    deps: []Dep,        // owned; capped at DEPS_MAX
+    totalCount: u32, // count before cap
+    deps: []Dep, // owned; capped at DEPS_MAX
 };
 
 const DEPS_MAX: usize = 100;
@@ -3336,7 +3411,7 @@ fn depsPipParse(line: []const u8) struct { name: []const u8, version: []const u8
         }
     }
     const name = std.mem.trim(u8, raw[0..split], " \t");
-    const ver  = std.mem.trim(u8, raw[split..], " \t");
+    const ver = std.mem.trim(u8, raw[split..], " \t");
     return .{ .name = name, .version = ver };
 }
 
@@ -3348,11 +3423,17 @@ fn computeDepsNpm(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
     const buf = try gpa.alloc(Dep, DEPS_MAX);
     var n: usize = 0;
     var total: u32 = 0;
-    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+    errdefer {
+        for (buf[0..n]) |d| {
+            gpa.free(d.name);
+            gpa.free(d.version);
+        }
+        gpa.free(buf);
+    }
 
     const sections = [_]struct { key: []const u8, dev: bool }{
-        .{ .key = "dependencies",     .dev = false },
-        .{ .key = "devDependencies",  .dev = true  },
+        .{ .key = "dependencies", .dev = false },
+        .{ .key = "devDependencies", .dev = true },
         .{ .key = "peerDependencies", .dev = false },
     };
     for (sections) |sec| {
@@ -3360,16 +3441,22 @@ fn computeDepsNpm(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
             .object => |o| o.get(sec.key) orelse continue,
             else => continue,
         };
-        const deps = switch (obj) { .object => |o| o, else => continue };
+        const deps = switch (obj) {
+            .object => |o| o,
+            else => continue,
+        };
         var it = deps.iterator();
         while (it.next()) |entry| {
             total += 1;
             if (n >= DEPS_MAX) continue;
-            const ver = switch (entry.value_ptr.*) { .string => |s| s, else => "" };
+            const ver = switch (entry.value_ptr.*) {
+                .string => |s| s,
+                else => "",
+            };
             buf[n] = .{
-                .name    = try gpa.dupe(u8, entry.key_ptr.*),
+                .name = try gpa.dupe(u8, entry.key_ptr.*),
                 .version = try gpa.dupe(u8, ver),
-                .dev     = sec.dev,
+                .dev = sec.dev,
             };
             n += 1;
         }
@@ -3377,7 +3464,7 @@ fn computeDepsNpm(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
 
     return .{
         .manifest = try gpa.dupe(u8, "package.json"),
-        .format   = "npm",
+        .format = "npm",
         .totalCount = total,
         .deps = try gpa.realloc(buf, n),
     };
@@ -3387,7 +3474,13 @@ fn computeDepsCargo(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
     const buf = try gpa.alloc(Dep, DEPS_MAX);
     var n: usize = 0;
     var total: u32 = 0;
-    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+    errdefer {
+        for (buf[0..n]) |d| {
+            gpa.free(d.name);
+            gpa.free(d.version);
+        }
+        gpa.free(buf);
+    }
 
     var in_deps: bool = false;
     var in_dev: bool = false;
@@ -3397,7 +3490,7 @@ fn computeDepsCargo(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
             in_deps = std.mem.eql(u8, line, "[dependencies]");
-            in_dev  = std.mem.eql(u8, line, "[dev-dependencies]");
+            in_dev = std.mem.eql(u8, line, "[dev-dependencies]");
             continue;
         }
         if (!in_deps and !in_dev) continue;
@@ -3426,7 +3519,7 @@ fn computeDepsCargo(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
 
     return .{
         .manifest = try gpa.dupe(u8, "Cargo.toml"),
-        .format   = "cargo",
+        .format = "cargo",
         .totalCount = total,
         .deps = try gpa.realloc(buf, n),
     };
@@ -3436,15 +3529,27 @@ fn computeDepsGoMod(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
     const buf = try gpa.alloc(Dep, DEPS_MAX);
     var n: usize = 0;
     var total: u32 = 0;
-    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+    errdefer {
+        for (buf[0..n]) |d| {
+            gpa.free(d.name);
+            gpa.free(d.version);
+        }
+        gpa.free(buf);
+    }
 
     var in_require = false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '/' ) continue;
-        if (std.mem.eql(u8, line, "require (")) { in_require = true; continue; }
-        if (std.mem.eql(u8, line, ")"))          { in_require = false; continue; }
+        if (line.len == 0 or line[0] == '/') continue;
+        if (std.mem.eql(u8, line, "require (")) {
+            in_require = true;
+            continue;
+        }
+        if (std.mem.eql(u8, line, ")")) {
+            in_require = false;
+            continue;
+        }
 
         var dep_line: []const u8 = "";
         if (in_require) {
@@ -3462,7 +3567,7 @@ fn computeDepsGoMod(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
         var i: usize = 0;
         while (i < clean.len and clean[i] != ' ' and clean[i] != '\t') i += 1;
         const name = clean[0..i];
-        const ver  = std.mem.trim(u8, clean[i..], " \t");
+        const ver = std.mem.trim(u8, clean[i..], " \t");
         if (name.len == 0) continue;
 
         total += 1;
@@ -3474,7 +3579,7 @@ fn computeDepsGoMod(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
 
     return .{
         .manifest = try gpa.dupe(u8, "go.mod"),
-        .format   = "go",
+        .format = "go",
         .totalCount = total,
         .deps = try gpa.realloc(buf, n),
     };
@@ -3484,7 +3589,13 @@ fn computeDepsPip(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
     const buf = try gpa.alloc(Dep, DEPS_MAX);
     var n: usize = 0;
     var total: u32 = 0;
-    errdefer { for (buf[0..n]) |d| { gpa.free(d.name); gpa.free(d.version); } gpa.free(buf); }
+    errdefer {
+        for (buf[0..n]) |d| {
+            gpa.free(d.name);
+            gpa.free(d.version);
+        }
+        gpa.free(buf);
+    }
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw| {
@@ -3501,17 +3612,17 @@ fn computeDepsPip(gpa: std.mem.Allocator, content: []const u8) !DepsResult {
 
     return .{
         .manifest = try gpa.dupe(u8, "requirements.txt"),
-        .format   = "pip",
+        .format = "pip",
         .totalCount = total,
         .deps = try gpa.realloc(buf, n),
     };
 }
 
 const DEPS_MANIFESTS = [_]struct { file: []const u8, fmt: []const u8 }{
-    .{ .file = "package.json",    .fmt = "npm"    },
-    .{ .file = "Cargo.toml",      .fmt = "cargo"  },
-    .{ .file = "go.mod",          .fmt = "go"     },
-    .{ .file = "requirements.txt",.fmt = "pip"    },
+    .{ .file = "package.json", .fmt = "npm" },
+    .{ .file = "Cargo.toml", .fmt = "cargo" },
+    .{ .file = "go.mod", .fmt = "go" },
+    .{ .file = "requirements.txt", .fmt = "pip" },
 };
 
 pub fn computeDeps(
@@ -3530,10 +3641,10 @@ pub fn computeDeps(
         const content = try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
         defer gpa.free(content);
 
-        if (std.mem.eql(u8, m.fmt, "npm"))   return computeDepsNpm(gpa, content);
+        if (std.mem.eql(u8, m.fmt, "npm")) return computeDepsNpm(gpa, content);
         if (std.mem.eql(u8, m.fmt, "cargo")) return computeDepsCargo(gpa, content);
-        if (std.mem.eql(u8, m.fmt, "go"))    return computeDepsGoMod(gpa, content);
-        if (std.mem.eql(u8, m.fmt, "pip"))   return computeDepsPip(gpa, content);
+        if (std.mem.eql(u8, m.fmt, "go")) return computeDepsGoMod(gpa, content);
+        if (std.mem.eql(u8, m.fmt, "pip")) return computeDepsPip(gpa, content);
     }
     return error.NoManifestFound;
 }
@@ -3625,23 +3736,23 @@ fn toolRisk(tool: []const u8) []const u8 {
 pub const COMPAT_TOOLS = [_][]const u8{ "foreman_tools", "zig", "git", "gh", "brew", "node", "python3" };
 
 pub const DriftedTool = struct {
-    tool:     []u8,
-    was:      []u8,
-    now:      []u8,
-    risk:     []const u8,
+    tool: []u8,
+    was: []u8,
+    now: []u8,
+    risk: []const u8,
     rollback: []u8,
 };
 
 pub const CompatCheckResult = struct {
-    ok:           bool,
+    ok: bool,
     baseline_age: []u8,
-    drifted:      []DriftedTool,
-    advice:       []u8,
+    drifted: []DriftedTool,
+    advice: []u8,
 };
 
 pub const CompatBaselineResult = struct {
     recorded: bool,
-    path:     []u8,
+    path: []u8,
     versions: [COMPAT_TOOLS.len][]u8,
 };
 
@@ -3688,15 +3799,29 @@ pub fn computeCompatBaseline(gpa: std.mem.Allocator, io: std.Io) !CompatBaseline
         var wbuf: [4096]u8 = undefined;
         var w = f.writerStreaming(io, &wbuf);
         var write_ok = true;
-        w.interface.writeAll("{\n  \"recorded_at\": \"") catch { write_ok = false; };
-        w.interface.writeAll(ts) catch { write_ok = false; };
-        w.interface.writeAll("\",\n  \"tools\": {\n") catch { write_ok = false; };
+        w.interface.writeAll("{\n  \"recorded_at\": \"") catch {
+            write_ok = false;
+        };
+        w.interface.writeAll(ts) catch {
+            write_ok = false;
+        };
+        w.interface.writeAll("\",\n  \"tools\": {\n") catch {
+            write_ok = false;
+        };
         for (COMPAT_TOOLS, 0..) |tool, i| {
-            if (i > 0) w.interface.writeAll(",\n") catch { write_ok = false; };
-            w.interface.print("    \"{s}\": \"{s}\"", .{ tool, versions[i] }) catch { write_ok = false; };
+            if (i > 0) w.interface.writeAll(",\n") catch {
+                write_ok = false;
+            };
+            w.interface.print("    \"{s}\": \"{s}\"", .{ tool, versions[i] }) catch {
+                write_ok = false;
+            };
         }
-        w.interface.writeAll("\n  }\n}\n") catch { write_ok = false; };
-        w.interface.flush() catch { write_ok = false; };
+        w.interface.writeAll("\n  }\n}\n") catch {
+            write_ok = false;
+        };
+        w.interface.flush() catch {
+            write_ok = false;
+        };
         f.close(io);
         if (write_ok) {
             atomicRenameAbsolute(tmp_path, baseline_path);
@@ -3734,10 +3859,7 @@ pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult
     defer gpa.free(baseline_content);
 
     const recorded_at = parseBaselineField(baseline_content, "recorded_at");
-    const baseline_age = try gpa.dupe(u8,
-        if (recorded_at.len >= 10) recorded_at[0..10]
-        else if (recorded_at.len > 0) recorded_at
-        else "unknown");
+    const baseline_age = try gpa.dupe(u8, if (recorded_at.len >= 10) recorded_at[0..10] else if (recorded_at.len > 0) recorded_at else "unknown");
     errdefer gpa.free(baseline_age);
 
     var drifted_buf: [COMPAT_TOOLS.len]DriftedTool = undefined;
@@ -3758,10 +3880,10 @@ pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult
         if (std.mem.eql(u8, risk, "high")) has_high = true;
 
         drifted_buf[drifted_count] = .{
-            .tool     = try gpa.dupe(u8, tool),
-            .was      = try gpa.dupe(u8, was_str),
-            .now      = now_str,
-            .risk     = risk,
+            .tool = try gpa.dupe(u8, tool),
+            .was = try gpa.dupe(u8, was_str),
+            .now = now_str,
+            .risk = risk,
             .rollback = try buildRollbackCmd(gpa, tool, was_str),
         };
         drifted_count += 1;
@@ -3780,8 +3902,7 @@ pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult
             "Warning: Tool versions changed since baseline:";
         var acc = try gpa.dupe(u8, intro);
         for (drifted) |d| {
-            const piece = try std.fmt.allocPrint(gpa,
-                " {s} {s}->{s} ({s} risk): {s}.", .{ d.tool, d.was, d.now, d.risk, d.rollback });
+            const piece = try std.fmt.allocPrint(gpa, " {s} {s}->{s} ({s} risk): {s}.", .{ d.tool, d.was, d.now, d.risk, d.rollback });
             const joined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ acc, piece });
             gpa.free(piece);
             gpa.free(acc);
@@ -3791,10 +3912,10 @@ pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult
     };
 
     return .{
-        .ok           = drifted_count == 0,
+        .ok = drifted_count == 0,
         .baseline_age = baseline_age,
-        .drifted      = drifted,
-        .advice       = advice,
+        .drifted = drifted,
+        .advice = advice,
     };
 }
 
@@ -3803,22 +3924,22 @@ pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult
 const MAX_TEST_FAILURES: usize = 50;
 
 pub const TestFailure = struct {
-    file:     []u8,
-    line:     u32,
-    @"test":  []u8,
-    message:  []u8,
+    file: []u8,
+    line: u32,
+    @"test": []u8,
+    message: []u8,
 };
 
 pub const RunTestsResult = struct {
-    framework:   []const u8,
-    command:     []u8,
-    success:     bool,
-    passed:      u32,
-    failed:      u32,
-    skipped:     u32,
+    framework: []const u8,
+    command: []u8,
+    success: bool,
+    passed: u32,
+    failed: u32,
+    skipped: u32,
     duration_ms: u64,
-    failures:    []TestFailure,
-    truncated:   bool,
+    failures: []TestFailure,
+    truncated: bool,
 };
 
 fn detectTestFramework(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]const u8 {
@@ -3828,7 +3949,10 @@ fn detectTestFramework(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[
     if (std.Io.Dir.openFileAbsolute(io, pkg, .{})) |f| {
         var rbuf: [4096]u8 = undefined;
         var r = f.reader(io, &rbuf);
-        const c = r.interface.allocRemaining(gpa, .limited(128 * 1024)) catch { f.close(io); return null; };
+        const c = r.interface.allocRemaining(gpa, .limited(128 * 1024)) catch {
+            f.close(io);
+            return null;
+        };
         f.close(io);
         defer gpa.free(c);
         if (std.mem.indexOf(u8, c, "\"vitest\"") != null) return "vitest";
@@ -3847,7 +3971,10 @@ fn detectTestFramework(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[
     if (std.Io.Dir.openFileAbsolute(io, ppt, .{})) |f| {
         var rbuf: [4096]u8 = undefined;
         var r = f.reader(io, &rbuf);
-        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch { f.close(io); return null; };
+        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch {
+            f.close(io);
+            return null;
+        };
         f.close(io);
         defer gpa.free(c);
         if (std.mem.indexOf(u8, c, "pytest") != null) return "pytest";
@@ -3881,12 +4008,15 @@ fn appendTestFailure(
     name: []const u8,
     msg: []const u8,
 ) void {
-    if (n.* >= MAX_TEST_FAILURES) { truncated.* = true; return; }
+    if (n.* >= MAX_TEST_FAILURES) {
+        truncated.* = true;
+        return;
+    }
     buf[n.*] = .{
-        .file    = gpa.dupe(u8, file) catch return,
-        .line    = line,
+        .file = gpa.dupe(u8, file) catch return,
+        .line = line,
         .@"test" = gpa.dupe(u8, name) catch return,
-        .message = gpa.dupe(u8, msg)  catch return,
+        .message = gpa.dupe(u8, msg) catch return,
     };
     n.* += 1;
 }
@@ -3936,7 +4066,8 @@ fn parseZigOutput(
         }
         // "N passed; M failed."
         if (std.mem.indexOf(u8, t, " passed") != null and std.mem.indexOf(u8, t, " failed") != null and
-            std.mem.indexOf(u8, t, "Test [") == null) {
+            std.mem.indexOf(u8, t, "Test [") == null)
+        {
             passed.* = firstUintIn(t);
             failed.* = uintBefore(t, " failed");
             continue;
@@ -3944,7 +4075,7 @@ fn parseZigOutput(
         // "Test [n/total] name... PASS/ok/FAIL"
         if (std.mem.startsWith(u8, t, "Test [")) {
             const dots = std.mem.lastIndexOf(u8, t, "...") orelse continue;
-            const status = std.mem.trim(u8, t[dots + 3..], " \t");
+            const status = std.mem.trim(u8, t[dots + 3 ..], " \t");
             const brk = std.mem.indexOf(u8, t, "] ") orelse continue;
             const name = t[brk + 2 .. dots];
             if (std.mem.startsWith(u8, status, "FAIL") or std.mem.startsWith(u8, status, "fail")) {
@@ -3960,7 +4091,7 @@ fn parseZigOutput(
         if (pending_len > 0 and std.mem.indexOf(u8, t, ".zig:") != null) {
             const c1 = std.mem.indexOf(u8, t, ":") orelse t.len;
             const file = t[0..c1];
-            const rest = if (c1 + 1 < t.len) t[c1 + 1..] else "";
+            const rest = if (c1 + 1 < t.len) t[c1 + 1 ..] else "";
             const c2 = std.mem.indexOf(u8, rest, ":") orelse rest.len;
             const ln = std.fmt.parseInt(u32, rest[0..c2], 10) catch 0;
             appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], t);
@@ -4004,18 +4135,18 @@ fn parseCargoOutput(
         if (pending_len > 0 and std.mem.indexOf(u8, t, "panicked at") != null) {
             var file: []const u8 = "";
             var ln: u32 = 0;
-            const rs_pos  = std.mem.indexOf(u8, t, ".rs:");
+            const rs_pos = std.mem.indexOf(u8, t, ".rs:");
             const zig_pos = std.mem.indexOf(u8, t, ".zig:");
             const ext_pos = rs_pos orelse zig_pos;
             if (ext_pos) |ep| {
                 const el: usize = if (rs_pos != null) 3 else 4;
                 var start = ep;
                 while (start > 0 and t[start - 1] != ' ' and t[start - 1] != '\'' and t[start - 1] != '"') start -= 1;
-                file = t[start..ep + el];
-                const after = t[ep + el..];
+                file = t[start .. ep + el];
+                const after = t[ep + el ..];
                 if (after.len > 0 and after[0] == ':') {
                     const c2 = std.mem.indexOf(u8, after[1..], ":") orelse after.len - 1;
-                    ln = std.fmt.parseInt(u32, after[1..c2 + 1], 10) catch 0;
+                    ln = std.fmt.parseInt(u32, after[1 .. c2 + 1], 10) catch 0;
                 }
             }
             appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], t);
@@ -4052,13 +4183,14 @@ fn parseGoOutput(
             @memcpy(pending_name[0..cl], name[0..cl]);
             pending_len = cl;
         } else if (pending_len > 0 and (std.mem.indexOf(u8, t, ".go:") != null or
-            std.mem.indexOf(u8, t, "_test.go:") != null)) {
+            std.mem.indexOf(u8, t, "_test.go:") != null))
+        {
             const c1 = std.mem.indexOf(u8, t, ":") orelse t.len;
             const file = t[0..c1];
-            const rest2 = if (c1 + 1 < t.len) t[c1 + 1..] else "";
+            const rest2 = if (c1 + 1 < t.len) t[c1 + 1 ..] else "";
             const c2 = std.mem.indexOf(u8, rest2, ":") orelse rest2.len;
             const ln = std.fmt.parseInt(u32, rest2[0..c2], 10) catch 0;
-            const msg = if (c2 + 1 < rest2.len) std.mem.trim(u8, rest2[c2 + 1..], " \t") else "";
+            const msg = if (c2 + 1 < rest2.len) std.mem.trim(u8, rest2[c2 + 1 ..], " \t") else "";
             appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], msg);
             pending_len = 0;
         }
@@ -4089,10 +4221,10 @@ fn parsePytestOutput(
             const rest = t[7..];
             const dash = std.mem.indexOf(u8, rest, " - ") orelse rest.len;
             const test_ref = rest[0..dash];
-            const msg = if (dash + 3 < rest.len) rest[dash + 3..] else "";
+            const msg = if (dash + 3 < rest.len) rest[dash + 3 ..] else "";
             const dcolon = std.mem.indexOf(u8, test_ref, "::") orelse test_ref.len;
             const file = test_ref[0..dcolon];
-            const name = if (dcolon + 2 < test_ref.len) test_ref[dcolon + 2..] else test_ref;
+            const name = if (dcolon + 2 < test_ref.len) test_ref[dcolon + 2 ..] else test_ref;
             appendTestFailure(gpa, buf, n, truncated, file, 0, name, msg);
         } else if (std.mem.startsWith(u8, t, "SKIPPED ") or std.mem.startsWith(u8, t, "XFAIL ")) {
             skip_line += 1;
@@ -4108,8 +4240,8 @@ fn parsePytestOutput(
         }
     }
     if (!got_summary) {
-        passed.*  = pass_line;
-        failed.*  = fail_line;
+        passed.* = pass_line;
+        failed.* = fail_line;
         skipped.* = skip_line;
     }
 }
@@ -4129,9 +4261,7 @@ fn parseJestOutput(
             if (std.mem.indexOf(u8, rest, "failed") != null) failed.* = firstUintIn(rest);
             if (std.mem.indexOf(u8, rest, "passed") != null) passed.* = uintBefore(rest, " passed");
             const sk_marker: ?[]const u8 =
-                if (std.mem.indexOf(u8, rest, " skipped") != null) " skipped"
-                else if (std.mem.indexOf(u8, rest, " pending") != null) " pending"
-                else null;
+                if (std.mem.indexOf(u8, rest, " skipped") != null) " skipped" else if (std.mem.indexOf(u8, rest, " pending") != null) " pending" else null;
             if (sk_marker) |m| skipped.* = uintBefore(rest, m);
         }
     }
@@ -4173,15 +4303,15 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
     const r = std.process.run(gpa, io, .{ .argv = fw_argv }) catch {
         const failures = try gpa.alloc(TestFailure, 0);
         return RunTestsResult{
-            .framework   = fw,
-            .command     = command,
-            .success     = false,
-            .passed      = 0,
-            .failed      = 1,
-            .skipped     = 0,
+            .framework = fw,
+            .command = command,
+            .success = false,
+            .passed = 0,
+            .failed = 1,
+            .skipped = 0,
             .duration_ms = 0,
-            .failures    = failures,
-            .truncated   = false,
+            .failures = failures,
+            .truncated = false,
         };
     };
     defer gpa.free(r.stdout);
@@ -4191,7 +4321,7 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
     const duration_ms: u64 = blk: {
         const start_ms = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
-        const end_ms   = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        const end_ms = @as(u64, @intCast(ts_end.sec)) * 1000 + @as(u64, @intCast(ts_end.nsec)) / 1_000_000;
         break :blk if (end_ms > start_ms) end_ms - start_ms else 0;
     };
 
@@ -4228,37 +4358,37 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
     for (fbuf[0..fn_count], 0..) |f, i| failures[i] = f;
 
     return .{
-        .framework   = fw,
-        .command     = command,
-        .success     = success,
-        .passed      = passed,
-        .failed      = failed,
-        .skipped     = skipped,
+        .framework = fw,
+        .command = command,
+        .success = success,
+        .passed = passed,
+        .failed = failed,
+        .skipped = skipped,
         .duration_ms = duration_ms,
-        .failures    = failures,
-        .truncated   = truncated,
+        .failures = failures,
+        .truncated = truncated,
     };
 }
 
 // --- env-inspect subcommand ---
 
 pub const LangEntry = struct {
-    name:    []const u8,
+    name: []const u8,
     version: []u8,
     present: bool,
 };
 
 pub const PmEntry = struct {
-    name:    []const u8,
+    name: []const u8,
     version: []u8,
     present: bool,
 };
 
 pub const EnvInspectResult = struct {
-    languages:       []LangEntry,
+    languages: []LangEntry,
     packageManagers: []PmEntry,
-    missing:         [][]u8,
-    envVars:         [][]u8,
+    missing: [][]u8,
+    envVars: [][]u8,
 };
 
 // Finds the first N.N[.N...] pattern in output (handles v/V prefix, go1.X.Y, etc.)
@@ -4318,18 +4448,24 @@ pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !
             const info = try checkBinary(gpa, io, "go", "version");
             lang_buf[n_lang] = .{ .name = "go", .version = info.version, .present = info.present };
             n_lang += 1;
-            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "go runtime"); n_miss += 1; }
+            if (!info.present) {
+                miss_buf[n_miss] = try gpa.dupe(u8, "go runtime");
+                n_miss += 1;
+            }
         }
     }
 
     // Python
     {
         const has = blk: {
-            const p1 = try std.fmt.allocPrint(gpa, "{s}/requirements.txt", .{path}); defer gpa.free(p1);
+            const p1 = try std.fmt.allocPrint(gpa, "{s}/requirements.txt", .{path});
+            defer gpa.free(p1);
             if (fileExists(io, p1)) break :blk true;
-            const p2 = try std.fmt.allocPrint(gpa, "{s}/pyproject.toml", .{path}); defer gpa.free(p2);
+            const p2 = try std.fmt.allocPrint(gpa, "{s}/pyproject.toml", .{path});
+            defer gpa.free(p2);
             if (fileExists(io, p2)) break :blk true;
-            const p3 = try std.fmt.allocPrint(gpa, "{s}/setup.py", .{path}); defer gpa.free(p3);
+            const p3 = try std.fmt.allocPrint(gpa, "{s}/setup.py", .{path});
+            defer gpa.free(p3);
             break :blk fileExists(io, p3);
         };
         if (has) {
@@ -4337,10 +4473,13 @@ pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !
             lang_buf[n_lang] = .{ .name = "python", .version = info.version, .present = info.present };
             n_lang += 1;
             if (!info.present) {
-                miss_buf[n_miss] = try gpa.dupe(u8, "python3 runtime"); n_miss += 1;
+                miss_buf[n_miss] = try gpa.dupe(u8, "python3 runtime");
+                n_miss += 1;
             } else {
-                const v1 = try std.fmt.allocPrint(gpa, "{s}/.venv", .{path}); defer gpa.free(v1);
-                const v2 = try std.fmt.allocPrint(gpa, "{s}/venv", .{path});  defer gpa.free(v2);
+                const v1 = try std.fmt.allocPrint(gpa, "{s}/.venv", .{path});
+                defer gpa.free(v1);
+                const v2 = try std.fmt.allocPrint(gpa, "{s}/venv", .{path});
+                defer gpa.free(v2);
                 if (!dirExists(io, v1) and !dirExists(io, v2)) {
                     miss_buf[n_miss] = try gpa.dupe(u8, ".venv (run: python3 -m venv .venv && pip install -r requirements.txt)");
                     n_miss += 1;
@@ -4351,17 +4490,21 @@ pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !
 
     // Node
     {
-        const m = try std.fmt.allocPrint(gpa, "{s}/package.json", .{path}); defer gpa.free(m);
+        const m = try std.fmt.allocPrint(gpa, "{s}/package.json", .{path});
+        defer gpa.free(m);
         if (fileExists(io, m)) {
             const info = try checkBinary(gpa, io, "node", "--version");
             lang_buf[n_lang] = .{ .name = "node", .version = info.version, .present = info.present };
             n_lang += 1;
             if (!info.present) {
-                miss_buf[n_miss] = try gpa.dupe(u8, "node runtime"); n_miss += 1;
+                miss_buf[n_miss] = try gpa.dupe(u8, "node runtime");
+                n_miss += 1;
             } else {
-                const nm = try std.fmt.allocPrint(gpa, "{s}/node_modules", .{path}); defer gpa.free(nm);
+                const nm = try std.fmt.allocPrint(gpa, "{s}/node_modules", .{path});
+                defer gpa.free(nm);
                 if (!dirExists(io, nm)) {
-                    miss_buf[n_miss] = try gpa.dupe(u8, "node_modules (run: npm install)"); n_miss += 1;
+                    miss_buf[n_miss] = try gpa.dupe(u8, "node_modules (run: npm install)");
+                    n_miss += 1;
                 }
             }
         }
@@ -4369,39 +4512,51 @@ pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !
 
     // Rust
     {
-        const m = try std.fmt.allocPrint(gpa, "{s}/Cargo.toml", .{path}); defer gpa.free(m);
+        const m = try std.fmt.allocPrint(gpa, "{s}/Cargo.toml", .{path});
+        defer gpa.free(m);
         if (fileExists(io, m)) {
             const info = try checkBinary(gpa, io, "rustc", "--version");
             lang_buf[n_lang] = .{ .name = "rust", .version = info.version, .present = info.present };
             n_lang += 1;
-            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "rust runtime (rustup)"); n_miss += 1; }
+            if (!info.present) {
+                miss_buf[n_miss] = try gpa.dupe(u8, "rust runtime (rustup)");
+                n_miss += 1;
+            }
         }
     }
 
     // Zig
     {
-        const m = try std.fmt.allocPrint(gpa, "{s}/build.zig", .{path}); defer gpa.free(m);
+        const m = try std.fmt.allocPrint(gpa, "{s}/build.zig", .{path});
+        defer gpa.free(m);
         if (fileExists(io, m)) {
             const info = try checkBinary(gpa, io, "zig", "version");
             lang_buf[n_lang] = .{ .name = "zig", .version = info.version, .present = info.present };
             n_lang += 1;
-            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "zig runtime"); n_miss += 1; }
+            if (!info.present) {
+                miss_buf[n_miss] = try gpa.dupe(u8, "zig runtime");
+                n_miss += 1;
+            }
         }
     }
 
     // Ruby
     {
-        const m = try std.fmt.allocPrint(gpa, "{s}/Gemfile", .{path}); defer gpa.free(m);
+        const m = try std.fmt.allocPrint(gpa, "{s}/Gemfile", .{path});
+        defer gpa.free(m);
         if (fileExists(io, m)) {
             const info = try checkBinary(gpa, io, "ruby", "--version");
             lang_buf[n_lang] = .{ .name = "ruby", .version = info.version, .present = info.present };
             n_lang += 1;
             if (!info.present) {
-                miss_buf[n_miss] = try gpa.dupe(u8, "ruby runtime"); n_miss += 1;
+                miss_buf[n_miss] = try gpa.dupe(u8, "ruby runtime");
+                n_miss += 1;
             } else {
-                const vb = try std.fmt.allocPrint(gpa, "{s}/vendor/bundle", .{path}); defer gpa.free(vb);
+                const vb = try std.fmt.allocPrint(gpa, "{s}/vendor/bundle", .{path});
+                defer gpa.free(vb);
                 if (!dirExists(io, vb)) {
-                    miss_buf[n_miss] = try gpa.dupe(u8, "vendor/bundle (run: bundle install)"); n_miss += 1;
+                    miss_buf[n_miss] = try gpa.dupe(u8, "vendor/bundle (run: bundle install)");
+                    n_miss += 1;
                 }
             }
         }
@@ -4410,28 +4565,33 @@ pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !
     // Java
     {
         const has = blk: {
-            const p1 = try std.fmt.allocPrint(gpa, "{s}/pom.xml", .{path});       defer gpa.free(p1);
+            const p1 = try std.fmt.allocPrint(gpa, "{s}/pom.xml", .{path});
+            defer gpa.free(p1);
             if (fileExists(io, p1)) break :blk true;
-            const p2 = try std.fmt.allocPrint(gpa, "{s}/build.gradle", .{path});  defer gpa.free(p2);
+            const p2 = try std.fmt.allocPrint(gpa, "{s}/build.gradle", .{path});
+            defer gpa.free(p2);
             break :blk fileExists(io, p2);
         };
         if (has) {
             const info = try checkBinary(gpa, io, "java", "--version");
             lang_buf[n_lang] = .{ .name = "java", .version = info.version, .present = info.present };
             n_lang += 1;
-            if (!info.present) { miss_buf[n_miss] = try gpa.dupe(u8, "java runtime"); n_miss += 1; }
+            if (!info.present) {
+                miss_buf[n_miss] = try gpa.dupe(u8, "java runtime");
+                n_miss += 1;
+            }
         }
     }
 
     // --- Package managers (always checked) ---
 
     const pm_specs = [_]struct { name: []const u8, bin: []const u8, flag: []const u8 }{
-        .{ .name = "npm",   .bin = "npm",   .flag = "--version" },
-        .{ .name = "pip",   .bin = "pip3",  .flag = "--version" },
+        .{ .name = "npm", .bin = "npm", .flag = "--version" },
+        .{ .name = "pip", .bin = "pip3", .flag = "--version" },
         .{ .name = "cargo", .bin = "cargo", .flag = "--version" },
-        .{ .name = "brew",  .bin = "brew",  .flag = "--version" },
-        .{ .name = "yarn",  .bin = "yarn",  .flag = "--version" },
-        .{ .name = "pnpm",  .bin = "pnpm",  .flag = "--version" },
+        .{ .name = "brew", .bin = "brew", .flag = "--version" },
+        .{ .name = "yarn", .bin = "yarn", .flag = "--version" },
+        .{ .name = "pnpm", .bin = "pnpm", .flag = "--version" },
     };
     for (pm_specs) |s| {
         const info = try checkBinary(gpa, io, s.bin, s.flag);
@@ -4442,7 +4602,10 @@ pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !
     // --- Env vars from .env* files ---
 
     var env_keys: std.ArrayList([]u8) = .empty;
-    errdefer { for (env_keys.items) |k| gpa.free(k); env_keys.deinit(gpa); }
+    errdefer {
+        for (env_keys.items) |k| gpa.free(k);
+        env_keys.deinit(gpa);
+    }
 
     if (computeEnvScan(gpa, io, path)) |er| {
         defer {
@@ -4469,10 +4632,10 @@ pub fn computeEnvInspect(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !
     const envVars = try env_keys.toOwnedSlice(gpa);
 
     return .{
-        .languages       = languages,
+        .languages = languages,
         .packageManagers = packageManagers,
-        .missing         = missing,
-        .envVars         = envVars,
+        .missing = missing,
+        .envVars = envVars,
     };
 }
 
@@ -4482,28 +4645,28 @@ const MAX_BUILD_ERRORS: usize = 50;
 const MAX_BUILD_WARNINGS: usize = 20;
 
 pub const BuildError = struct {
-    file:     []u8,
-    line:     u32,
-    col:      u32,
-    message:  []u8,
+    file: []u8,
+    line: u32,
+    col: u32,
+    message: []u8,
     severity: []const u8,
 };
 
 pub const BuildWarning = struct {
-    file:    []u8,
-    line:    u32,
-    col:     u32,
+    file: []u8,
+    line: u32,
+    col: u32,
     message: []u8,
 };
 
 pub const BuildResult = struct {
-    tool:        []const u8,
-    command:     []u8,
-    success:     bool,
-    errors:      []BuildError,
-    warnings:    []BuildWarning,
+    tool: []const u8,
+    command: []u8,
+    success: bool,
+    errors: []BuildError,
+    warnings: []BuildWarning,
     duration_ms: u64,
-    truncated:   bool,
+    truncated: bool,
 };
 
 fn appendBuildError(
@@ -4517,12 +4680,15 @@ fn appendBuildError(
     msg: []const u8,
     sev: []const u8,
 ) void {
-    if (n.* >= buf.len) { truncated.* = true; return; }
+    if (n.* >= buf.len) {
+        truncated.* = true;
+        return;
+    }
     buf[n.*] = .{
-        .file     = gpa.dupe(u8, file) catch return,
-        .line     = line,
-        .col      = col,
-        .message  = gpa.dupe(u8, msg) catch return,
+        .file = gpa.dupe(u8, file) catch return,
+        .line = line,
+        .col = col,
+        .message = gpa.dupe(u8, msg) catch return,
         .severity = sev,
     };
     n.* += 1;
@@ -4538,11 +4704,14 @@ fn appendBuildWarning(
     col: u32,
     msg: []const u8,
 ) void {
-    if (n.* >= buf.len) { truncated.* = true; return; }
+    if (n.* >= buf.len) {
+        truncated.* = true;
+        return;
+    }
     buf[n.*] = .{
-        .file    = gpa.dupe(u8, file) catch return,
-        .line    = line,
-        .col     = col,
+        .file = gpa.dupe(u8, file) catch return,
+        .line = line,
+        .col = col,
         .message = gpa.dupe(u8, msg) catch return,
     };
     n.* += 1;
@@ -4566,7 +4735,10 @@ fn detectBuildTool(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]con
     if (std.Io.Dir.openFileAbsolute(io, pkg, .{})) |f| {
         var rbuf: [4096]u8 = undefined;
         var r = f.reader(io, &rbuf);
-        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch { f.close(io); return null; };
+        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch {
+            f.close(io);
+            return null;
+        };
         f.close(io);
         defer gpa.free(c);
         if (std.mem.indexOf(u8, c, "\"scripts\"") != null and
@@ -4599,14 +4771,14 @@ fn parseCargoBuildOutput(
         const t = std.mem.trim(u8, line, " \t\r");
         if (std.mem.startsWith(u8, t, "error[") or std.mem.startsWith(u8, t, "error: ")) {
             const colon = std.mem.indexOf(u8, t, ": ") orelse t.len;
-            const msg = if (colon + 2 < t.len) t[colon + 2..] else t;
+            const msg = if (colon + 2 < t.len) t[colon + 2 ..] else t;
             const cl = @min(msg.len, pmsg.len);
             @memcpy(pmsg[0..cl], msg[0..cl]);
             pmsg_len = cl;
             psev = "error";
         } else if (std.mem.startsWith(u8, t, "warning[") or std.mem.startsWith(u8, t, "warning: ")) {
             const colon = std.mem.indexOf(u8, t, ": ") orelse t.len;
-            const msg = if (colon + 2 < t.len) t[colon + 2..] else t;
+            const msg = if (colon + 2 < t.len) t[colon + 2 ..] else t;
             const cl = @min(msg.len, pmsg.len);
             @memcpy(pmsg[0..cl], msg[0..cl]);
             pmsg_len = cl;
@@ -4614,12 +4786,16 @@ fn parseCargoBuildOutput(
         } else if (pmsg_len > 0 and std.mem.startsWith(u8, t, "--> ")) {
             const loc = t[4..];
             const c2_opt = std.mem.lastIndexOf(u8, loc, ":");
-            if (c2_opt == null) { pmsg_len = 0; psev = ""; continue; }
+            if (c2_opt == null) {
+                pmsg_len = 0;
+                psev = "";
+                continue;
+            }
             const c2 = c2_opt.?;
             const c1_opt = std.mem.lastIndexOf(u8, loc[0..c2], ":");
             const file: []const u8 = if (c1_opt) |c1| loc[0..c1] else loc[0..c2];
-            const ln_s: []const u8 = if (c1_opt) |c1| loc[c1 + 1..c2] else loc[c2 + 1..];
-            const col_s: []const u8 = if (c1_opt != null) loc[c2 + 1..] else "";
+            const ln_s: []const u8 = if (c1_opt) |c1| loc[c1 + 1 .. c2] else loc[c2 + 1 ..];
+            const col_s: []const u8 = if (c1_opt != null) loc[c2 + 1 ..] else "";
             const ln = std.fmt.parseInt(u32, ln_s, 10) catch 0;
             const col_num = std.fmt.parseInt(u32, col_s, 10) catch 0;
             if (std.mem.eql(u8, psev, "error")) {
@@ -4658,11 +4834,11 @@ fn parseZigBuildOutput(
         const c1_opt = std.mem.lastIndexOf(u8, loc[0..c2], ":");
         const file: []const u8 = if (c1_opt) |c1| loc[0..c1] else loc[0..c2];
         if (file.len == 0) continue;
-        const ln_s: []const u8 = if (c1_opt) |c1| loc[c1 + 1..c2] else loc[c2 + 1..];
-        const col_s: []const u8 = if (c1_opt != null) loc[c2 + 1..] else "";
+        const ln_s: []const u8 = if (c1_opt) |c1| loc[c1 + 1 .. c2] else loc[c2 + 1 ..];
+        const col_s: []const u8 = if (c1_opt != null) loc[c2 + 1 ..] else "";
         const ln = std.fmt.parseInt(u32, ln_s, 10) catch 0;
         const col_num = std.fmt.parseInt(u32, col_s, 10) catch 0;
-        const msg = t[sev_pos + sev_marker.len..];
+        const msg = t[sev_pos + sev_marker.len ..];
         if (is_err) {
             appendBuildError(gpa, errbuf, n_err, truncated, file, ln, col_num, msg, "error");
         } else {
@@ -4686,13 +4862,13 @@ fn parseGoBuildOutput(
         if (!std.mem.startsWith(u8, t, "./") and !std.mem.startsWith(u8, t, "/")) continue;
         const c1 = std.mem.indexOf(u8, t, ":") orelse continue;
         const file = t[0..c1];
-        const rest1 = if (c1 + 1 < t.len) t[c1 + 1..] else continue;
+        const rest1 = if (c1 + 1 < t.len) t[c1 + 1 ..] else continue;
         const c2 = std.mem.indexOf(u8, rest1, ":") orelse continue;
         const ln = std.fmt.parseInt(u32, rest1[0..c2], 10) catch continue;
-        const rest2 = if (c2 + 1 < rest1.len) rest1[c2 + 1..] else continue;
+        const rest2 = if (c2 + 1 < rest1.len) rest1[c2 + 1 ..] else continue;
         const c3_opt = std.mem.indexOf(u8, rest2, ":");
         const col_num: u32 = if (c3_opt) |c3| std.fmt.parseInt(u32, rest2[0..c3], 10) catch 0 else 0;
-        const msg_raw: []const u8 = if (c3_opt) |c3| (if (c3 + 1 < rest2.len) rest2[c3 + 1..] else rest2) else rest2;
+        const msg_raw: []const u8 = if (c3_opt) |c3| (if (c3 + 1 < rest2.len) rest2[c3 + 1 ..] else rest2) else rest2;
         const msg = std.mem.trim(u8, msg_raw, " \t");
         appendBuildError(gpa, errbuf, n_err, truncated, file, ln, col_num, msg, "error");
     }
@@ -4724,10 +4900,10 @@ fn parseTscOutput(
         const coords = t[inner_start .. inner_start + close_off];
         const comma = std.mem.indexOf(u8, coords, ",") orelse coords.len;
         const ln = std.fmt.parseInt(u32, coords[0..comma], 10) catch 0;
-        const col_num: u32 = if (comma + 1 < coords.len) std.fmt.parseInt(u32, coords[comma + 1..], 10) catch 0 else 0;
+        const col_num: u32 = if (comma + 1 < coords.len) std.fmt.parseInt(u32, coords[comma + 1 ..], 10) catch 0 else 0;
         const sev_marker: []const u8 = if (is_err) "): error " else "): warning ";
         const sev_pos = std.mem.indexOf(u8, t, sev_marker) orelse continue;
-        const msg = t[sev_pos + sev_marker.len..];
+        const msg = t[sev_pos + sev_marker.len ..];
         if (is_err) {
             appendBuildError(gpa, errbuf, n_err, truncated, file, ln, col_num, msg, "error");
         } else {
@@ -4769,13 +4945,13 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
         const errors = try gpa.alloc(BuildError, 0);
         const warnings = try gpa.alloc(BuildWarning, 0);
         return BuildResult{
-            .tool        = tool,
-            .command     = command,
-            .success     = false,
-            .errors      = errors,
-            .warnings    = warnings,
+            .tool = tool,
+            .command = command,
+            .success = false,
+            .errors = errors,
+            .warnings = warnings,
             .duration_ms = 0,
-            .truncated   = false,
+            .truncated = false,
         };
     };
     defer gpa.free(r.stdout);
@@ -4785,7 +4961,7 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
     const duration_ms: u64 = blk: {
         const start_ms = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
-        const end_ms   = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        const end_ms = @as(u64, @intCast(ts_end.sec)) * 1000 + @as(u64, @intCast(ts_end.nsec)) / 1_000_000;
         break :blk if (end_ms > start_ms) end_ms - start_ms else 0;
     };
 
@@ -4819,13 +4995,13 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
     for (warnbuf[0..n_warn], 0..) |w, i| warnings[i] = w;
 
     return .{
-        .tool        = tool,
-        .command     = command,
-        .success     = success,
-        .errors      = errors,
-        .warnings    = warnings,
+        .tool = tool,
+        .command = command,
+        .success = success,
+        .errors = errors,
+        .warnings = warnings,
         .duration_ms = duration_ms,
-        .truncated   = truncated,
+        .truncated = truncated,
     };
 }
 
@@ -4837,16 +5013,16 @@ const SYMBOL_FIND_MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 pub const SymbolRef = struct { file: []u8, line: u32 };
 
 pub const SymbolFindResult = struct {
-    symbol:     []const u8,
-    kind:       []const u8,
+    symbol: []const u8,
+    kind: []const u8,
     definition: ?SymbolRef,
     references: []SymbolRef,
-    capped:     bool,
+    capped: bool,
 };
 
 fn isWordChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-           (c >= '0' and c <= '9') or c == '_';
+        (c >= '0' and c <= '9') or c == '_';
 }
 
 fn wholeWordPos(line: []const u8, name: []const u8) ?usize {
@@ -4856,7 +5032,7 @@ fn wholeWordPos(line: []const u8, name: []const u8) ?usize {
         const rel = std.mem.indexOf(u8, line[start..], name) orelse return null;
         const pos = start + rel;
         const before_ok = pos == 0 or !isWordChar(line[pos - 1]);
-        const after_ok  = pos + name.len >= line.len or !isWordChar(line[pos + name.len]);
+        const after_ok = pos + name.len >= line.len or !isWordChar(line[pos + name.len]);
         if (before_ok and after_ok) return pos;
         start = pos + 1;
     }
@@ -4870,7 +5046,7 @@ fn kwdMatch(line: []const u8, kw: []const u8, name: []const u8) bool {
     while (i + kw.len <= line.len) : (i += 1) {
         if (!std.mem.eql(u8, line[i .. i + kw.len], kw)) continue;
         if (i > 0 and isWordChar(line[i - 1])) continue;
-        const after = std.mem.trimStart(u8, line[i + kw.len..], " \t*&");
+        const after = std.mem.trimStart(u8, line[i + kw.len ..], " \t*&");
         if (std.mem.startsWith(u8, after, name) and
             (after.len == name.len or !isWordChar(after[name.len]))) return true;
     }
@@ -4919,8 +5095,7 @@ fn scanFileForSymbol(
     const content = r.interface.allocRemaining(gpa, .limited(SYMBOL_FIND_MAX_FILE_BYTES)) catch return;
     defer gpa.free(content);
     // Skip binary files (Mach-O, ELF, fat binary)
-    if (content.len >= 4 and (
-        std.mem.eql(u8, content[0..4], "\xcf\xfa\xed\xfe") or
+    if (content.len >= 4 and (std.mem.eql(u8, content[0..4], "\xcf\xfa\xed\xfe") or
         std.mem.eql(u8, content[0..4], "\xfe\xed\xfa\xcf") or
         std.mem.eql(u8, content[0..4], "\xca\xfe\xba\xbe") or
         std.mem.eql(u8, content[0..4], "\x7fELF"))) return;
@@ -5006,11 +5181,11 @@ pub fn computeSymbolFind(gpa: std.mem.Allocator, io: std.Io, root: []const u8, n
     try walkSymbolFind(gpa, io, dir, "", root, name, &def, &def_kind, &refs, &capped);
 
     return .{
-        .symbol     = name,
-        .kind       = def_kind,
+        .symbol = name,
+        .kind = def_kind,
         .definition = def,
         .references = try refs.toOwnedSlice(gpa),
-        .capped     = capped,
+        .capped = capped,
     };
 }
 
@@ -5032,33 +5207,33 @@ const SecretPatternDef = struct {
 
 const SECRET_PATTERNS = [_]SecretPatternDef{
     // Specific token prefixes (high-confidence, case-sensitive)
-    .{ .needle = "sk_live_",                             .name = "stripe-secret-key",          .severity = "high",   .mode = .prefix },
-    .{ .needle = "sk_test_",                             .name = "stripe-test-key",             .severity = "medium", .mode = .prefix },
-    .{ .needle = "AKIA",                                 .name = "aws-access-key-id",           .severity = "high",   .mode = .prefix },
-    .{ .needle = "ghp_",                                 .name = "github-pat",                  .severity = "high",   .mode = .prefix },
-    .{ .needle = "gho_",                                 .name = "github-oauth-token",          .severity = "high",   .mode = .prefix },
-    .{ .needle = "ghs_",                                 .name = "github-server-token",         .severity = "high",   .mode = .prefix },
-    .{ .needle = "github_pat_",                          .name = "github-fine-grained-pat",     .severity = "high",   .mode = .prefix },
-    .{ .needle = "glpat-",                               .name = "gitlab-pat",                  .severity = "high",   .mode = .prefix },
-    .{ .needle = "xoxb-",                                .name = "slack-bot-token",             .severity = "high",   .mode = .prefix },
-    .{ .needle = "xoxp-",                                .name = "slack-user-token",            .severity = "high",   .mode = .prefix },
-    .{ .needle = "-----BEGIN RSA PRIVATE KEY-----",      .name = "rsa-private-key",            .severity = "high",   .mode = .prefix },
-    .{ .needle = "-----BEGIN OPENSSH PRIVATE KEY-----",  .name = "ssh-private-key",            .severity = "high",   .mode = .prefix },
-    .{ .needle = "-----BEGIN EC PRIVATE KEY-----",       .name = "ec-private-key",             .severity = "high",   .mode = .prefix },
-    .{ .needle = "-----BEGIN PGP PRIVATE KEY BLOCK-----",.name = "pgp-private-key",            .severity = "high",   .mode = .prefix },
-    .{ .needle = "AIza",                                 .name = "google-api-key",              .severity = "high",   .mode = .prefix },
-    .{ .needle = "ya29.",                                .name = "google-oauth-token",          .severity = "high",   .mode = .prefix },
+    .{ .needle = "sk_live_", .name = "stripe-secret-key", .severity = "high", .mode = .prefix },
+    .{ .needle = "sk_test_", .name = "stripe-test-key", .severity = "medium", .mode = .prefix },
+    .{ .needle = "AKIA", .name = "aws-access-key-id", .severity = "high", .mode = .prefix },
+    .{ .needle = "ghp_", .name = "github-pat", .severity = "high", .mode = .prefix },
+    .{ .needle = "gho_", .name = "github-oauth-token", .severity = "high", .mode = .prefix },
+    .{ .needle = "ghs_", .name = "github-server-token", .severity = "high", .mode = .prefix },
+    .{ .needle = "github_pat_", .name = "github-fine-grained-pat", .severity = "high", .mode = .prefix },
+    .{ .needle = "glpat-", .name = "gitlab-pat", .severity = "high", .mode = .prefix },
+    .{ .needle = "xoxb-", .name = "slack-bot-token", .severity = "high", .mode = .prefix },
+    .{ .needle = "xoxp-", .name = "slack-user-token", .severity = "high", .mode = .prefix },
+    .{ .needle = "-----BEGIN RSA PRIVATE KEY-----", .name = "rsa-private-key", .severity = "high", .mode = .prefix },
+    .{ .needle = "-----BEGIN OPENSSH PRIVATE KEY-----", .name = "ssh-private-key", .severity = "high", .mode = .prefix },
+    .{ .needle = "-----BEGIN EC PRIVATE KEY-----", .name = "ec-private-key", .severity = "high", .mode = .prefix },
+    .{ .needle = "-----BEGIN PGP PRIVATE KEY BLOCK-----", .name = "pgp-private-key", .severity = "high", .mode = .prefix },
+    .{ .needle = "AIza", .name = "google-api-key", .severity = "high", .mode = .prefix },
+    .{ .needle = "ya29.", .name = "google-oauth-token", .severity = "high", .mode = .prefix },
     // Assignment-key patterns: needle found in variable name + real value after = or :
-    .{ .needle = "password",     .name = "hardcoded-password",    .severity = "high",   .mode = .assignment_key },
-    .{ .needle = "passwd",       .name = "hardcoded-password",    .severity = "high",   .mode = .assignment_key },
-    .{ .needle = "api_secret",   .name = "hardcoded-api-secret",  .severity = "high",   .mode = .assignment_key },
-    .{ .needle = "api_key",      .name = "hardcoded-api-key",     .severity = "medium", .mode = .assignment_key },
-    .{ .needle = "apikey",       .name = "hardcoded-api-key",     .severity = "medium", .mode = .assignment_key },
-    .{ .needle = "secret_key",   .name = "hardcoded-secret-key",  .severity = "medium", .mode = .assignment_key },
-    .{ .needle = "secret",       .name = "hardcoded-secret",      .severity = "medium", .mode = .assignment_key },
-    .{ .needle = "access_token", .name = "hardcoded-token",       .severity = "medium", .mode = .assignment_key },
-    .{ .needle = "auth_token",   .name = "hardcoded-token",       .severity = "medium", .mode = .assignment_key },
-    .{ .needle = "private_key",  .name = "hardcoded-private-key", .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "password", .name = "hardcoded-password", .severity = "high", .mode = .assignment_key },
+    .{ .needle = "passwd", .name = "hardcoded-password", .severity = "high", .mode = .assignment_key },
+    .{ .needle = "api_secret", .name = "hardcoded-api-secret", .severity = "high", .mode = .assignment_key },
+    .{ .needle = "api_key", .name = "hardcoded-api-key", .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "apikey", .name = "hardcoded-api-key", .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "secret_key", .name = "hardcoded-secret-key", .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "secret", .name = "hardcoded-secret", .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "access_token", .name = "hardcoded-token", .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "auth_token", .name = "hardcoded-token", .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "private_key", .name = "hardcoded-private-key", .severity = "medium", .mode = .assignment_key },
 };
 
 fn secretScanIsCommentLine(line: []const u8) bool {
@@ -5100,7 +5275,8 @@ fn secretScanPrefixContinuationLen(line: []const u8, pos: usize, needle_len: usi
     while (i < line.len) : (i += 1) {
         const c = line[i];
         if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '/' or
-            c == '+' or c == '.' or c == '@' or c == '=') {
+            c == '+' or c == '.' or c == '@' or c == '=')
+        {
             count += 1;
         } else break;
     }
@@ -5111,7 +5287,10 @@ fn secretScanFindAssignmentSep(line: []const u8) ?usize {
     var i: usize = 0;
     while (i < line.len) : (i += 1) {
         if (line[i] == '=') {
-            if (i + 1 < line.len and line[i + 1] == '=') { i += 1; continue; }
+            if (i + 1 < line.len and line[i + 1] == '=') {
+                i += 1;
+                continue;
+            }
             if (i > 0 and (line[i - 1] == '!' or line[i - 1] == '<' or line[i - 1] == '>')) continue;
             return i;
         }
@@ -5147,15 +5326,26 @@ fn secretScanIsPlaceholder(val: []const u8) bool {
     if (val[0] == '{' or val[0] == '[' or val[0] == '(' or val[0] == '$' or
         val[0] == '.' or std.ascii.isDigit(val[0])) return true;
     const env_prefixes = [_][]const u8{ "os.", "ENV[", "env.", "process.", "config.", "settings.", "getenv", "std." };
-    for (env_prefixes) |ep| { if (std.mem.startsWith(u8, val, ep)) return true; }
+    for (env_prefixes) |ep| {
+        if (std.mem.startsWith(u8, val, ep)) return true;
+    }
     const null_literals = [_][]const u8{ "None", "null", "undefined", "true", "false", "True", "False", "NULL", "nil" };
-    for (null_literals) |nl| { if (std.mem.eql(u8, val, nl)) return true; }
+    for (null_literals) |nl| {
+        if (std.mem.eql(u8, val, nl)) return true;
+    }
     const type_decls = [_][]const u8{ "struct", "enum", "union", "fn ", "interface", "class", "impl", "type " };
-    for (type_decls) |td| { if (std.mem.startsWith(u8, val, td)) return true; }
+    for (type_decls) |td| {
+        if (std.mem.startsWith(u8, val, td)) return true;
+    }
     if (val.len >= 4) {
         const first = val[0];
         var all_same = true;
-        for (val) |c| { if (c != first) { all_same = false; break; } }
+        for (val) |c| {
+            if (c != first) {
+                all_same = false;
+                break;
+            }
+        }
         if (all_same) return true;
     }
     var buf: [64]u8 = undefined;
@@ -5163,11 +5353,13 @@ fn secretScanIsPlaceholder(val: []const u8) bool {
     for (val[0..check_len], 0..) |c, idx| buf[idx] = std.ascii.toLower(c);
     const lower = buf[0..check_len];
     const placeholder_pfx = [_][]const u8{
-        "your", "my_api", "example", "placeholder", "replace", "changeme",
-        "change_me", "put_", "insert_", "enter_", "add_", "dummy",
-        "fake", "sample", "test_", "not_real", "xxxxxxxxx", "12345678",
+        "your",      "my_api", "example", "placeholder", "replace",   "changeme",
+        "change_me", "put_",   "insert_", "enter_",      "add_",      "dummy",
+        "fake",      "sample", "test_",   "not_real",    "xxxxxxxxx", "12345678",
     };
-    for (placeholder_pfx) |ph| { if (std.mem.startsWith(u8, lower, ph)) return true; }
+    for (placeholder_pfx) |ph| {
+        if (std.mem.startsWith(u8, lower, ph)) return true;
+    }
     return false;
 }
 
@@ -5185,8 +5377,7 @@ fn scanFileForSecrets(
     var r = file.reader(io, &read_buf);
     const content = r.interface.allocRemaining(gpa, .limited(SECRET_SCAN_MAX_FILE_BYTES)) catch return;
     defer gpa.free(content);
-    if (content.len >= 4 and (
-        std.mem.eql(u8, content[0..4], "\xcf\xfa\xed\xfe") or
+    if (content.len >= 4 and (std.mem.eql(u8, content[0..4], "\xcf\xfa\xed\xfe") or
         std.mem.eql(u8, content[0..4], "\xfe\xed\xfa\xcf") or
         std.mem.eql(u8, content[0..4], "\xca\xfe\xba\xbe") or
         std.mem.eql(u8, content[0..4], "\x7fELF"))) return;
@@ -5199,7 +5390,10 @@ fn scanFileForSecrets(
         const line = content[line_start..line_end];
         if (line_num != last_flagged and !secretScanIsCommentLine(line)) {
             for (SECRET_PATTERNS) |pat| {
-                if (findings.items.len >= SECRET_SCAN_MAX_FINDINGS) { truncated.* = true; return; }
+                if (findings.items.len >= SECRET_SCAN_MAX_FINDINGS) {
+                    truncated.* = true;
+                    return;
+                }
                 var matched = false;
                 switch (pat.mode) {
                     .prefix => {
@@ -5220,9 +5414,9 @@ fn scanFileForSecrets(
                 }
                 if (matched) {
                     try findings.append(gpa, .{
-                        .file     = try gpa.dupe(u8, rel_path),
-                        .line     = line_num,
-                        .pattern  = pat.name,
+                        .file = try gpa.dupe(u8, rel_path),
+                        .line = line_num,
+                        .pattern = pat.name,
                         .severity = pat.severity,
                     });
                     last_flagged = line_num;
@@ -5246,7 +5440,10 @@ fn walkSecretScan(
 ) !void {
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        if (findings.items.len >= SECRET_SCAN_MAX_FINDINGS) { truncated.* = true; return; }
+        if (findings.items.len >= SECRET_SCAN_MAX_FINDINGS) {
+            truncated.* = true;
+            return;
+        }
         if (entry.kind == .file) {
             if (shouldSkipGrepFile(entry.name)) continue;
             if (secretScanIsExampleFile(entry.name)) continue;
@@ -5379,12 +5576,12 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
     // Tools
     const tool_specs = [_]struct { name: []const u8, flag: []const u8 }{
         .{ .name = "foreman_tools", .flag = "doctor" },
-        .{ .name = "zig",           .flag = "version" },
-        .{ .name = "git",           .flag = "--version" },
-        .{ .name = "gh",            .flag = "--version" },
-        .{ .name = "node",          .flag = "--version" },
-        .{ .name = "python3",       .flag = "--version" },
-        .{ .name = "brew",          .flag = "--version" },
+        .{ .name = "zig", .flag = "version" },
+        .{ .name = "git", .flag = "--version" },
+        .{ .name = "gh", .flag = "--version" },
+        .{ .name = "node", .flag = "--version" },
+        .{ .name = "python3", .flag = "--version" },
+        .{ .name = "brew", .flag = "--version" },
     };
     const tool_bin_names = [_][]const u8{ "foreman-tools", "zig", "git", "gh", "node", "python3", "brew" };
 
@@ -5454,11 +5651,15 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
                 const sep: []const u8 = if (idx == 0) "" else ",";
                 const part = std.fmt.bufPrint(tools_buf[tools_len..], "{s}\"{s}\":{{\"version\":\"{s}\",\"present\":{s}}}", .{
                     sep, t.name, t.version, if (t.present) "true" else "false",
-                }) catch { tools_ok = false; break; };
+                }) catch {
+                    tools_ok = false;
+                    break;
+                };
                 tools_len += part.len;
             }
             if (tools_ok) {
-                const cache_json = std.fmt.allocPrint(gpa,
+                const cache_json = std.fmt.allocPrint(
+                    gpa,
                     "{{\"profile_id\":\"{s}\",\"hardware\":{{\"cpu\":\"{s}\",\"cores\":{d},\"ram_gb\":{d},\"os\":\"macos\",\"arch\":\"{s}\"}},\"tools\":{{{s}}},\"optimal\":{{\"zig_build_flags\":\"{s}\"}},\"shell\":\"{s}\",\"scanned_at\":{d}}}",
                     .{ profile_id, cpu, cores, ram_gb, arch, tools_buf[0..tools_len], zig_flags, shell, scanned_at },
                 ) catch null;
@@ -5472,12 +5673,12 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
 
     return .{
         .profile_id = profile_id,
-        .hardware   = .{ .cpu = cpu, .cores = cores, .ram_gb = ram_gb, .os = "macos", .arch = arch },
-        .tools      = tools_list,
-        .optimal    = .{ .zig_build_flags = zig_flags },
-        .shell      = shell,
+        .hardware = .{ .cpu = cpu, .cores = cores, .ram_gb = ram_gb, .os = "macos", .arch = arch },
+        .tools = tools_list,
+        .optimal = .{ .zig_build_flags = zig_flags },
+        .shell = shell,
         .scanned_at = scanned_at,
-        .path       = try gpa.dupe(u8, profile_path),
+        .path = try gpa.dupe(u8, profile_path),
     };
 }
 
@@ -5648,10 +5849,10 @@ pub fn computeDeltaContext(
             }
 
             try result_symbols.append(gpa, .{
-                .name    = try gpa.dupe(u8, sym.name),
-                .kind    = sym.kind,
-                .file    = try gpa.dupe(u8, rel_path),
-                .line    = sym.line,
+                .name = try gpa.dupe(u8, sym.name),
+                .kind = sym.kind,
+                .file = try gpa.dupe(u8, rel_path),
+                .line = sym.line,
                 .callers = callers_list,
             });
         }
@@ -5662,7 +5863,7 @@ pub fn computeDeltaContext(
     while (it.next()) |k| gpa.free(k.*);
 
     return .{
-        .ref     = try gpa.dupe(u8, ref),
+        .ref = try gpa.dupe(u8, ref),
         .symbols = try result_symbols.toOwnedSlice(gpa),
     };
 }
@@ -5729,19 +5930,21 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
                         if (pv.value == .object) {
                             const obj = pv.value.object;
                             const branch_v = obj.get("branch") orelse std.json.Value{ .string = "" };
-                            const dirty_v  = obj.get("dirty")  orelse std.json.Value{ .bool = false };
-                            const ahead_v  = obj.get("ahead")  orelse std.json.Value{ .integer = 0 };
+                            const dirty_v = obj.get("dirty") orelse std.json.Value{ .bool = false };
+                            const ahead_v = obj.get("ahead") orelse std.json.Value{ .integer = 0 };
                             const behind_v = obj.get("behind") orelse std.json.Value{ .integer = 0 };
                             const branch_s = if (branch_v == .string) branch_v.string else "";
-                            const dirty_b  = if (dirty_v  == .bool)   dirty_v.bool   else false;
-                            const ahead_n: u32  = if (ahead_v  == .integer) @intCast(@max(0, ahead_v.integer))  else 0;
+                            const dirty_b = if (dirty_v == .bool) dirty_v.bool else false;
+                            const ahead_n: u32 = if (ahead_v == .integer) @intCast(@max(0, ahead_v.integer)) else 0;
                             const behind_n: u32 = if (behind_v == .integer) @intCast(@max(0, behind_v.integer)) else 0;
                             // Parse commits array
                             var cached_commits: std.ArrayList(GitCacheCommit) = .empty;
                             errdefer {
                                 for (cached_commits.items) |cc| {
-                                    gpa.free(cc.hash); gpa.free(cc.subject);
-                                    gpa.free(cc.author); gpa.free(cc.date);
+                                    gpa.free(cc.hash);
+                                    gpa.free(cc.subject);
+                                    gpa.free(cc.author);
+                                    gpa.free(cc.date);
                                 }
                                 cached_commits.deinit(gpa);
                             }
@@ -5750,26 +5953,26 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
                                     for (commits_v.array.items) |entry| {
                                         if (entry != .object) continue;
                                         const eo = entry.object;
-                                        const h = if (eo.get("hash"))    |v| if (v == .string) v.string else "" else "";
+                                        const h = if (eo.get("hash")) |v| if (v == .string) v.string else "" else "";
                                         const s = if (eo.get("subject")) |v| if (v == .string) v.string else "" else "";
-                                        const a = if (eo.get("author"))  |v| if (v == .string) v.string else "" else "";
-                                        const d = if (eo.get("date"))    |v| if (v == .string) v.string else "" else "";
+                                        const a = if (eo.get("author")) |v| if (v == .string) v.string else "" else "";
+                                        const d = if (eo.get("date")) |v| if (v == .string) v.string else "" else "";
                                         try cached_commits.append(gpa, .{
-                                            .hash    = try gpa.dupe(u8, h),
+                                            .hash = try gpa.dupe(u8, h),
                                             .subject = try gpa.dupe(u8, s),
-                                            .author  = try gpa.dupe(u8, a),
-                                            .date    = try gpa.dupe(u8, d),
+                                            .author = try gpa.dupe(u8, a),
+                                            .date = try gpa.dupe(u8, d),
                                         });
                                     }
                                 }
                             }
                             return .{
-                                .hit     = true,
-                                .branch  = try gpa.dupe(u8, branch_s),
-                                .head    = try gpa.dupe(u8, head_sha),
-                                .dirty   = dirty_b,
-                                .ahead   = ahead_n,
-                                .behind  = behind_n,
+                                .hit = true,
+                                .branch = try gpa.dupe(u8, branch_s),
+                                .head = try gpa.dupe(u8, head_sha),
+                                .dirty = dirty_b,
+                                .ahead = ahead_n,
+                                .behind = behind_n,
                                 .commits = try cached_commits.toOwnedSlice(gpa),
                             };
                         }
@@ -5835,10 +6038,10 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
         }
         fields[fi] = log_line[fs..];
         try commits.append(gpa, .{
-            .hash    = try gpa.dupe(u8, fields[0]),
+            .hash = try gpa.dupe(u8, fields[0]),
             .subject = try gpa.dupe(u8, fields[1]),
-            .author  = try gpa.dupe(u8, fields[2]),
-            .date    = try gpa.dupe(u8, fields[3]),
+            .author = try gpa.dupe(u8, fields[2]),
+            .date = try gpa.dupe(u8, fields[3]),
         });
     }
 
@@ -5857,12 +6060,10 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
             w.interface.writeAll(head_sha) catch break :blk false;
             w.interface.writeAll("\n") catch break :blk false;
             // JSON state (no hit field in stored form)
-            w.interface.print("{{\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"ahead\":{d},\"behind\":{d},\"commits\":[",
-                .{ branch, head_sha, if (dirty) "true" else "false", ahead, behind }) catch break :blk false;
+            w.interface.print("{{\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"ahead\":{d},\"behind\":{d},\"commits\":[", .{ branch, head_sha, if (dirty) "true" else "false", ahead, behind }) catch break :blk false;
             for (commits.items, 0..) |cm, ci| {
                 if (ci > 0) w.interface.writeAll(",") catch break :blk false;
-                w.interface.print("{{\"hash\":\"{s}\",\"subject\":\"{s}\",\"author\":\"{s}\",\"date\":\"{s}\"}}",
-                    .{ cm.hash, cm.subject, cm.author, cm.date }) catch break :blk false;
+                w.interface.print("{{\"hash\":\"{s}\",\"subject\":\"{s}\",\"author\":\"{s}\",\"date\":\"{s}\"}}", .{ cm.hash, cm.subject, cm.author, cm.date }) catch break :blk false;
             }
             w.interface.writeAll("]}") catch break :blk false;
             w.interface.flush() catch break :blk false;
@@ -5873,12 +6074,12 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
     } else |_| {}
 
     return .{
-        .hit     = false,
-        .branch  = branch,
-        .head    = try gpa.dupe(u8, head_sha),
-        .dirty   = dirty,
-        .ahead   = ahead,
-        .behind  = behind,
+        .hit = false,
+        .branch = branch,
+        .head = try gpa.dupe(u8, head_sha),
+        .dirty = dirty,
+        .ahead = ahead,
+        .behind = behind,
         .commits = try commits.toOwnedSlice(gpa),
     };
 }
@@ -5886,12 +6087,12 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
 // --- prod-ready ---
 
 pub const ProdReadyItem = struct {
-    source:  []const u8,
+    source: []const u8,
     message: []const u8,
 };
 
 pub const ProdReadyResult = struct {
-    ready:    bool,
+    ready: bool,
     blockers: []ProdReadyItem,
     warnings: []ProdReadyItem,
 };
@@ -5905,7 +6106,7 @@ pub fn computeProdReady(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !P
         const r = computeQualityGate(gpa, io, path) catch |e| switch (e) {
             else => {
                 warnings.append(gpa, .{
-                    .source  = "quality-gate",
+                    .source = "quality-gate",
                     .message = "could not run quality gate",
                 }) catch {};
                 break :blk null;
@@ -5916,37 +6117,36 @@ pub fn computeProdReady(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !P
     if (qg_opt) |qg| {
         if (qg.critical.len > 0) {
             try blockers.append(gpa, .{
-                .source  = "quality-gate",
+                .source = "quality-gate",
                 .message = try std.fmt.allocPrint(gpa, "{d} critical issue(s): build or test runner crashed", .{qg.critical.len}),
             });
         }
         if (qg.high.len > 0) {
             var build_errors: usize = 0;
-            var test_fails:   usize = 0;
+            var test_fails: usize = 0;
             for (qg.high) |f| {
-                if (std.mem.eql(u8, f.source, "build")) build_errors += 1
-                else test_fails += 1;
+                if (std.mem.eql(u8, f.source, "build")) build_errors += 1 else test_fails += 1;
             }
             try blockers.append(gpa, .{
-                .source  = "quality-gate",
+                .source = "quality-gate",
                 .message = try std.fmt.allocPrint(gpa, "{d} build error(s), {d} test failure(s)", .{ build_errors, test_fails }),
             });
         }
         if (qg.medium.len > 0) {
             try warnings.append(gpa, .{
-                .source  = "quality-gate",
+                .source = "quality-gate",
                 .message = try std.fmt.allocPrint(gpa, "{d} build warning(s)", .{qg.medium.len}),
             });
         }
         if (!qg.build_ran) {
             try warnings.append(gpa, .{
-                .source  = "quality-gate",
+                .source = "quality-gate",
                 .message = "no build system detected — build not verified",
             });
         }
         if (!qg.tests_ran) {
             try warnings.append(gpa, .{
-                .source  = "quality-gate",
+                .source = "quality-gate",
                 .message = "no test framework detected — tests not verified",
             });
         }
@@ -5957,7 +6157,7 @@ pub fn computeProdReady(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !P
         const r = computeSecretScan(gpa, io, path) catch |e| switch (e) {
             else => {
                 warnings.append(gpa, .{
-                    .source  = "secret-scan",
+                    .source = "secret-scan",
                     .message = "could not run secret scan",
                 }) catch {};
                 break :blk null;
@@ -5968,13 +6168,13 @@ pub fn computeProdReady(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !P
     if (ss_opt) |ss| {
         if (ss.findings.len > 0) {
             try blockers.append(gpa, .{
-                .source  = "secret-scan",
+                .source = "secret-scan",
                 .message = try std.fmt.allocPrint(gpa, "{d} hardcoded secret(s) found", .{ss.findings.len}),
             });
         }
         if (ss.truncated) {
             try warnings.append(gpa, .{
-                .source  = "secret-scan",
+                .source = "secret-scan",
                 .message = "scan truncated at 200 findings — more may exist",
             });
         }
@@ -5990,14 +6190,14 @@ pub fn computeProdReady(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !P
     if (ei_opt) |ei| {
         for (ei.missing) |dep| {
             try warnings.append(gpa, .{
-                .source  = "env-inspect",
+                .source = "env-inspect",
                 .message = try std.fmt.allocPrint(gpa, "missing: {s}", .{dep}),
             });
         }
     }
 
     return .{
-        .ready    = blockers.items.len == 0,
+        .ready = blockers.items.len == 0,
         .blockers = try blockers.toOwnedSlice(gpa),
         .warnings = try warnings.toOwnedSlice(gpa),
     };
@@ -6009,39 +6209,54 @@ const VALIDATE_MAX_VIOLATIONS: usize = 50;
 const VALIDATE_MAX_DEPTH: u32 = 6;
 
 pub const SchemaViolation = struct {
-    path:     []const u8,
+    path: []const u8,
     expected: []const u8,
-    got:      []const u8,
+    got: []const u8,
 };
 
 pub const ValidateSchemaResult = struct {
-    valid:      bool,
+    valid: bool,
     violations: []SchemaViolation,
-    file:       []const u8,
-    schema:     []const u8,
+    file: []const u8,
+    schema: []const u8,
 };
 
 fn jsonMatchesType(v: std.json.Value, t: []const u8) bool {
     return switch (v) {
-        .null          => std.mem.eql(u8, t, "null"),
-        .bool          => std.mem.eql(u8, t, "boolean") or std.mem.eql(u8, t, "bool"),
-        .integer       => std.mem.eql(u8, t, "integer") or std.mem.eql(u8, t, "number"),
+        .null => std.mem.eql(u8, t, "null"),
+        .bool => std.mem.eql(u8, t, "boolean") or std.mem.eql(u8, t, "bool"),
+        .integer => std.mem.eql(u8, t, "integer") or std.mem.eql(u8, t, "number"),
         .float, .number_string => std.mem.eql(u8, t, "number"),
-        .string        => std.mem.eql(u8, t, "string"),
-        .array         => std.mem.eql(u8, t, "array"),
-        .object        => std.mem.eql(u8, t, "object"),
+        .string => std.mem.eql(u8, t, "string"),
+        .array => std.mem.eql(u8, t, "array"),
+        .object => std.mem.eql(u8, t, "object"),
     };
 }
 
 fn jsonValuesEqual(a: std.json.Value, b: std.json.Value) bool {
     return switch (a) {
-        .null          => b == .null,
-        .bool          => |av| switch (b) { .bool => |bv| av == bv, else => false },
-        .integer       => |av| switch (b) { .integer => |bv| av == bv, else => false },
-        .float         => |av| switch (b) { .float => |bv| av == bv, else => false },
-        .number_string => |av| switch (b) { .number_string => |bv| std.mem.eql(u8, av, bv), else => false },
-        .string        => |av| switch (b) { .string => |bv| std.mem.eql(u8, av, bv), else => false },
-        else           => false,
+        .null => b == .null,
+        .bool => |av| switch (b) {
+            .bool => |bv| av == bv,
+            else => false,
+        },
+        .integer => |av| switch (b) {
+            .integer => |bv| av == bv,
+            else => false,
+        },
+        .float => |av| switch (b) {
+            .float => |bv| av == bv,
+            else => false,
+        },
+        .number_string => |av| switch (b) {
+            .number_string => |bv| std.mem.eql(u8, av, bv),
+            else => false,
+        },
+        .string => |av| switch (b) {
+            .string => |bv| std.mem.eql(u8, av, bv),
+            else => false,
+        },
+        else => false,
     };
 }
 
@@ -6063,9 +6278,9 @@ fn validateValue(
         if (type_node == .string) {
             if (!jsonMatchesType(data, type_node.string)) {
                 try violations.append(gpa, .{
-                    .path     = try gpa.dupe(u8, path),
+                    .path = try gpa.dupe(u8, path),
                     .expected = try gpa.dupe(u8, type_node.string),
-                    .got      = jsonTypeName(data),
+                    .got = jsonTypeName(data),
                 });
                 return; // type mismatch — skip further checks
             }
@@ -6077,13 +6292,16 @@ fn validateValue(
         if (enum_node == .array) {
             var found = false;
             for (enum_node.array.items) |item| {
-                if (jsonValuesEqual(data, item)) { found = true; break; }
+                if (jsonValuesEqual(data, item)) {
+                    found = true;
+                    break;
+                }
             }
             if (!found) {
                 try violations.append(gpa, .{
-                    .path     = try gpa.dupe(u8, path),
+                    .path = try gpa.dupe(u8, path),
                     .expected = "one of enum values",
-                    .got      = jsonTypeName(data),
+                    .got = jsonTypeName(data),
                 });
             }
         }
@@ -6096,9 +6314,9 @@ fn validateValue(
                 const min: usize = @intCast(@max(0, ml.integer));
                 if (data.string.len < min) {
                     try violations.append(gpa, .{
-                        .path     = try gpa.dupe(u8, path),
+                        .path = try gpa.dupe(u8, path),
                         .expected = try std.fmt.allocPrint(gpa, "minLength {d}", .{min}),
-                        .got      = try std.fmt.allocPrint(gpa, "length {d}", .{data.string.len}),
+                        .got = try std.fmt.allocPrint(gpa, "length {d}", .{data.string.len}),
                     });
                 }
                 break :min_len;
@@ -6109,9 +6327,9 @@ fn validateValue(
                 const max: usize = @intCast(@max(0, ml.integer));
                 if (data.string.len > max) {
                     try violations.append(gpa, .{
-                        .path     = try gpa.dupe(u8, path),
+                        .path = try gpa.dupe(u8, path),
                         .expected = try std.fmt.allocPrint(gpa, "maxLength {d}", .{max}),
-                        .got      = try std.fmt.allocPrint(gpa, "length {d}", .{data.string.len}),
+                        .got = try std.fmt.allocPrint(gpa, "length {d}", .{data.string.len}),
                     });
                 }
                 break :max_len;
@@ -6123,34 +6341,34 @@ fn validateValue(
     if (data == .integer or data == .float) {
         const val: f64 = switch (data) {
             .integer => |n| @as(f64, @floatFromInt(n)),
-            .float   => |f| f,
-            else     => unreachable,
+            .float => |f| f,
+            else => unreachable,
         };
         if (sch.get("minimum")) |mn| min_num: {
             const min: f64 = switch (mn) {
                 .integer => |n| @as(f64, @floatFromInt(n)),
-                .float   => |f| f,
-                else     => break :min_num,
+                .float => |f| f,
+                else => break :min_num,
             };
             if (val < min) {
                 try violations.append(gpa, .{
-                    .path     = try gpa.dupe(u8, path),
+                    .path = try gpa.dupe(u8, path),
                     .expected = try std.fmt.allocPrint(gpa, ">= {d}", .{min}),
-                    .got      = try std.fmt.allocPrint(gpa, "{d}", .{val}),
+                    .got = try std.fmt.allocPrint(gpa, "{d}", .{val}),
                 });
             }
         }
         if (sch.get("maximum")) |mx| max_num: {
             const max: f64 = switch (mx) {
                 .integer => |n| @as(f64, @floatFromInt(n)),
-                .float   => |f| f,
-                else     => break :max_num,
+                .float => |f| f,
+                else => break :max_num,
             };
             if (val > max) {
                 try violations.append(gpa, .{
-                    .path     = try gpa.dupe(u8, path),
+                    .path = try gpa.dupe(u8, path),
                     .expected = try std.fmt.allocPrint(gpa, "<= {d}", .{max}),
-                    .got      = try std.fmt.allocPrint(gpa, "{d}", .{val}),
+                    .got = try std.fmt.allocPrint(gpa, "{d}", .{val}),
                 });
             }
         }
@@ -6166,9 +6384,9 @@ fn validateValue(
                     if (data.object.get(req.string) == null) {
                         const vpath = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ path, req.string });
                         try violations.append(gpa, .{
-                            .path     = vpath,
+                            .path = vpath,
                             .expected = "present",
-                            .got      = "missing",
+                            .got = "missing",
                         });
                     }
                 }
@@ -6200,9 +6418,9 @@ fn validateValue(
                             if (props_node.object.get(key) == null) {
                                 const vpath = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ path, key });
                                 try violations.append(gpa, .{
-                                    .path     = vpath,
+                                    .path = vpath,
                                     .expected = "not present",
-                                    .got      = "unexpected key",
+                                    .got = "unexpected key",
                                 });
                             }
                         }
@@ -6219,9 +6437,9 @@ fn validateValue(
                 const min: usize = @intCast(@max(0, mi.integer));
                 if (data.array.items.len < min) {
                     try violations.append(gpa, .{
-                        .path     = try gpa.dupe(u8, path),
+                        .path = try gpa.dupe(u8, path),
                         .expected = try std.fmt.allocPrint(gpa, "minItems {d}", .{min}),
-                        .got      = try std.fmt.allocPrint(gpa, "{d} items", .{data.array.items.len}),
+                        .got = try std.fmt.allocPrint(gpa, "{d} items", .{data.array.items.len}),
                     });
                 }
                 break :min_items;
@@ -6232,9 +6450,9 @@ fn validateValue(
                 const max: usize = @intCast(@max(0, mi.integer));
                 if (data.array.items.len > max) {
                     try violations.append(gpa, .{
-                        .path     = try gpa.dupe(u8, path),
+                        .path = try gpa.dupe(u8, path),
                         .expected = try std.fmt.allocPrint(gpa, "maxItems {d}", .{max}),
-                        .got      = try std.fmt.allocPrint(gpa, "{d} items", .{data.array.items.len}),
+                        .got = try std.fmt.allocPrint(gpa, "{d} items", .{data.array.items.len}),
                     });
                 }
                 break :max_items;
@@ -6271,7 +6489,7 @@ pub fn computeValidateSchema(
     const schema_content = try r2.interface.allocRemaining(gpa, .limited(1 * 1024 * 1024));
     defer gpa.free(schema_content);
 
-    const data_parsed   = std.json.parseFromSlice(std.json.Value, gpa, data_content,   .{}) catch return error.InvalidJson;
+    const data_parsed = std.json.parseFromSlice(std.json.Value, gpa, data_content, .{}) catch return error.InvalidJson;
     defer data_parsed.deinit();
     const schema_parsed = std.json.parseFromSlice(std.json.Value, gpa, schema_content, .{}) catch return error.InvalidSchema;
     defer schema_parsed.deinit();
@@ -6280,10 +6498,10 @@ pub fn computeValidateSchema(
     try validateValue(gpa, &violations, data_parsed.value, schema_parsed.value, "$", 0);
 
     return .{
-        .valid      = violations.items.len == 0,
+        .valid = violations.items.len == 0,
         .violations = try violations.toOwnedSlice(gpa),
-        .file       = file_path,
-        .schema     = schema_path,
+        .file = file_path,
+        .schema = schema_path,
     };
 }
 
@@ -6292,36 +6510,36 @@ pub fn computeValidateSchema(
 const QUALITY_GATE_MAX_PER_LEVEL: usize = 50;
 
 pub const QualityFinding = struct {
-    source:  []const u8,
-    file:    []const u8,
-    line:    u32,
+    source: []const u8,
+    file: []const u8,
+    line: u32,
     message: []const u8,
 };
 
 pub const QualityGateResult = struct {
-    verdict:      []const u8, // "pass" or "fail"
-    critical:     []QualityFinding,
-    high:         []QualityFinding,
-    medium:       []QualityFinding,
-    low:          []QualityFinding,
-    build_ran:    bool,
-    build_tool:   []const u8,
-    tests_ran:    bool,
-    test_fw:      []const u8,
+    verdict: []const u8, // "pass" or "fail"
+    critical: []QualityFinding,
+    high: []QualityFinding,
+    medium: []QualityFinding,
+    low: []QualityFinding,
+    build_ran: bool,
+    build_tool: []const u8,
+    tests_ran: bool,
+    test_fw: []const u8,
     tests_passed: u32,
     tests_failed: u32,
 };
 
 pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !QualityGateResult {
     var critical: std.ArrayList(QualityFinding) = .empty;
-    var high:     std.ArrayList(QualityFinding) = .empty;
-    var medium:   std.ArrayList(QualityFinding) = .empty;
-    var low:      std.ArrayList(QualityFinding) = .empty;
+    var high: std.ArrayList(QualityFinding) = .empty;
+    var medium: std.ArrayList(QualityFinding) = .empty;
+    var low: std.ArrayList(QualityFinding) = .empty;
 
-    var build_ran  = false;
+    var build_ran = false;
     var build_tool: []const u8 = "";
-    var tests_ran  = false;
-    var test_fw:    []const u8 = "";
+    var tests_ran = false;
+    var test_fw: []const u8 = "";
     var tests_passed: u32 = 0;
     var tests_failed: u32 = 0;
 
@@ -6334,24 +6552,24 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
         break :blk r;
     };
     if (build_opt) |br| {
-        build_ran  = true;
+        build_ran = true;
         build_tool = br.tool;
         if (!br.success) {
             if (br.errors.len > 0) {
                 for (br.errors) |berr| {
                     if (high.items.len >= QUALITY_GATE_MAX_PER_LEVEL) break;
                     try high.append(gpa, .{
-                        .source  = "build",
-                        .file    = berr.file,
-                        .line    = berr.line,
+                        .source = "build",
+                        .file = berr.file,
+                        .line = berr.line,
                         .message = berr.message,
                     });
                 }
             } else {
                 try critical.append(gpa, .{
-                    .source  = "build",
-                    .file    = "",
-                    .line    = 0,
+                    .source = "build",
+                    .file = "",
+                    .line = 0,
                     .message = try std.fmt.allocPrint(gpa, "build failed: {s} exited non-zero", .{br.tool}),
                 });
             }
@@ -6359,9 +6577,9 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
         for (br.warnings) |bw| {
             if (medium.items.len >= QUALITY_GATE_MAX_PER_LEVEL) break;
             try medium.append(gpa, .{
-                .source  = "build",
-                .file    = bw.file,
-                .line    = bw.line,
+                .source = "build",
+                .file = bw.file,
+                .line = bw.line,
                 .message = bw.message,
             });
         }
@@ -6376,24 +6594,24 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
         break :blk r;
     };
     if (tests_opt) |tr| {
-        tests_ran    = true;
-        test_fw      = tr.framework;
+        tests_ran = true;
+        test_fw = tr.framework;
         tests_passed = tr.passed;
         tests_failed = tr.failed;
         if (!tr.success and tr.failures.len == 0 and tr.failed == 0) {
             try critical.append(gpa, .{
-                .source  = "tests",
-                .file    = "",
-                .line    = 0,
+                .source = "tests",
+                .file = "",
+                .line = 0,
                 .message = try std.fmt.allocPrint(gpa, "test runner crashed: {s}", .{tr.framework}),
             });
         } else {
             for (tr.failures) |tf| {
                 if (high.items.len >= QUALITY_GATE_MAX_PER_LEVEL) break;
                 try high.append(gpa, .{
-                    .source  = "tests",
-                    .file    = tf.file,
-                    .line    = tf.line,
+                    .source = "tests",
+                    .file = tf.file,
+                    .line = tf.line,
                     .message = tf.message,
                 });
             }
@@ -6403,15 +6621,15 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
     const verdict: []const u8 = if (critical.items.len > 0 or high.items.len > 0) "fail" else "pass";
 
     return .{
-        .verdict      = verdict,
-        .critical     = try critical.toOwnedSlice(gpa),
-        .high         = try high.toOwnedSlice(gpa),
-        .medium       = try medium.toOwnedSlice(gpa),
-        .low          = try low.toOwnedSlice(gpa),
-        .build_ran    = build_ran,
-        .build_tool   = build_tool,
-        .tests_ran    = tests_ran,
-        .test_fw      = test_fw,
+        .verdict = verdict,
+        .critical = try critical.toOwnedSlice(gpa),
+        .high = try high.toOwnedSlice(gpa),
+        .medium = try medium.toOwnedSlice(gpa),
+        .low = try low.toOwnedSlice(gpa),
+        .build_ran = build_ran,
+        .build_tool = build_tool,
+        .tests_ran = tests_ran,
+        .test_fw = test_fw,
         .tests_passed = tests_passed,
         .tests_failed = tests_failed,
     };
@@ -6422,14 +6640,14 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
 pub const SHELL_RUN_DISPLAY_MAX: usize = 128 * 1024;
 
 pub const ShellRunResult = struct {
-    command:          []const u8, // not owned
-    exit_code:        i32,
-    stdout:           []u8,       // owned by gpa
-    stderr:           []u8,       // owned by gpa
-    duration_ms:      u64,
-    timed_out:        bool,
-    blocked:          bool,
-    block_reason:     []const u8, // string literal, not owned
+    command: []const u8, // not owned
+    exit_code: i32,
+    stdout: []u8, // owned by gpa
+    stderr: []u8, // owned by gpa
+    duration_ms: u64,
+    timed_out: bool,
+    blocked: bool,
+    block_reason: []const u8, // string literal, not owned
 };
 
 fn shellRunRmRfDanger(lower: []const u8) bool {
@@ -6467,13 +6685,13 @@ pub fn computeShellRun(gpa: std.mem.Allocator, io: std.Io, command: []const u8, 
     _ = std.ascii.lowerString(lower_buf[0..check_len], command[0..check_len]);
     if (shellRunBlockReason(lower_buf[0..check_len])) |reason| {
         return .{
-            .command      = command,
-            .exit_code    = -1,
-            .stdout       = try gpa.dupe(u8, ""),
-            .stderr       = try gpa.dupe(u8, ""),
-            .duration_ms  = 0,
-            .timed_out    = false,
-            .blocked      = true,
+            .command = command,
+            .exit_code = -1,
+            .stdout = try gpa.dupe(u8, ""),
+            .stderr = try gpa.dupe(u8, ""),
+            .duration_ms = 0,
+            .timed_out = false,
+            .blocked = true,
             .block_reason = reason,
         };
     }
@@ -6489,23 +6707,23 @@ pub fn computeShellRun(gpa: std.mem.Allocator, io: std.Io, command: []const u8, 
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
     const duration_ms: u64 = blk: {
         const s0 = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
-        const s1 = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        const s1 = @as(u64, @intCast(ts_end.sec)) * 1000 + @as(u64, @intCast(ts_end.nsec)) / 1_000_000;
         break :blk if (s1 > s0) s1 - s0 else 0;
     };
 
     const exit_code: i32 = switch (r.term) {
         .exited => |c| @as(i32, @intCast(c)),
-        else    => -1,
+        else => -1,
     };
 
     return .{
-        .command      = command,
-        .exit_code    = exit_code,
-        .stdout       = r.stdout,
-        .stderr       = r.stderr,
-        .duration_ms  = duration_ms,
-        .timed_out    = duration_ms >= timeout_ms,
-        .blocked      = false,
+        .command = command,
+        .exit_code = exit_code,
+        .stdout = r.stdout,
+        .stderr = r.stderr,
+        .duration_ms = duration_ms,
+        .timed_out = duration_ms >= timeout_ms,
+        .blocked = false,
         .block_reason = "",
     };
 }
@@ -6580,12 +6798,12 @@ fn parseProjectStateFile(gpa: std.mem.Allocator, io: std.Io, state_path: []const
                 const d = item.object;
                 const date_v = d.get("date") orelse continue;
                 const what_v = d.get("what") orelse continue;
-                const why_v  = d.get("why")  orelse continue;
+                const why_v = d.get("why") orelse continue;
                 if (date_v != .string or what_v != .string or why_v != .string) continue;
                 const dec = ProjectStateDecision{
                     .date = gpa.dupe(u8, date_v.string) catch continue,
                     .what = gpa.dupe(u8, what_v.string) catch continue,
-                    .why  = gpa.dupe(u8, why_v.string)  catch continue,
+                    .why = gpa.dupe(u8, why_v.string) catch continue,
                 };
                 decisions.append(gpa, dec) catch continue;
                 if (decisions.items.len >= PROJECT_STATE_MAX_DECISIONS) break;
@@ -6673,7 +6891,7 @@ pub fn computeProjectState(gpa: std.mem.Allocator, io: std.Io, project_path: []c
                 const dec = ProjectStateDecision{
                     .date = date_str,
                     .what = try gpa.dupe(u8, rec.what),
-                    .why  = try gpa.dupe(u8, rec.why),
+                    .why = try gpa.dupe(u8, rec.why),
                 };
                 try decisions.append(gpa, dec);
                 dirty = true;
@@ -6693,8 +6911,8 @@ pub fn computeProjectState(gpa: std.mem.Allocator, io: std.Io, project_path: []c
     }
 
     return .{
-        .path         = try gpa.dupe(u8, project_path),
-        .decisions    = try decisions.toOwnedSlice(gpa),
+        .path = try gpa.dupe(u8, project_path),
+        .decisions = try decisions.toOwnedSlice(gpa),
         .known_patterns = try patterns.toOwnedSlice(gpa),
     };
 }
@@ -6714,67 +6932,67 @@ pub const RegistryResult = struct {
 
 pub fn computeRegistry() RegistryResult {
     const cmds: []const RegistrySubcommand = &[_]RegistrySubcommand{
-        .{ .name = "doctor",          .description = "session deps (claude/git/gh present + versions)",                    .args = ""                                   },
-        .{ .name = "compat-check",    .description = "tool version drift vs baseline; surfaces rollback advice",           .args = "[--baseline|--update-baseline]"     },
-        .{ .name = "status",          .description = "workspace up-to-date vs origin",                                    .args = "<workspace>"                        },
-        .{ .name = "changes-preview", .description = "incoming commits + files changed",                                  .args = "<repo>"                             },
-        .{ .name = "commits",         .description = "commits since a tag",                                               .args = "<repo> [tag]"                       },
-        .{ .name = "gh-user",         .description = "GitHub auth + login info",                                          .args = ""                                   },
-        .{ .name = "release-info",    .description = "latest tag, next version, dirty state",                             .args = "<repo>"                             },
-        .{ .name = "repo-info",       .description = "remote owner/repo/url",                                             .args = "<repo>"                             },
-        .{ .name = "tag-exists",      .description = "check if a tag exists",                                             .args = "<repo> <tag>"                       },
-        .{ .name = "scan",            .description = "project structure, entry point, file inventory",                    .args = "<path>"                             },
-        .{ .name = "diff-dirs",       .description = "structural diff of two directories",                                .args = "<path1> <path2>"                    },
-        .{ .name = "grep",            .description = "search for a string across files",                                  .args = "<root> <pattern> [ext]"             },
-        .{ .name = "find-files",      .description = "find files by name/glob",                                           .args = "<root> <glob>"                      },
-        .{ .name = "json-query",      .description = "extract a value from a JSON file",                                  .args = "<file> <dot-path>"                  },
-        .{ .name = "git-diff",        .description = "structured diff summary",                                           .args = "<repo> [ref]"                       },
-        .{ .name = "list-dir",        .description = "immediate directory contents",                                      .args = "<path>"                             },
-        .{ .name = "file-stats",      .description = "line count + byte size of a file",                                  .args = "<file>"                             },
-        .{ .name = "env-scan",        .description = ".env* file keys (keys only, never values)",                         .args = "<root>"                             },
-        .{ .name = "toml-query",      .description = "extract a value from a TOML file",                                  .args = "<file> <dot-path>"                  },
-        .{ .name = "parse-stack",     .description = "structured file:line:col:fn from a stack trace (stdin)",            .args = ""                                   },
-        .{ .name = "list-projects",   .description = "GitHub repos with isForeman + isLocal flags",                      .args = "<foreman-root>"                     },
-        .{ .name = "tarball-sha",     .description = "GitHub tarball SHA256 with retry",                                  .args = "<owner> <repo> <tag>"               },
-        .{ .name = "formula-info",    .description = "Homebrew formula fields (url, sha256, version)",                    .args = "<tap-path> <formula-name>"          },
-        .{ .name = "validate-hooks",  .description = "Claude Code Stop hooks present check",                              .args = ""                                   },
-        .{ .name = "gh-release",      .description = "GitHub release creation via notes file",                            .args = "<owner> <repo> <tag> <title> <notes-file>" },
-        .{ .name = "file-hash",       .description = "SHA256 hash of a local file",                                      .args = "<file>"                             },
-        .{ .name = "cache-fetch",     .description = "retrieve cached sub-key for a file; hit:true means skip read",     .args = "<file> <sub-key>"                   },
-        .{ .name = "cache-store",     .description = "store extracted JSON keyed to file content (stdin)",                .args = "<file> <sub-key>"                   },
-        .{ .name = "cache-check",     .description = "persistent change detection for a file",                            .args = "<file>"                             },
-        .{ .name = "context-scan",    .description = "compact project summary (structure + top files by size)",           .args = "<path>"                             },
-        .{ .name = "context-rank",    .description = "relevance ranking — score files by query (top 15)",                 .args = "<root> <query>"                     },
-        .{ .name = "context-changed", .description = "changed files with unified diff content",                           .args = "<repo> [ref]"                       },
-        .{ .name = "context-evidence",.description = "relevant excerpts from a file without reading the whole thing",     .args = "<file> <pattern>"                   },
-        .{ .name = "yaml-query",      .description = "extract a value from a YAML file",                                  .args = "<file> <dot-path>"                  },
-        .{ .name = "outline",         .description = "structural outline of a source file (function/class names + lines)",.args = "<file>"                             },
-        .{ .name = "deps",            .description = "project dependencies from any package manifest",                    .args = "<root>"                             },
-        .{ .name = "run-tests",       .description = "run tests + get structured pass/fail/failures",                     .args = "<root>"                             },
-        .{ .name = "build",           .description = "detect build system, run build, get structured errors/warnings",    .args = "<root>"                             },
-        .{ .name = "env-inspect",     .description = "detect languages, runtimes, package managers, missing deps",        .args = "<root>"                             },
-        .{ .name = "symbol-find",     .description = "locate a symbol's definition and all references",                   .args = "<root> <symbol>"                    },
-        .{ .name = "secret-scan",     .description = "scan for hardcoded secrets across a project",                       .args = "<root>"                             },
-        .{ .name = "device-scan",     .description = "snapshot hardware + tools + optimal settings to profile.json",      .args = ""                                   },
-        .{ .name = "delta-context",   .description = "changed symbols since a ref + their callers",                       .args = "<repo> [ref]"                       },
-        .{ .name = "git-cache",       .description = "branch, HEAD, dirty state, ahead/behind, last 10 commits (cached)",.args = "<repo>"                             },
-        .{ .name = "project-state",   .description = "read/write project decisions and known patterns across sessions",   .args = "<path> [record-decision <what> [<why>] | record-pattern <pattern>]" },
-        .{ .name = "shell-run",       .description = "run a shell command safely — blocks destructive patterns",          .args = "[--timeout <ms>] <command>"         },
-        .{ .name = "quality-gate",    .description = "aggregate build + test results into a severity-bucketed verdict",   .args = "<root>"                             },
-        .{ .name = "validate-schema", .description = "validate a JSON file against a JSON Schema subset",                 .args = "<file> <schema>"                    },
-        .{ .name = "prod-ready",      .description = "composite production readiness: quality-gate + secret-scan + env-inspect", .args = "<root>"                     },
-        .{ .name = "registry",          .description = "machine-readable catalog of all subcommands (this output)",              .args = ""                    },
-        .{ .name = "capability-check",  .description = "check if a capability is natively available in foreman-tools or needs Claude fallback", .args = "<query...>" },
-        .{ .name = "route",             .description = "task router — returns execution plan with subcommand, argHint, confidence, reason",     .args = "<task...>"  },
-        .{ .name = "report",            .description = "composite project status — git state + build + tests + secrets",                         .args = "<path>"     },
-        .{ .name = "metrics",           .description = "telemetry snapshot — cache entries, project states, decisions, estimated token savings", .args = ""           },
-        .{ .name = "session-snapshot",  .description = "write ground-truth session state to ~/.foreman/session-snapshot.json before compaction", .args = "<foreman-root>" },
-        .{ .name = "sandbox-check",     .description = "classify a shell operation by severity (safe/caution/destructive/blocked) and return whether it is allowed", .args = "<command...>" },
-        .{ .name = "rollback",            .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
+        .{ .name = "doctor", .description = "session deps (claude/git/gh present + versions)", .args = "" },
+        .{ .name = "compat-check", .description = "tool version drift vs baseline; surfaces rollback advice", .args = "[--baseline|--update-baseline]" },
+        .{ .name = "status", .description = "workspace up-to-date vs origin", .args = "<workspace>" },
+        .{ .name = "changes-preview", .description = "incoming commits + files changed", .args = "<repo>" },
+        .{ .name = "commits", .description = "commits since a tag", .args = "<repo> [tag]" },
+        .{ .name = "gh-user", .description = "GitHub auth + login info", .args = "" },
+        .{ .name = "release-info", .description = "latest tag, next version, dirty state", .args = "<repo>" },
+        .{ .name = "repo-info", .description = "remote owner/repo/url", .args = "<repo>" },
+        .{ .name = "tag-exists", .description = "check if a tag exists", .args = "<repo> <tag>" },
+        .{ .name = "scan", .description = "project structure, entry point, file inventory", .args = "<path>" },
+        .{ .name = "diff-dirs", .description = "structural diff of two directories", .args = "<path1> <path2>" },
+        .{ .name = "grep", .description = "search for a string across files", .args = "<root> <pattern> [ext]" },
+        .{ .name = "find-files", .description = "find files by name/glob", .args = "<root> <glob>" },
+        .{ .name = "json-query", .description = "extract a value from a JSON file", .args = "<file> <dot-path>" },
+        .{ .name = "git-diff", .description = "structured diff summary", .args = "<repo> [ref]" },
+        .{ .name = "list-dir", .description = "immediate directory contents", .args = "<path>" },
+        .{ .name = "file-stats", .description = "line count + byte size of a file", .args = "<file>" },
+        .{ .name = "env-scan", .description = ".env* file keys (keys only, never values)", .args = "<root>" },
+        .{ .name = "toml-query", .description = "extract a value from a TOML file", .args = "<file> <dot-path>" },
+        .{ .name = "parse-stack", .description = "structured file:line:col:fn from a stack trace (stdin)", .args = "" },
+        .{ .name = "list-projects", .description = "GitHub repos with isForeman + isLocal flags", .args = "<foreman-root>" },
+        .{ .name = "tarball-sha", .description = "GitHub tarball SHA256 with retry", .args = "<owner> <repo> <tag>" },
+        .{ .name = "formula-info", .description = "Homebrew formula fields (url, sha256, version)", .args = "<tap-path> <formula-name>" },
+        .{ .name = "validate-hooks", .description = "Claude Code Stop hooks present check", .args = "" },
+        .{ .name = "gh-release", .description = "GitHub release creation via notes file", .args = "<owner> <repo> <tag> <title> <notes-file>" },
+        .{ .name = "file-hash", .description = "SHA256 hash of a local file", .args = "<file>" },
+        .{ .name = "cache-fetch", .description = "retrieve cached sub-key for a file; hit:true means skip read", .args = "<file> <sub-key>" },
+        .{ .name = "cache-store", .description = "store extracted JSON keyed to file content (stdin)", .args = "<file> <sub-key>" },
+        .{ .name = "cache-check", .description = "persistent change detection for a file", .args = "<file>" },
+        .{ .name = "context-scan", .description = "compact project summary (structure + top files by size)", .args = "<path>" },
+        .{ .name = "context-rank", .description = "relevance ranking — score files by query (top 15)", .args = "<root> <query>" },
+        .{ .name = "context-changed", .description = "changed files with unified diff content", .args = "<repo> [ref]" },
+        .{ .name = "context-evidence", .description = "relevant excerpts from a file without reading the whole thing", .args = "<file> <pattern>" },
+        .{ .name = "yaml-query", .description = "extract a value from a YAML file", .args = "<file> <dot-path>" },
+        .{ .name = "outline", .description = "structural outline of a source file (function/class names + lines)", .args = "<file>" },
+        .{ .name = "deps", .description = "project dependencies from any package manifest", .args = "<root>" },
+        .{ .name = "run-tests", .description = "run tests + get structured pass/fail/failures", .args = "<root>" },
+        .{ .name = "build", .description = "detect build system, run build, get structured errors/warnings", .args = "<root>" },
+        .{ .name = "env-inspect", .description = "detect languages, runtimes, package managers, missing deps", .args = "<root>" },
+        .{ .name = "symbol-find", .description = "locate a symbol's definition and all references", .args = "<root> <symbol>" },
+        .{ .name = "secret-scan", .description = "scan for hardcoded secrets across a project", .args = "<root>" },
+        .{ .name = "device-scan", .description = "snapshot hardware + tools + optimal settings to profile.json", .args = "" },
+        .{ .name = "delta-context", .description = "changed symbols since a ref + their callers", .args = "<repo> [ref]" },
+        .{ .name = "git-cache", .description = "branch, HEAD, dirty state, ahead/behind, last 10 commits (cached)", .args = "<repo>" },
+        .{ .name = "project-state", .description = "read/write project decisions and known patterns across sessions", .args = "<path> [record-decision <what> [<why>] | record-pattern <pattern>]" },
+        .{ .name = "shell-run", .description = "run a shell command safely — blocks destructive patterns", .args = "[--timeout <ms>] <command>" },
+        .{ .name = "quality-gate", .description = "aggregate build + test results into a severity-bucketed verdict", .args = "<root>" },
+        .{ .name = "validate-schema", .description = "validate a JSON file against a JSON Schema subset", .args = "<file> <schema>" },
+        .{ .name = "prod-ready", .description = "composite production readiness: quality-gate + secret-scan + env-inspect", .args = "<root>" },
+        .{ .name = "registry", .description = "machine-readable catalog of all subcommands (this output)", .args = "" },
+        .{ .name = "capability-check", .description = "check if a capability is natively available in foreman-tools or needs Claude fallback", .args = "<query...>" },
+        .{ .name = "route", .description = "task router — returns execution plan with subcommand, argHint, confidence, reason", .args = "<task...>" },
+        .{ .name = "report", .description = "composite project status — git state + build + tests + secrets", .args = "<path>" },
+        .{ .name = "metrics", .description = "telemetry snapshot — cache entries, project states, decisions, estimated token savings", .args = "" },
+        .{ .name = "session-snapshot", .description = "write ground-truth session state to ~/.foreman/session-snapshot.json before compaction", .args = "<foreman-root>" },
+        .{ .name = "sandbox-check", .description = "classify a shell operation by severity (safe/caution/destructive/blocked) and return whether it is allowed", .args = "<command...>" },
+        .{ .name = "rollback", .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
         .{ .name = "capability-promote", .description = "score a shell command for promotion eligibility as a foreman-tools subcommand (0-100 + recommendation)", .args = "<command...>" },
-        .{ .name = "ant",               .description = "list files changed in a path since a timestamp (mtime-based, no git required)",                             .args = "<path> [--since <ms>]" },
-        .{ .name = "worker-run",        .description = "run a script in a language runtime (python/node/deno/bun/go/ruby/bash/swift/zig/lua/php) — returns structured JSON", .args = "<lang> <script> [args...]" },
-        .{ .name = "worker-list",       .description = "list all supported language workers with binary name and file extension",                                            .args = ""                          },
+        .{ .name = "ant", .description = "list files changed in a path since a timestamp (mtime-based, no git required)", .args = "<path> [--since <ms>]" },
+        .{ .name = "worker-run", .description = "run a script in a language runtime (python/node/deno/bun/go/ruby/bash/swift/zig/lua/php) — returns structured JSON", .args = "<lang> <script> [args...]" },
+        .{ .name = "worker-list", .description = "list all supported language workers with binary name and file extension", .args = "" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -6784,11 +7002,11 @@ pub fn computeRegistry() RegistryResult {
 pub const CapabilityCheckResult = struct {
     query: []const u8,
     available: bool,
-    source: []const u8,      // "native" | "claude"
-    subcommand: []const u8,  // "" when not found
+    source: []const u8, // "native" | "claude"
+    subcommand: []const u8, // "" when not found
     description: []const u8, // "" when not found
-    args: []const u8,        // "" when not found
-    confidence: []const u8,  // "exact" | "high" | "medium" | "low" | "none"
+    args: []const u8, // "" when not found
+    confidence: []const u8, // "exact" | "high" | "medium" | "low" | "none"
 };
 
 pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !CapabilityCheckResult {
@@ -6819,7 +7037,8 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
         if (std.mem.eql(u8, name_lower, q_lower)) {
             score = 100;
         } else if (std.mem.indexOf(u8, name_lower, q_lower) != null or
-                   std.mem.indexOf(u8, q_lower, name_lower) != null) {
+            std.mem.indexOf(u8, q_lower, name_lower) != null)
+        {
             score = 80;
         } else {
             var all_in_name: bool = true;
@@ -6845,12 +7064,7 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
                 }
             }
             if (word_count > 0) {
-                if (all_in_name)              score = 70
-                else if (all_in_desc)         score = 60
-                else if (name_match_count >= 2) score = 50
-                else if (desc_match_count >= 2) score = 45
-                else if (any_in_name)         score = 35
-                else if (any_in_desc)         score = 30;
+                if (all_in_name) score = 70 else if (all_in_desc) score = 60 else if (name_match_count >= 2) score = 50 else if (desc_match_count >= 2) score = 45 else if (any_in_name) score = 35 else if (any_in_desc) score = 30;
             }
         }
 
@@ -6865,28 +7079,25 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
     const THRESHOLD: u32 = 30;
     if (best_idx < reg.subcommands.len and best_score >= THRESHOLD) {
         const cmd = reg.subcommands[best_idx];
-        const confidence: []const u8 = if (best_score >= 100) "exact"
-            else if (best_score >= 70) "high"
-            else if (best_score >= 50) "medium"
-            else "low";
+        const confidence: []const u8 = if (best_score >= 100) "exact" else if (best_score >= 70) "high" else if (best_score >= 50) "medium" else "low";
         return .{
-            .query       = try gpa.dupe(u8, query),
-            .available   = true,
-            .source      = "native",
-            .subcommand  = cmd.name,
+            .query = try gpa.dupe(u8, query),
+            .available = true,
+            .source = "native",
+            .subcommand = cmd.name,
             .description = cmd.description,
-            .args        = cmd.args,
-            .confidence  = confidence,
+            .args = cmd.args,
+            .confidence = confidence,
         };
     }
     return .{
-        .query       = try gpa.dupe(u8, query),
-        .available   = false,
-        .source      = "claude",
-        .subcommand  = "",
+        .query = try gpa.dupe(u8, query),
+        .available = false,
+        .source = "claude",
+        .subcommand = "",
         .description = "",
-        .args        = "",
-        .confidence  = "none",
+        .args = "",
+        .confidence = "none",
     };
 }
 
@@ -6904,9 +7115,9 @@ pub const RouteStep = struct {
 pub const RouteResult = struct {
     task: []const u8,
     routed: bool,
-    steps: []RouteStep,   // gpa-owned slice; strings within are borrowed from static data
+    steps: []RouteStep, // gpa-owned slice; strings within are borrowed from static data
     fallback: []const u8, // "claude" or ""
-    reason: []const u8,   // fallback explanation or ""
+    reason: []const u8, // fallback explanation or ""
 };
 
 const RouteEnrichment = struct {
@@ -6916,31 +7127,31 @@ const RouteEnrichment = struct {
 };
 
 const ROUTE_ENRICHMENTS: []const RouteEnrichment = &[_]RouteEnrichment{
-    .{ .subcommand = "git-cache",       .arg_hint = "<repo-path>",           .reason = "cached branch/HEAD/dirty/commits — hit:true means zero git subprocesses this session" },
-    .{ .subcommand = "status",          .arg_hint = "<workspace>",            .reason = "workspace up-to-date vs origin in one call; use before git operations" },
-    .{ .subcommand = "run-tests",       .arg_hint = "<abs-path>",             .reason = "auto-detects framework, runs tests, returns structured failures — read verdict + failures array" },
-    .{ .subcommand = "build",           .arg_hint = "<abs-path>",             .reason = "auto-detects build system, returns structured errors with file:line — read success + errors array" },
-    .{ .subcommand = "quality-gate",    .arg_hint = "<abs-path>",             .reason = "runs build + tests, severity-bucketed verdict — call before promoting or merging" },
-    .{ .subcommand = "prod-ready",      .arg_hint = "<abs-path>",             .reason = "composite gate (quality-gate + secret-scan + env-inspect) — call before any deploy" },
-    .{ .subcommand = "secret-scan",     .arg_hint = "<abs-path>",             .reason = "walks project tree, flags hardcoded secrets by pattern — read findings array" },
-    .{ .subcommand = "outline",         .arg_hint = "<abs-file-path>",        .reason = "function/class/struct names + line numbers — use instead of reading the full file" },
-    .{ .subcommand = "context-scan",    .arg_hint = "<abs-path>",             .reason = "compact project summary (structure + top files by size) — use before reading any source" },
-    .{ .subcommand = "context-rank",    .arg_hint = "<abs-root> <query>",     .reason = "score and rank files by query relevance — read highest-ranked files first" },
-    .{ .subcommand = "context-evidence",.arg_hint = "<abs-file> <pattern>",   .reason = "relevant excerpts (±10 lines) without reading the whole file" },
-    .{ .subcommand = "symbol-find",     .arg_hint = "<abs-root> <symbol>",    .reason = "definition + all references in one call — replaces grep + read N files" },
-    .{ .subcommand = "deps",            .arg_hint = "<abs-root>",             .reason = "declared dependencies from any manifest — replaces reading the full manifest file" },
-    .{ .subcommand = "env-inspect",     .arg_hint = "<abs-root>",             .reason = "detects languages, runtimes, package managers, missing deps — replaces which + --version loops" },
-    .{ .subcommand = "project-state",   .arg_hint = "<abs-path>",             .reason = "persisted decisions and known patterns across sessions from ~/.foreman/state/" },
-    .{ .subcommand = "cache-fetch",     .arg_hint = "<abs-file> <sub-key>",   .reason = "hit:true → skip the read entirely and use value; hit:false → read file + cache-store" },
-    .{ .subcommand = "delta-context",   .arg_hint = "<repo-path> [ref]",      .reason = "changed symbols + callers — targeted impact analysis without reading raw git diffs" },
-    .{ .subcommand = "validate-schema", .arg_hint = "<abs-file> <abs-schema>",.reason = "JSON Schema compliance check — returns violations with $-rooted paths" },
-    .{ .subcommand = "shell-run",       .arg_hint = "[--timeout <ms>] <cmd>", .reason = "safe shell execution with destructive-pattern blocking and structured output" },
-    .{ .subcommand = "scan",            .arg_hint = "<abs-path>",             .reason = "project structure, entry point, file inventory — use context-scan when only structure is needed" },
-    .{ .subcommand = "git-diff",        .arg_hint = "<repo> [ref]",           .reason = "structured diff summary — use instead of reading raw git diff output" },
-    .{ .subcommand = "doctor",          .arg_hint = "",                        .reason = "session deps check (claude/git/gh present + versions) — run once at session start" },
-    .{ .subcommand = "release-info",    .arg_hint = "<repo>",                 .reason = "latest tag, next version, dirty state in one call — use before /release or /brew-release" },
-    .{ .subcommand = "file-hash",       .arg_hint = "<abs-file>",             .reason = "SHA256 of a local file — foundation for change detection before re-reading" },
-    .{ .subcommand = "capability-check",.arg_hint = "<query...>",             .reason = "check if a task is natively handled before deciding whether to shell out" },
+    .{ .subcommand = "git-cache", .arg_hint = "<repo-path>", .reason = "cached branch/HEAD/dirty/commits — hit:true means zero git subprocesses this session" },
+    .{ .subcommand = "status", .arg_hint = "<workspace>", .reason = "workspace up-to-date vs origin in one call; use before git operations" },
+    .{ .subcommand = "run-tests", .arg_hint = "<abs-path>", .reason = "auto-detects framework, runs tests, returns structured failures — read verdict + failures array" },
+    .{ .subcommand = "build", .arg_hint = "<abs-path>", .reason = "auto-detects build system, returns structured errors with file:line — read success + errors array" },
+    .{ .subcommand = "quality-gate", .arg_hint = "<abs-path>", .reason = "runs build + tests, severity-bucketed verdict — call before promoting or merging" },
+    .{ .subcommand = "prod-ready", .arg_hint = "<abs-path>", .reason = "composite gate (quality-gate + secret-scan + env-inspect) — call before any deploy" },
+    .{ .subcommand = "secret-scan", .arg_hint = "<abs-path>", .reason = "walks project tree, flags hardcoded secrets by pattern — read findings array" },
+    .{ .subcommand = "outline", .arg_hint = "<abs-file-path>", .reason = "function/class/struct names + line numbers — use instead of reading the full file" },
+    .{ .subcommand = "context-scan", .arg_hint = "<abs-path>", .reason = "compact project summary (structure + top files by size) — use before reading any source" },
+    .{ .subcommand = "context-rank", .arg_hint = "<abs-root> <query>", .reason = "score and rank files by query relevance — read highest-ranked files first" },
+    .{ .subcommand = "context-evidence", .arg_hint = "<abs-file> <pattern>", .reason = "relevant excerpts (±10 lines) without reading the whole file" },
+    .{ .subcommand = "symbol-find", .arg_hint = "<abs-root> <symbol>", .reason = "definition + all references in one call — replaces grep + read N files" },
+    .{ .subcommand = "deps", .arg_hint = "<abs-root>", .reason = "declared dependencies from any manifest — replaces reading the full manifest file" },
+    .{ .subcommand = "env-inspect", .arg_hint = "<abs-root>", .reason = "detects languages, runtimes, package managers, missing deps — replaces which + --version loops" },
+    .{ .subcommand = "project-state", .arg_hint = "<abs-path>", .reason = "persisted decisions and known patterns across sessions from ~/.foreman/state/" },
+    .{ .subcommand = "cache-fetch", .arg_hint = "<abs-file> <sub-key>", .reason = "hit:true → skip the read entirely and use value; hit:false → read file + cache-store" },
+    .{ .subcommand = "delta-context", .arg_hint = "<repo-path> [ref]", .reason = "changed symbols + callers — targeted impact analysis without reading raw git diffs" },
+    .{ .subcommand = "validate-schema", .arg_hint = "<abs-file> <abs-schema>", .reason = "JSON Schema compliance check — returns violations with $-rooted paths" },
+    .{ .subcommand = "shell-run", .arg_hint = "[--timeout <ms>] <cmd>", .reason = "safe shell execution with destructive-pattern blocking and structured output" },
+    .{ .subcommand = "scan", .arg_hint = "<abs-path>", .reason = "project structure, entry point, file inventory — use context-scan when only structure is needed" },
+    .{ .subcommand = "git-diff", .arg_hint = "<repo> [ref]", .reason = "structured diff summary — use instead of reading raw git diff output" },
+    .{ .subcommand = "doctor", .arg_hint = "", .reason = "session deps check (claude/git/gh present + versions) — run once at session start" },
+    .{ .subcommand = "release-info", .arg_hint = "<repo>", .reason = "latest tag, next version, dirty state in one call — use before /release or /brew-release" },
+    .{ .subcommand = "file-hash", .arg_hint = "<abs-file>", .reason = "SHA256 of a local file — foundation for change detection before re-reading" },
+    .{ .subcommand = "capability-check", .arg_hint = "<query...>", .reason = "check if a task is natively handled before deciding whether to shell out" },
 };
 
 pub fn computeRoute(gpa: std.mem.Allocator, task: []const u8) !RouteResult {
@@ -6949,11 +7160,11 @@ pub fn computeRoute(gpa: std.mem.Allocator, task: []const u8) !RouteResult {
 
     if (!cap.available) {
         return .{
-            .task     = try gpa.dupe(u8, task),
-            .routed   = false,
-            .steps    = try gpa.alloc(RouteStep, 0),
+            .task = try gpa.dupe(u8, task),
+            .routed = false,
+            .steps = try gpa.alloc(RouteStep, 0),
             .fallback = "claude",
-            .reason   = "no native subcommand matches this task",
+            .reason = "no native subcommand matches this task",
         };
     }
 
@@ -6963,27 +7174,27 @@ pub fn computeRoute(gpa: std.mem.Allocator, task: []const u8) !RouteResult {
     for (ROUTE_ENRICHMENTS) |enrich| {
         if (std.mem.eql(u8, enrich.subcommand, cap.subcommand)) {
             arg_hint = enrich.arg_hint;
-            reason   = enrich.reason;
+            reason = enrich.reason;
             break;
         }
     }
 
     const steps = try gpa.alloc(RouteStep, 1);
     steps[0] = .{
-        .step       = 1,
-        .layer      = "native",
+        .step = 1,
+        .layer = "native",
         .subcommand = cap.subcommand,
-        .arg_hint   = arg_hint,
-        .reason     = reason,
+        .arg_hint = arg_hint,
+        .reason = reason,
         .confidence = cap.confidence,
     };
 
     return .{
-        .task     = try gpa.dupe(u8, task),
-        .routed   = true,
-        .steps    = steps,
+        .task = try gpa.dupe(u8, task),
+        .routed = true,
+        .steps = steps,
         .fallback = "",
-        .reason   = "",
+        .reason = "",
     };
 }
 
@@ -6993,8 +7204,8 @@ pub const ReportIssue = struct { source: []const u8, message: []const u8, severi
 
 pub const ReportResult = struct {
     path: []const u8,
-    status: []const u8,          // "clean" | "issues" | "blocked"
-    confidence: []const u8,      // "high" | "medium" | "low"
+    status: []const u8, // "clean" | "issues" | "blocked"
+    confidence: []const u8, // "high" | "medium" | "low"
     git_branch: []const u8,
     git_dirty: bool,
     build_ok: bool,
@@ -7009,15 +7220,19 @@ pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Repo
 
     // Git state
     const git_opt: ?GitCacheResult = blk: {
-        const r = computeGitCache(gpa, io, path) catch { break :blk null; };
+        const r = computeGitCache(gpa, io, path) catch {
+            break :blk null;
+        };
         break :blk r;
     };
     const git_branch = if (git_opt) |g| g.branch else "";
-    const git_dirty  = if (git_opt) |g| g.dirty  else false;
+    const git_dirty = if (git_opt) |g| g.dirty else false;
 
     // Build + tests via quality-gate
     const qg_opt: ?QualityGateResult = blk: {
-        const r = computeQualityGate(gpa, io, path) catch { break :blk null; };
+        const r = computeQualityGate(gpa, io, path) catch {
+            break :blk null;
+        };
         break :blk r;
     };
     const build_ok = if (qg_opt) |q| blk2: {
@@ -7033,24 +7248,24 @@ pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Repo
         for (q.critical) |f| {
             if (issues.items.len >= 20) break;
             try issues.append(gpa, .{
-                .source   = try gpa.dupe(u8, f.source),
-                .message  = try gpa.dupe(u8, f.message),
+                .source = try gpa.dupe(u8, f.source),
+                .message = try gpa.dupe(u8, f.message),
                 .severity = "critical",
             });
         }
         for (q.high) |f| {
             if (issues.items.len >= 20) break;
             try issues.append(gpa, .{
-                .source   = try gpa.dupe(u8, f.source),
-                .message  = try gpa.dupe(u8, f.message),
+                .source = try gpa.dupe(u8, f.source),
+                .message = try gpa.dupe(u8, f.message),
                 .severity = "high",
             });
         }
         for (q.medium) |f| {
             if (issues.items.len >= 20) break;
             try issues.append(gpa, .{
-                .source   = try gpa.dupe(u8, f.source),
-                .message  = try gpa.dupe(u8, f.message),
+                .source = try gpa.dupe(u8, f.source),
+                .message = try gpa.dupe(u8, f.message),
                 .severity = "medium",
             });
         }
@@ -7058,7 +7273,9 @@ pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Repo
 
     // Secrets
     const sec_opt: ?SecretScanResult = blk: {
-        const r = computeSecretScan(gpa, io, path) catch { break :blk null; };
+        const r = computeSecretScan(gpa, io, path) catch {
+            break :blk null;
+        };
         break :blk r;
     };
     const secrets_found = if (sec_opt) |s| s.findings.len > 0 else false;
@@ -7072,19 +7289,19 @@ pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Repo
     // Derive status + confidence
     var has_critical = secrets_found;
     var has_high = false;
-    if (!build_ok) { has_critical = true; }
-    if (!tests_ok) { has_high = true; }
+    if (!build_ok) {
+        has_critical = true;
+    }
+    if (!tests_ok) {
+        has_high = true;
+    }
     for (issues.items) |iss| {
         if (std.mem.eql(u8, iss.severity, "critical")) has_critical = true;
-        if (std.mem.eql(u8, iss.severity, "high"))     has_high = true;
+        if (std.mem.eql(u8, iss.severity, "high")) has_high = true;
     }
-    const status: []const u8 = if (has_critical) "blocked"
-        else if (has_high or issues.items.len > 0) "issues"
-        else "clean";
+    const status: []const u8 = if (has_critical) "blocked" else if (has_high or issues.items.len > 0) "issues" else "clean";
 
-    const confidence: []const u8 = if (qg_opt != null) "high"
-        else if (git_opt != null) "medium"
-        else "low";
+    const confidence: []const u8 = if (qg_opt != null) "high" else if (git_opt != null) "medium" else "low";
 
     // Next action
     const next_action: []const u8 = if (has_critical)
@@ -7099,16 +7316,16 @@ pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Repo
         "run /prod-ready before deploying";
 
     return .{
-        .path          = try gpa.dupe(u8, path),
-        .status        = status,
-        .confidence    = confidence,
-        .git_branch    = if (git_branch.len > 0) try gpa.dupe(u8, git_branch) else "",
-        .git_dirty     = git_dirty,
-        .build_ok      = build_ok,
-        .tests_ok      = tests_ok,
+        .path = try gpa.dupe(u8, path),
+        .status = status,
+        .confidence = confidence,
+        .git_branch = if (git_branch.len > 0) try gpa.dupe(u8, git_branch) else "",
+        .git_dirty = git_dirty,
+        .build_ok = build_ok,
+        .tests_ok = tests_ok,
         .secrets_found = secrets_found,
-        .issues        = try issues.toOwnedSlice(gpa),
-        .next_action   = next_action,
+        .issues = try issues.toOwnedSlice(gpa),
+        .next_action = next_action,
     };
 }
 
@@ -7184,7 +7401,7 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     defer gpa.free(profile_path);
     const baseline_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/compat-baseline.json", .{home});
     defer gpa.free(baseline_path);
-    const device_profiled    = fileExists(io, profile_path);
+    const device_profiled = fileExists(io, profile_path);
     const compat_baseline_set = fileExists(io, baseline_path);
 
     // Estimated token savings: each cache entry represents ~200 tokens saved on a hit
@@ -7192,12 +7409,12 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     const estimated_token_savings = cache_entries *% 160;
 
     return .{
-        .cache_entries         = cache_entries,
-        .project_states        = project_states,
-        .total_decisions       = total_decisions,
-        .total_patterns        = total_patterns,
-        .device_profiled       = device_profiled,
-        .compat_baseline_set   = compat_baseline_set,
+        .cache_entries = cache_entries,
+        .project_states = project_states,
+        .total_decisions = total_decisions,
+        .total_patterns = total_patterns,
+        .device_profiled = device_profiled,
+        .compat_baseline_set = compat_baseline_set,
         .estimated_token_savings = estimated_token_savings,
     };
 }
@@ -7266,7 +7483,10 @@ pub fn computeSnapshot(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const
         const wf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch break :write_blk;
         var wbuf: [256]u8 = undefined;
         var w = wf.writerStreaming(io, &wbuf);
-        w.interface.writeAll(json) catch { wf.close(io); break :write_blk; };
+        w.interface.writeAll(json) catch {
+            wf.close(io);
+            break :write_blk;
+        };
         w.interface.flush() catch {};
         wf.close(io);
         atomicRenameAbsolute(tmp_path, snap_path);
@@ -7283,7 +7503,7 @@ fn rollbackSnapPath(gpa: std.mem.Allocator, home: []const u8, repo_path: []const
     for (repo_path, 0..) |c, i| {
         name_buf[i] = if (std.ascii.isAlphanumeric(c) or c == '-') c else '_';
     }
-    const name_slice = if (name_buf.len > 80) name_buf[name_buf.len - 80..] else name_buf;
+    const name_slice = if (name_buf.len > 80) name_buf[name_buf.len - 80 ..] else name_buf;
     return std.fmt.allocPrint(gpa, "{s}/.foreman/snapshots/{s}.json", .{ home, name_slice });
 }
 
@@ -7327,15 +7547,13 @@ pub fn computeRollbackSnapshot(gpa: std.mem.Allocator, io: std.Io, repo_path: []
         for (items[start..]) |item| {
             if (item != .object) continue;
             const obj = item.object;
-            const eid = if (obj.get("id"))            |v| if (v == .string)  v.string  else "" else "";
-            const ebr = if (obj.get("branch"))        |v| if (v == .string)  v.string  else "" else "";
-            const ehd = if (obj.get("head"))           |v| if (v == .string)  v.string  else "" else "";
-            const edr = if (obj.get("dirty"))          |v| if (v == .bool)    v.bool    else false else false;
+            const eid = if (obj.get("id")) |v| if (v == .string) v.string else "" else "";
+            const ebr = if (obj.get("branch")) |v| if (v == .string) v.string else "" else "";
+            const ehd = if (obj.get("head")) |v| if (v == .string) v.string else "" else "";
+            const edr = if (obj.get("dirty")) |v| if (v == .bool) v.bool else false else false;
             const ems: i64 = if (obj.get("created_at_ms")) |v| if (v == .integer) v.integer else 0 else 0;
             if (arr.items.len > 0) try arr.append(gpa, ',');
-            const item_json = try std.fmt.allocPrint(gpa,
-                "{{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}",
-                .{ eid, ebr, ehd, if (edr) "true" else "false", ems });
+            const item_json = try std.fmt.allocPrint(gpa, "{{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}", .{ eid, ebr, ehd, if (edr) "true" else "false", ems });
             defer gpa.free(item_json);
             try arr.appendSlice(gpa, item_json);
             count += 1;
@@ -7343,9 +7561,7 @@ pub fn computeRollbackSnapshot(gpa: std.mem.Allocator, io: std.Io, repo_path: []
     }
 
     if (arr.items.len > 0) try arr.append(gpa, ',');
-    const new_entry = try std.fmt.allocPrint(gpa,
-        "{{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}",
-        .{ id_str, git.branch, git.head, if (git.dirty) "true" else "false", ts_ms });
+    const new_entry = try std.fmt.allocPrint(gpa, "{{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}", .{ id_str, git.branch, git.head, if (git.dirty) "true" else "false", ts_ms });
     defer gpa.free(new_entry);
     try arr.appendSlice(gpa, new_entry);
     count += 1;
@@ -7356,7 +7572,10 @@ pub fn computeRollbackSnapshot(gpa: std.mem.Allocator, io: std.Io, repo_path: []
         const wf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch break :write_blk;
         var wbuf: [256]u8 = undefined;
         var w = wf.writerStreaming(io, &wbuf);
-        w.interface.writeAll("[") catch { wf.close(io); break :write_blk; };
+        w.interface.writeAll("[") catch {
+            wf.close(io);
+            break :write_blk;
+        };
         w.interface.writeAll(arr.items) catch {};
         w.interface.writeAll("]") catch {};
         w.interface.flush() catch {};
@@ -7407,15 +7626,13 @@ pub fn computeRollbackList(gpa: std.mem.Allocator, io: std.Io, repo_path: []cons
         for (parsed.value.array.items) |item| {
             if (item != .object) continue;
             const obj = item.object;
-            const eid = if (obj.get("id"))            |v| if (v == .string)  v.string  else "" else "";
-            const ebr = if (obj.get("branch"))        |v| if (v == .string)  v.string  else "" else "";
-            const ehd = if (obj.get("head"))           |v| if (v == .string)  v.string  else "" else "";
-            const edr = if (obj.get("dirty"))          |v| if (v == .bool)    v.bool    else false else false;
+            const eid = if (obj.get("id")) |v| if (v == .string) v.string else "" else "";
+            const ebr = if (obj.get("branch")) |v| if (v == .string) v.string else "" else "";
+            const ehd = if (obj.get("head")) |v| if (v == .string) v.string else "" else "";
+            const edr = if (obj.get("dirty")) |v| if (v == .bool) v.bool else false else false;
             const ems: i64 = if (obj.get("created_at_ms")) |v| if (v == .integer) v.integer else 0 else 0;
             if (count > 0) try out.append(gpa, ',');
-            const entry = try std.fmt.allocPrint(gpa,
-                "\n    {{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}",
-                .{ eid, ebr, ehd, if (edr) "true" else "false", ems });
+            const entry = try std.fmt.allocPrint(gpa, "\n    {{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}", .{ eid, ebr, ehd, if (edr) "true" else "false", ems });
             defer gpa.free(entry);
             try out.appendSlice(gpa, entry);
             count += 1;
@@ -7449,12 +7666,12 @@ pub fn computeRollbackRevert(gpa: std.mem.Allocator, io: std.Io, repo_path: []co
         const eid = if (obj.get("id")) |v| if (v == .string) v.string else "" else "";
         if (!std.mem.eql(u8, eid, snapshot_id)) continue;
         const branch = if (obj.get("branch")) |v| if (v == .string) v.string else "" else "";
-        const head   = if (obj.get("head"))   |v| if (v == .string) v.string else "" else "";
-        const repo_esc   = try allocJsonEscape(gpa, repo_path);
+        const head = if (obj.get("head")) |v| if (v == .string) v.string else "" else "";
+        const repo_esc = try allocJsonEscape(gpa, repo_path);
         defer gpa.free(repo_esc);
         const branch_esc = try allocJsonEscape(gpa, branch);
         defer gpa.free(branch_esc);
-        const head_esc   = try allocJsonEscape(gpa, head);
+        const head_esc = try allocJsonEscape(gpa, head);
         defer gpa.free(head_esc);
         return std.fmt.allocPrint(gpa,
             \\{{
@@ -7479,8 +7696,8 @@ pub const SandboxSeverity = enum { safe, caution, destructive, blocked };
 pub const SandboxCheckResult = struct {
     operation: []const u8, // duped — caller must free
     allowed: bool,
-    severity: []const u8,  // static string literal
-    reason: []const u8,    // static string literal
+    severity: []const u8, // static string literal
+    reason: []const u8, // static string literal
 };
 
 const SandboxPattern = struct {
@@ -7491,39 +7708,39 @@ const SandboxPattern = struct {
 
 const SANDBOX_PATTERNS = [_]SandboxPattern{
     // blocked — never allowed
-    .{ .needle = "sudo rm",              .severity = .blocked,     .reason = "privileged recursive delete" },
-    .{ .needle = "mkfs",                 .severity = .blocked,     .reason = "filesystem format" },
-    .{ .needle = "fdisk",                .severity = .blocked,     .reason = "disk partition editor" },
-    .{ .needle = "dd if=",               .severity = .blocked,     .reason = "raw disk write" },
-    .{ .needle = ":(){:|:&};:",           .severity = .blocked,     .reason = "fork bomb" },
+    .{ .needle = "sudo rm", .severity = .blocked, .reason = "privileged recursive delete" },
+    .{ .needle = "mkfs", .severity = .blocked, .reason = "filesystem format" },
+    .{ .needle = "fdisk", .severity = .blocked, .reason = "disk partition editor" },
+    .{ .needle = "dd if=", .severity = .blocked, .reason = "raw disk write" },
+    .{ .needle = ":(){:|:&};:", .severity = .blocked, .reason = "fork bomb" },
     // destructive — not allowed without override
-    .{ .needle = "rm -rf",               .severity = .destructive, .reason = "recursive force delete" },
-    .{ .needle = "rm -fr",               .severity = .destructive, .reason = "recursive force delete" },
-    .{ .needle = "rm -r",                .severity = .destructive, .reason = "recursive delete" },
-    .{ .needle = "git reset --hard",     .severity = .destructive, .reason = "discards uncommitted changes" },
-    .{ .needle = "git push --force",     .severity = .destructive, .reason = "force-pushes over remote history" },
-    .{ .needle = "git push -f",          .severity = .destructive, .reason = "force-pushes over remote history" },
-    .{ .needle = "git checkout .",       .severity = .destructive, .reason = "discards all working-tree changes" },
-    .{ .needle = "git restore .",        .severity = .destructive, .reason = "discards all working-tree changes" },
-    .{ .needle = "git clean -f",         .severity = .destructive, .reason = "removes untracked files" },
-    .{ .needle = "drop table",           .severity = .destructive, .reason = "drops database table" },
-    .{ .needle = "drop database",        .severity = .destructive, .reason = "drops entire database" },
-    .{ .needle = "truncate table",       .severity = .destructive, .reason = "deletes all rows in table" },
-    .{ .needle = "git branch -d",        .severity = .destructive, .reason = "force-deletes git branch" },
-    .{ .needle = "--no-verify",          .severity = .destructive, .reason = "bypasses git hooks" },
+    .{ .needle = "rm -rf", .severity = .destructive, .reason = "recursive force delete" },
+    .{ .needle = "rm -fr", .severity = .destructive, .reason = "recursive force delete" },
+    .{ .needle = "rm -r", .severity = .destructive, .reason = "recursive delete" },
+    .{ .needle = "git reset --hard", .severity = .destructive, .reason = "discards uncommitted changes" },
+    .{ .needle = "git push --force", .severity = .destructive, .reason = "force-pushes over remote history" },
+    .{ .needle = "git push -f", .severity = .destructive, .reason = "force-pushes over remote history" },
+    .{ .needle = "git checkout .", .severity = .destructive, .reason = "discards all working-tree changes" },
+    .{ .needle = "git restore .", .severity = .destructive, .reason = "discards all working-tree changes" },
+    .{ .needle = "git clean -f", .severity = .destructive, .reason = "removes untracked files" },
+    .{ .needle = "drop table", .severity = .destructive, .reason = "drops database table" },
+    .{ .needle = "drop database", .severity = .destructive, .reason = "drops entire database" },
+    .{ .needle = "truncate table", .severity = .destructive, .reason = "deletes all rows in table" },
+    .{ .needle = "git branch -d", .severity = .destructive, .reason = "force-deletes git branch" },
+    .{ .needle = "--no-verify", .severity = .destructive, .reason = "bypasses git hooks" },
     // caution — allowed with warning
-    .{ .needle = "git push",             .severity = .caution,     .reason = "pushes to remote" },
-    .{ .needle = "git commit",           .severity = .caution,     .reason = "creates a commit" },
-    .{ .needle = "git tag",              .severity = .caution,     .reason = "creates or deletes a tag" },
-    .{ .needle = "npm publish",          .severity = .caution,     .reason = "publishes package publicly" },
-    .{ .needle = "yarn publish",         .severity = .caution,     .reason = "publishes package publicly" },
-    .{ .needle = "cargo publish",        .severity = .caution,     .reason = "publishes crate publicly" },
-    .{ .needle = "brew install",         .severity = .caution,     .reason = "installs system package" },
-    .{ .needle = "brew upgrade",         .severity = .caution,     .reason = "upgrades system package" },
-    .{ .needle = "pip install",          .severity = .caution,     .reason = "installs python package" },
-    .{ .needle = "npm install",          .severity = .caution,     .reason = "installs node package" },
-    .{ .needle = "gh release create",    .severity = .caution,     .reason = "publishes a GitHub release" },
-    .{ .needle = "gh pr create",         .severity = .caution,     .reason = "opens a pull request" },
+    .{ .needle = "git push", .severity = .caution, .reason = "pushes to remote" },
+    .{ .needle = "git commit", .severity = .caution, .reason = "creates a commit" },
+    .{ .needle = "git tag", .severity = .caution, .reason = "creates or deletes a tag" },
+    .{ .needle = "npm publish", .severity = .caution, .reason = "publishes package publicly" },
+    .{ .needle = "yarn publish", .severity = .caution, .reason = "publishes package publicly" },
+    .{ .needle = "cargo publish", .severity = .caution, .reason = "publishes crate publicly" },
+    .{ .needle = "brew install", .severity = .caution, .reason = "installs system package" },
+    .{ .needle = "brew upgrade", .severity = .caution, .reason = "upgrades system package" },
+    .{ .needle = "pip install", .severity = .caution, .reason = "installs python package" },
+    .{ .needle = "npm install", .severity = .caution, .reason = "installs node package" },
+    .{ .needle = "gh release create", .severity = .caution, .reason = "publishes a GitHub release" },
+    .{ .needle = "gh pr create", .severity = .caution, .reason = "opens a pull request" },
 };
 
 pub fn computeSandboxCheck(gpa: std.mem.Allocator, operation: []const u8) !SandboxCheckResult {
@@ -7537,16 +7754,39 @@ pub fn computeSandboxCheck(gpa: std.mem.Allocator, operation: []const u8) !Sandb
 
     for (SANDBOX_PATTERNS) |pat| {
         if (!std.mem.containsAtLeast(u8, op_lower, 1, pat.needle)) continue;
-        const rank: u8 = switch (pat.severity) { .safe => 0, .caution => 1, .destructive => 2, .blocked => 3 };
-        const best: u8  = switch (worst)         { .safe => 0, .caution => 1, .destructive => 2, .blocked => 3 };
-        if (rank > best) { worst = pat.severity; worst_reason = pat.reason; }
+        const rank: u8 = switch (pat.severity) {
+            .safe => 0,
+            .caution => 1,
+            .destructive => 2,
+            .blocked => 3,
+        };
+        const best: u8 = switch (worst) {
+            .safe => 0,
+            .caution => 1,
+            .destructive => 2,
+            .blocked => 3,
+        };
+        if (rank > best) {
+            worst = pat.severity;
+            worst_reason = pat.reason;
+        }
     }
 
     return .{
         .operation = try gpa.dupe(u8, operation),
-        .allowed   = switch (worst) { .safe => true, .caution => true, .destructive => false, .blocked => false },
-        .severity  = switch (worst) { .safe => "safe", .caution => "caution", .destructive => "destructive", .blocked => "blocked" },
-        .reason    = worst_reason,
+        .allowed = switch (worst) {
+            .safe => true,
+            .caution => true,
+            .destructive => false,
+            .blocked => false,
+        },
+        .severity = switch (worst) {
+            .safe => "safe",
+            .caution => "caution",
+            .destructive => "destructive",
+            .blocked => "blocked",
+        },
+        .reason = worst_reason,
     };
 }
 
@@ -7588,16 +7828,22 @@ pub fn computeCapabilityPromote(gpa: std.mem.Allocator, command: []const u8) ![]
     var n: usize = 0;
 
     if (std.mem.indexOf(u8, cmd_lower, "git ") != null or
-        std.mem.startsWith(u8, cmd_lower, "git")) {
-        score += 20; reasons[n] = "git operation"; n += 1;
+        std.mem.startsWith(u8, cmd_lower, "git"))
+    {
+        score += 20;
+        reasons[n] = "git operation";
+        n += 1;
     }
     if (std.mem.indexOf(u8, cmd_lower, "jq") != null or
         std.mem.indexOf(u8, cmd_lower, " awk") != null or
         std.mem.indexOf(u8, cmd_lower, "grep") != null or
         std.mem.indexOf(u8, cmd_lower, " sed ") != null or
         std.mem.indexOf(u8, cmd_lower, " head") != null or
-        std.mem.indexOf(u8, cmd_lower, " tail") != null) {
-        score += 20; reasons[n] = "parses structured output"; n += 1;
+        std.mem.indexOf(u8, cmd_lower, " tail") != null)
+    {
+        score += 20;
+        reasons[n] = "parses structured output";
+        n += 1;
     }
     const has_side_effects =
         std.mem.indexOf(u8, cmd_lower, "push") != null or
@@ -7607,22 +7853,31 @@ pub fn computeCapabilityPromote(gpa: std.mem.Allocator, command: []const u8) ![]
         std.mem.indexOf(u8, cmd_lower, "install") != null or
         std.mem.indexOf(u8, cmd_lower, "publish") != null;
     if (!has_side_effects) {
-        score += 15; reasons[n] = "read-only / no side effects"; n += 1;
+        score += 15;
+        reasons[n] = "read-only / no side effects";
+        n += 1;
     }
     const has_nondeterminism =
         std.mem.indexOf(u8, cmd_lower, "date") != null or
         std.mem.indexOf(u8, cmd_lower, "random") != null or
         std.mem.indexOf(u8, cmd_lower, "sleep") != null;
     if (!has_nondeterminism) {
-        score += 15; reasons[n] = "deterministic"; n += 1;
+        score += 15;
+        reasons[n] = "deterministic";
+        n += 1;
     }
     if (command.len < 80) {
-        score += 10; reasons[n] = "compact command"; n += 1;
+        score += 10;
+        reasons[n] = "compact command";
+        n += 1;
     }
     if (std.mem.indexOf(u8, cmd_lower, "/") != null or
         std.mem.indexOf(u8, cmd_lower, "<path") != null or
-        std.mem.indexOf(u8, cmd_lower, "<repo") != null) {
-        score += 10; reasons[n] = "takes path/repo argument"; n += 1;
+        std.mem.indexOf(u8, cmd_lower, "<repo") != null)
+    {
+        score += 10;
+        reasons[n] = "takes path/repo argument";
+        n += 1;
     }
 
     const recommendation: []const u8 = if (score >= 60) "promote" else if (score >= 40) "consider" else "skip";
@@ -7783,30 +8038,30 @@ const WORKER_OUTPUT_CAP: usize = 64 * 1024;
 pub const WORKER_DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 const WorkerEntry = struct {
-    lang:       []const u8,
+    lang: []const u8,
     candidates: []const []const u8,
-    prefix:     []const []const u8,
-    ext:        []const u8,
-    alias:      bool = false,
+    prefix: []const []const u8,
+    ext: []const u8,
+    alias: bool = false,
 };
 
 const WORKER_LANGS = [_]WorkerEntry{
-    .{ .lang = "python",  .candidates = &.{ "python3", "python" },             .prefix = &.{},                       .ext = "py"    },
-    .{ .lang = "py",      .candidates = &.{ "python3", "python" },             .prefix = &.{},                       .ext = "py",    .alias = true },
-    .{ .lang = "node",    .candidates = &.{ "node", "nodejs" },                .prefix = &.{},                       .ext = "js"    },
-    .{ .lang = "js",      .candidates = &.{ "node", "nodejs" },                .prefix = &.{},                       .ext = "js",    .alias = true },
-    .{ .lang = "deno",    .candidates = &.{ "deno" },                          .prefix = &.{ "run", "--allow-all" }, .ext = "ts"    },
-    .{ .lang = "bun",     .candidates = &.{ "bun" },                           .prefix = &.{},                       .ext = "ts"    },
-    .{ .lang = "go",      .candidates = &.{ "go" },                            .prefix = &.{ "run" },                .ext = "go"    },
-    .{ .lang = "golang",  .candidates = &.{ "go" },                            .prefix = &.{ "run" },                .ext = "go",    .alias = true },
-    .{ .lang = "ruby",    .candidates = &.{ "ruby" },                          .prefix = &.{},                       .ext = "rb"    },
-    .{ .lang = "rb",      .candidates = &.{ "ruby" },                          .prefix = &.{},                       .ext = "rb",    .alias = true },
-    .{ .lang = "bash",    .candidates = &.{ "bash", "sh" },                    .prefix = &.{},                       .ext = "sh"    },
-    .{ .lang = "sh",      .candidates = &.{ "sh", "bash" },                    .prefix = &.{},                       .ext = "sh",    .alias = true },
-    .{ .lang = "swift",   .candidates = &.{ "swift" },                         .prefix = &.{},                       .ext = "swift" },
-    .{ .lang = "zig",     .candidates = &.{ "zig" },                           .prefix = &.{ "run" },                .ext = "zig"   },
-    .{ .lang = "lua",     .candidates = &.{ "lua", "lua5.4", "lua5.3", "lua5.2" }, .prefix = &.{},                  .ext = "lua"   },
-    .{ .lang = "php",     .candidates = &.{ "php", "php8", "php7" },           .prefix = &.{},                       .ext = "php"   },
+    .{ .lang = "python", .candidates = &.{ "python3", "python" }, .prefix = &.{}, .ext = "py" },
+    .{ .lang = "py", .candidates = &.{ "python3", "python" }, .prefix = &.{}, .ext = "py", .alias = true },
+    .{ .lang = "node", .candidates = &.{ "node", "nodejs" }, .prefix = &.{}, .ext = "js" },
+    .{ .lang = "js", .candidates = &.{ "node", "nodejs" }, .prefix = &.{}, .ext = "js", .alias = true },
+    .{ .lang = "deno", .candidates = &.{"deno"}, .prefix = &.{ "run", "--allow-all" }, .ext = "ts" },
+    .{ .lang = "bun", .candidates = &.{"bun"}, .prefix = &.{}, .ext = "ts" },
+    .{ .lang = "go", .candidates = &.{"go"}, .prefix = &.{"run"}, .ext = "go" },
+    .{ .lang = "golang", .candidates = &.{"go"}, .prefix = &.{"run"}, .ext = "go", .alias = true },
+    .{ .lang = "ruby", .candidates = &.{"ruby"}, .prefix = &.{}, .ext = "rb" },
+    .{ .lang = "rb", .candidates = &.{"ruby"}, .prefix = &.{}, .ext = "rb", .alias = true },
+    .{ .lang = "bash", .candidates = &.{ "bash", "sh" }, .prefix = &.{}, .ext = "sh" },
+    .{ .lang = "sh", .candidates = &.{ "sh", "bash" }, .prefix = &.{}, .ext = "sh", .alias = true },
+    .{ .lang = "swift", .candidates = &.{"swift"}, .prefix = &.{}, .ext = "swift" },
+    .{ .lang = "zig", .candidates = &.{"zig"}, .prefix = &.{"run"}, .ext = "zig" },
+    .{ .lang = "lua", .candidates = &.{ "lua", "lua5.4", "lua5.3", "lua5.2" }, .prefix = &.{}, .ext = "lua" },
+    .{ .lang = "php", .candidates = &.{ "php", "php8", "php7" }, .prefix = &.{}, .ext = "php" },
 };
 
 fn workerFindEntry(lang: []const u8) ?WorkerEntry {
@@ -7837,15 +8092,17 @@ pub fn computeWorkerList(gpa: std.mem.Allocator) ![]u8 {
         \\}}
     , .{ arr.items, blk: {
         var n: u32 = 0;
-        for (&WORKER_LANGS) |e| { if (!e.alias) n += 1; }
+        for (&WORKER_LANGS) |e| {
+            if (!e.alias) n += 1;
+        }
         break :blk n;
     } });
 }
 
 pub fn computeWorkerRun(
-    gpa:        std.mem.Allocator,
-    io:         std.Io,
-    lang:       []const u8,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    lang: []const u8,
     script_path: []const u8,
     extra_args: []const []const u8,
     timeout_ms: u64,
@@ -7873,7 +8130,10 @@ pub fn computeWorkerRun(
         run_ok = .{
             .stdout = r.stdout,
             .stderr = r.stderr,
-            .exit   = switch (r.term) { .exited => |c| @as(i32, @intCast(c)), else => -1 },
+            .exit = switch (r.term) {
+                .exited => |c| @as(i32, @intCast(c)),
+                else => -1,
+            },
             .interp = cand,
         };
         break;
@@ -7887,19 +8147,24 @@ pub fn computeWorkerRun(
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
     const duration_ms: u64 = blk: {
         const s0 = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
-        const s1 = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        const s1 = @as(u64, @intCast(ts_end.sec)) * 1000 + @as(u64, @intCast(ts_end.nsec)) / 1_000_000;
         break :blk if (s1 > s0) s1 - s0 else 0;
     };
 
     const truncated = res.stdout.len > WORKER_OUTPUT_CAP or res.stderr.len > WORKER_OUTPUT_CAP;
-    const out_slice  = res.stdout[0..@min(res.stdout.len, WORKER_OUTPUT_CAP)];
-    const err_slice  = res.stderr[0..@min(res.stderr.len, WORKER_OUTPUT_CAP)];
+    const out_slice = res.stdout[0..@min(res.stdout.len, WORKER_OUTPUT_CAP)];
+    const err_slice = res.stderr[0..@min(res.stderr.len, WORKER_OUTPUT_CAP)];
 
-    const lang_esc   = try allocJsonEscape(gpa, lang);         defer gpa.free(lang_esc);
-    const interp_esc = try allocJsonEscape(gpa, res.interp);   defer gpa.free(interp_esc);
-    const script_esc = try allocJsonEscape(gpa, script_path);  defer gpa.free(script_esc);
-    const out_esc    = try allocJsonEscape(gpa, out_slice);     defer gpa.free(out_esc);
-    const err_esc    = try allocJsonEscape(gpa, err_slice);     defer gpa.free(err_esc);
+    const lang_esc = try allocJsonEscape(gpa, lang);
+    defer gpa.free(lang_esc);
+    const interp_esc = try allocJsonEscape(gpa, res.interp);
+    defer gpa.free(interp_esc);
+    const script_esc = try allocJsonEscape(gpa, script_path);
+    defer gpa.free(script_esc);
+    const out_esc = try allocJsonEscape(gpa, out_slice);
+    defer gpa.free(out_esc);
+    const err_esc = try allocJsonEscape(gpa, err_slice);
+    defer gpa.free(err_esc);
 
     return std.fmt.allocPrint(gpa,
         \\{{
@@ -7914,11 +8179,9 @@ pub fn computeWorkerRun(
         \\  "truncated": {s}
         \\}}
     , .{
-        lang_esc, interp_esc, script_esc,
-        res.exit, out_esc, err_esc,
-        duration_ms,
-        if (duration_ms >= timeout_ms) "true" else "false",
-        if (truncated) "true" else "false",
+        lang_esc,    interp_esc,                                         script_esc,
+        res.exit,    out_esc,                                            err_esc,
+        duration_ms, if (duration_ms >= timeout_ms) "true" else "false", if (truncated) "true" else "false",
     });
 }
 
@@ -8047,7 +8310,8 @@ test "shouldSkipGrepFile: binary extensions skipped" {
 }
 
 test "parseFileLine: line only" {
-    var out_line: u32 = 0; var out_col: u32 = 0;
+    var out_line: u32 = 0;
+    var out_col: u32 = 0;
     const pos = parseFileLine("src/main.go:42", &out_line, &out_col);
     try std.testing.expectEqual(@as(?usize, 11), pos);
     try std.testing.expectEqual(@as(u32, 42), out_line);
@@ -8055,7 +8319,8 @@ test "parseFileLine: line only" {
 }
 
 test "parseFileLine: line and col" {
-    var out_line: u32 = 0; var out_col: u32 = 0;
+    var out_line: u32 = 0;
+    var out_col: u32 = 0;
     const pos = parseFileLine("/app/foo.js:10:5", &out_line, &out_col);
     try std.testing.expectEqual(@as(?usize, 11), pos);
     try std.testing.expectEqual(@as(u32, 10), out_line);
@@ -8064,7 +8329,10 @@ test "parseFileLine: line and col" {
 
 test "parseStackLine: Node/V8 with parens" {
     const frame = try parseStackLine(std.testing.allocator, "    at myFunc (src/app.js:10:5)");
-    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    defer if (frame) |f| {
+        std.testing.allocator.free(f.file);
+        std.testing.allocator.free(f.func);
+    };
     try std.testing.expect(frame != null);
     try std.testing.expectEqualStrings("src/app.js", frame.?.file);
     try std.testing.expectEqual(@as(u32, 10), frame.?.line);
@@ -8074,7 +8342,10 @@ test "parseStackLine: Node/V8 with parens" {
 
 test "parseStackLine: Node/V8 bare" {
     const frame = try parseStackLine(std.testing.allocator, "    at src/app.js:20:3");
-    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    defer if (frame) |f| {
+        std.testing.allocator.free(f.file);
+        std.testing.allocator.free(f.func);
+    };
     try std.testing.expect(frame != null);
     try std.testing.expectEqualStrings("src/app.js", frame.?.file);
     try std.testing.expectEqual(@as(u32, 20), frame.?.line);
@@ -8082,7 +8353,10 @@ test "parseStackLine: Node/V8 bare" {
 
 test "parseStackLine: Python" {
     const frame = try parseStackLine(std.testing.allocator, "  File \"app/main.py\", line 33, in run");
-    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    defer if (frame) |f| {
+        std.testing.allocator.free(f.file);
+        std.testing.allocator.free(f.func);
+    };
     try std.testing.expect(frame != null);
     try std.testing.expectEqualStrings("app/main.py", frame.?.file);
     try std.testing.expectEqual(@as(u32, 33), frame.?.line);
@@ -8091,7 +8365,10 @@ test "parseStackLine: Python" {
 
 test "parseStackLine: Ruby" {
     const frame = try parseStackLine(std.testing.allocator, "    app/models/user.rb:15:in `save'");
-    defer if (frame) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); };
+    defer if (frame) |f| {
+        std.testing.allocator.free(f.file);
+        std.testing.allocator.free(f.func);
+    };
     try std.testing.expect(frame != null);
     try std.testing.expectEqualStrings("app/models/user.rb", frame.?.file);
     try std.testing.expectEqual(@as(u32, 15), frame.?.line);
@@ -8111,7 +8388,10 @@ test "computeParseStack: mixed trace" {
     ;
     const result = try computeParseStack(std.testing.allocator, trace);
     defer {
-        for (result.frames) |f| { std.testing.allocator.free(f.file); std.testing.allocator.free(f.func); }
+        for (result.frames) |f| {
+            std.testing.allocator.free(f.file);
+            std.testing.allocator.free(f.func);
+        }
         std.testing.allocator.free(result.frames);
     }
     try std.testing.expectEqual(@as(usize, 2), result.frames.len);
@@ -8208,7 +8488,10 @@ test "FileStatsResult fields" {
 test "parseEnvKeys: basic" {
     const content = "# comment\nDB_URL=postgres://localhost/db\nAPI_KEY=secret\nexport PORT=3000\n\nNODE_ENV=production\n";
     const keys = try parseEnvKeys(std.testing.allocator, content);
-    defer { for (keys) |k| std.testing.allocator.free(k); std.testing.allocator.free(keys); }
+    defer {
+        for (keys) |k| std.testing.allocator.free(k);
+        std.testing.allocator.free(keys);
+    }
     try std.testing.expectEqual(@as(usize, 4), keys.len);
     try std.testing.expectEqualStrings("DB_URL", keys[0]);
     try std.testing.expectEqualStrings("PORT", keys[2]);
@@ -8217,7 +8500,10 @@ test "parseEnvKeys: basic" {
 test "parseEnvKeys: skips invalid keys" {
     const content = "123INVALID=val\n_VALID=ok\nALSO_VALID=yes\n";
     const keys = try parseEnvKeys(std.testing.allocator, content);
-    defer { for (keys) |k| std.testing.allocator.free(k); std.testing.allocator.free(keys); }
+    defer {
+        for (keys) |k| std.testing.allocator.free(k);
+        std.testing.allocator.free(keys);
+    }
     try std.testing.expectEqual(@as(usize, 2), keys.len);
     try std.testing.expectEqualStrings("_VALID", keys[0]);
 }
@@ -8279,4 +8565,3 @@ test "extractTOMLValue: missing key returns null" {
     const s = try extractTOMLValue(std.testing.allocator, toml, "package.missing");
     try std.testing.expect(s == null);
 }
-

@@ -28,7 +28,10 @@ const Ctx = struct {
         return .{
             .stdout = r.stdout,
             .stderr = r.stderr,
-            .exit = switch (r.term) { .exited => |c| c, else => -1 },
+            .exit = switch (r.term) {
+                .exited => |c| c,
+                else => -1,
+            },
         };
     }
 
@@ -418,11 +421,11 @@ pub fn main(init: std.process.Init) !void {
     const py_script = "/tmp/ft-stress-worker.py";
     const js_script = "/tmp/ft-stress-worker.js";
     const sh_script = "/tmp/ft-stress-worker.sh";
-    const sh_fail   = "/tmp/ft-stress-worker-fail.sh";
+    const sh_fail = "/tmp/ft-stress-worker-fail.sh";
     writeStressScript(io, py_script, "print(42)\n") catch {};
     writeStressScript(io, js_script, "console.log(42)\n") catch {};
     writeStressScript(io, sh_script, "echo 42\n") catch {};
-    writeStressScript(io, sh_fail,   "exit 7\n") catch {};
+    writeStressScript(io, sh_fail, "exit 7\n") catch {};
 
     ctx.smoke("worker-run python", &.{ "worker-run", "python", py_script });
     ctx.smoke("worker-run py (alias)", &.{ "worker-run", "py", py_script });

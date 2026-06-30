@@ -422,7 +422,10 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
         defer {
-            for (result.matches) |m| { gpa.free(m.file); gpa.free(m.text); }
+            for (result.matches) |m| {
+                gpa.free(m.file);
+                gpa.free(m.text);
+            }
             gpa.free(result.matches);
         }
 
@@ -464,7 +467,10 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
         defer {
-            for (result.frames) |f| { gpa.free(f.file); gpa.free(f.func); }
+            for (result.frames) |f| {
+                gpa.free(f.file);
+                gpa.free(f.func);
+            }
             gpa.free(result.frames);
         }
 
@@ -529,8 +535,8 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeJsonQuery(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                error.InvalidJson  => try err.print("error: invalid JSON: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                error.InvalidJson => try err.print("error: invalid JSON: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -563,7 +569,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeGitDiff(gpa, io, args[2], ref) catch |e| {
             switch (e) {
                 error.GitFailed => try err.print("error: git diff failed in: {s}\n", .{args[2]}),
-                else            => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -602,7 +608,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeListDir(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.PathNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -668,7 +674,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeEnvScan(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.RootNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -718,7 +724,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeTomlQuery(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -750,7 +756,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeYamlQuery(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -951,7 +957,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeContextScan(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1018,7 +1024,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeContextRank(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1062,7 +1068,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeContextChanged(gpa, io, args[2], ref) catch |e| {
             switch (e) {
                 error.GitFailed => try err.print("error: git command failed in: {s}\n", .{args[2]}),
-                else            => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1106,7 +1112,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeContextEvidence(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1149,8 +1155,8 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeCacheCheck(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                error.NoHome       => try err.print("error: HOME environment variable not set\n", .{}),
-                else               => try err.print("error: {}\n", .{e}),
+                error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1192,8 +1198,8 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeCacheStore(gpa, io, args[2], args[3], value_json) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                error.NoHome       => try err.print("error: HOME environment variable not set\n", .{}),
-                else               => try err.print("error: {}\n", .{e}),
+                error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1221,8 +1227,8 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeCacheFetch(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                error.NoHome       => try err.print("error: HOME environment variable not set\n", .{}),
-                else               => try err.print("error: {}\n", .{e}),
+                error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1258,7 +1264,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeOutline(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1292,14 +1298,17 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeDeps(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.NoManifestFound => try err.print("error: no supported manifest found in: {s}\n", .{args[2]}),
-                error.InvalidJson     => try err.print("error: invalid JSON in package.json: {s}\n", .{args[2]}),
-                else                  => try err.print("error: {}\n", .{e}),
+                error.InvalidJson => try err.print("error: invalid JSON in package.json: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
         };
         defer {
-            for (result.deps) |d| { gpa.free(d.name); gpa.free(d.version); }
+            for (result.deps) |d| {
+                gpa.free(d.name);
+                gpa.free(d.version);
+            }
             gpa.free(result.deps);
             gpa.free(result.manifest);
         }
@@ -1333,7 +1342,7 @@ pub fn main(init: std.process.Init) !void {
             const result = root.computeCompatBaseline(gpa, io) catch |e| {
                 switch (e) {
                     error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
-                    else         => try err.print("error: {}\n", .{e}),
+                    else => try err.print("error: {}\n", .{e}),
                 }
                 try err.flush();
                 std.process.exit(1);
@@ -1362,7 +1371,7 @@ pub fn main(init: std.process.Init) !void {
             const result = root.computeCompatCheck(gpa, io) catch |e| {
                 switch (e) {
                     error.NoHome => try err.print("error: HOME environment variable not set\n", .{}),
-                    else         => try err.print("error: {}\n", .{e}),
+                    else => try err.print("error: {}\n", .{e}),
                 }
                 try err.flush();
                 std.process.exit(1);
@@ -1379,7 +1388,7 @@ pub fn main(init: std.process.Init) !void {
                 gpa.free(result.advice);
             }
 
-            const esc_age    = try root.allocJsonEscape(gpa, result.baseline_age);
+            const esc_age = try root.allocJsonEscape(gpa, result.baseline_age);
             defer gpa.free(esc_age);
             const esc_advice = try root.allocJsonEscape(gpa, result.advice);
             defer gpa.free(esc_advice);
@@ -1390,11 +1399,11 @@ pub fn main(init: std.process.Init) !void {
             );
             for (result.drifted, 0..) |d, i| {
                 if (i > 0) try out.print(",", .{});
-                const esc_tool     = try root.allocJsonEscape(gpa, d.tool);
+                const esc_tool = try root.allocJsonEscape(gpa, d.tool);
                 defer gpa.free(esc_tool);
-                const esc_was      = try root.allocJsonEscape(gpa, d.was);
+                const esc_was = try root.allocJsonEscape(gpa, d.was);
                 defer gpa.free(esc_was);
-                const esc_now      = try root.allocJsonEscape(gpa, d.now);
+                const esc_now = try root.allocJsonEscape(gpa, d.now);
                 defer gpa.free(esc_now);
                 const esc_rollback = try root.allocJsonEscape(gpa, d.rollback);
                 defer gpa.free(esc_rollback);
@@ -1417,33 +1426,36 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeRunTests(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.NoTestFramework => try err.print("error: no supported test framework found in: {s}\n", .{args[2]}),
-                else                  => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
         };
         defer {
-            for (result.failures) |f| { gpa.free(f.file); gpa.free(f.@"test"); gpa.free(f.message); }
+            for (result.failures) |f| {
+                gpa.free(f.file);
+                gpa.free(f.@"test");
+                gpa.free(f.message);
+            }
             gpa.free(result.failures);
             gpa.free(result.command);
         }
 
-        const esc_fw  = try root.allocJsonEscape(gpa, result.framework);
+        const esc_fw = try root.allocJsonEscape(gpa, result.framework);
         defer gpa.free(esc_fw);
         const esc_cmd = try root.allocJsonEscape(gpa, result.command);
         defer gpa.free(esc_cmd);
 
         try out.print(
             "{{\n  \"framework\": \"{s}\",\n  \"command\": \"{s}\",\n  \"success\": {s},\n  \"passed\": {d},\n  \"failed\": {d},\n  \"skipped\": {d},\n  \"duration_ms\": {d},\n  \"failures\": [",
-            .{ esc_fw, esc_cmd, if (result.success) "true" else "false",
-               result.passed, result.failed, result.skipped, result.duration_ms },
+            .{ esc_fw, esc_cmd, if (result.success) "true" else "false", result.passed, result.failed, result.skipped, result.duration_ms },
         );
         for (result.failures, 0..) |f, i| {
             const esc_file = try root.allocJsonEscape(gpa, f.file);
             defer gpa.free(esc_file);
             const esc_test = try root.allocJsonEscape(gpa, f.@"test");
             defer gpa.free(esc_test);
-            const esc_msg  = try root.allocJsonEscape(gpa, f.message);
+            const esc_msg = try root.allocJsonEscape(gpa, f.message);
             defer gpa.free(esc_msg);
             if (i > 0) try out.print(",", .{});
             try out.print(
@@ -1464,7 +1476,7 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeSymbolFind(gpa, io, args[2], args[3]) catch |e| {
             switch (e) {
                 error.RootNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
-                else               => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
@@ -1564,15 +1576,21 @@ pub fn main(init: std.process.Init) !void {
         const result = root.computeBuild(gpa, io, args[2]) catch |e| {
             switch (e) {
                 error.NoBuildSystem => try err.print("error: no supported build system found in: {s}\n", .{args[2]}),
-                else                => try err.print("error: {}\n", .{e}),
+                else => try err.print("error: {}\n", .{e}),
             }
             try err.flush();
             std.process.exit(1);
         };
         defer {
-            for (result.errors) |be| { gpa.free(be.file); gpa.free(be.message); }
+            for (result.errors) |be| {
+                gpa.free(be.file);
+                gpa.free(be.message);
+            }
             gpa.free(result.errors);
-            for (result.warnings) |bw| { gpa.free(bw.file); gpa.free(bw.message); }
+            for (result.warnings) |bw| {
+                gpa.free(bw.file);
+                gpa.free(bw.message);
+            }
             gpa.free(result.warnings);
             gpa.free(result.command);
         }
@@ -1611,8 +1629,7 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         if (result.warnings.len > 0) try out.print("\n  ", .{});
-        try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s}\n}}\n",
-            .{ result.duration_ms, if (result.truncated) "true" else "false" });
+        try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s}\n}}\n", .{ result.duration_ms, if (result.truncated) "true" else "false" });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "secret-scan")) {
         if (args.len < 3) {
@@ -1648,15 +1665,12 @@ pub fn main(init: std.process.Init) !void {
             },
             else => return e,
         };
-        try out.print("{{\n  \"profile_id\": \"{s}\",\n  \"hardware\": {{\"cpu\": \"{s}\", \"cores\": {d}, \"ram_gb\": {d}, \"os\": \"macos\", \"arch\": \"{s}\"}},\n  \"tools\": {{",
-            .{ result.profile_id, result.hardware.cpu, result.hardware.cores, result.hardware.ram_gb, result.hardware.arch });
+        try out.print("{{\n  \"profile_id\": \"{s}\",\n  \"hardware\": {{\"cpu\": \"{s}\", \"cores\": {d}, \"ram_gb\": {d}, \"os\": \"macos\", \"arch\": \"{s}\"}},\n  \"tools\": {{", .{ result.profile_id, result.hardware.cpu, result.hardware.cores, result.hardware.ram_gb, result.hardware.arch });
         for (result.tools, 0..) |t, i| {
             if (i > 0) try out.print(",", .{});
-            try out.print("\n    \"{s}\": {{\"version\": \"{s}\", \"present\": {s}}}",
-                .{ t.name, t.version, if (t.present) "true" else "false" });
+            try out.print("\n    \"{s}\": {{\"version\": \"{s}\", \"present\": {s}}}", .{ t.name, t.version, if (t.present) "true" else "false" });
         }
-        try out.print("\n  }},\n  \"optimal\": {{\"zig_build_flags\": \"{s}\"}},\n  \"shell\": \"{s}\",\n  \"scanned_at\": {d},\n  \"path\": \"{s}\"\n}}\n",
-            .{ result.optimal.zig_build_flags, result.shell, result.scanned_at, result.path });
+        try out.print("\n  }},\n  \"optimal\": {{\"zig_build_flags\": \"{s}\"}},\n  \"shell\": \"{s}\",\n  \"scanned_at\": {d},\n  \"path\": \"{s}\"\n}}\n", .{ result.optimal.zig_build_flags, result.shell, result.scanned_at, result.path });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "delta-context")) {
         if (args.len < 3) {
@@ -1708,13 +1722,10 @@ pub fn main(init: std.process.Init) !void {
             },
             else => return e,
         };
-        try out.print("{{\n  \"hit\": {s},\n  \"branch\": \"{s}\",\n  \"head\": \"{s}\",\n  \"dirty\": {s},\n  \"ahead\": {d},\n  \"behind\": {d},\n  \"commits\": [",
-            .{ if (result.hit) "true" else "false", result.branch, result.head,
-               if (result.dirty) "true" else "false", result.ahead, result.behind });
+        try out.print("{{\n  \"hit\": {s},\n  \"branch\": \"{s}\",\n  \"head\": \"{s}\",\n  \"dirty\": {s},\n  \"ahead\": {d},\n  \"behind\": {d},\n  \"commits\": [", .{ if (result.hit) "true" else "false", result.branch, result.head, if (result.dirty) "true" else "false", result.ahead, result.behind });
         for (result.commits, 0..) |c, i| {
             if (i > 0) try out.print(",", .{});
-            try out.print("\n    {{\"hash\": \"{s}\", \"subject\": \"{s}\", \"author\": \"{s}\", \"date\": \"{s}\"}}",
-                .{ c.hash, c.subject, c.author, c.date });
+            try out.print("\n    {{\"hash\": \"{s}\", \"subject\": \"{s}\", \"author\": \"{s}\", \"date\": \"{s}\"}}", .{ c.hash, c.subject, c.author, c.date });
         }
         if (result.commits.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
@@ -1773,19 +1784,18 @@ pub fn main(init: std.process.Init) !void {
             },
             else => return e,
         };
-        const file_esc   = try root.allocJsonEscape(gpa, result.file);
+        const file_esc = try root.allocJsonEscape(gpa, result.file);
         defer gpa.free(file_esc);
         const schema_esc = try root.allocJsonEscape(gpa, result.schema);
         defer gpa.free(schema_esc);
-        try out.print("{{\n  \"valid\": {s},\n  \"file\": \"{s}\",\n  \"schema\": \"{s}\",\n  \"violations\": [",
-            .{ if (result.valid) "true" else "false", file_esc, schema_esc });
+        try out.print("{{\n  \"valid\": {s},\n  \"file\": \"{s}\",\n  \"schema\": \"{s}\",\n  \"violations\": [", .{ if (result.valid) "true" else "false", file_esc, schema_esc });
         for (result.violations, 0..) |v, i| {
             if (i > 0) try out.print(",", .{});
             const path_esc = try root.allocJsonEscape(gpa, v.path);
             defer gpa.free(path_esc);
-            const exp_esc  = try root.allocJsonEscape(gpa, v.expected);
+            const exp_esc = try root.allocJsonEscape(gpa, v.expected);
             defer gpa.free(exp_esc);
-            const got_esc  = try root.allocJsonEscape(gpa, v.got);
+            const got_esc = try root.allocJsonEscape(gpa, v.got);
             defer gpa.free(got_esc);
             try out.print("\n    {{\"path\": \"{s}\", \"expected\": \"{s}\", \"got\": \"{s}\"}}", .{
                 path_esc, exp_esc, got_esc,
@@ -1805,9 +1815,9 @@ pub fn main(init: std.process.Init) !void {
         try out.print("{{\n  \"verdict\": \"{s}\",\n", .{result.verdict});
         const levels = [_]struct { name: []const u8, items: []const root.QualityFinding }{
             .{ .name = "critical", .items = result.critical },
-            .{ .name = "high",     .items = result.high     },
-            .{ .name = "medium",   .items = result.medium   },
-            .{ .name = "low",      .items = result.low      },
+            .{ .name = "high", .items = result.high },
+            .{ .name = "medium", .items = result.medium },
+            .{ .name = "low", .items = result.low },
         };
         for (levels) |level| {
             try out.print("  \"{s}\": [", .{level.name});
@@ -1824,12 +1834,11 @@ pub fn main(init: std.process.Init) !void {
             if (level.items.len > 0) try out.print("\n  ", .{});
             try out.print("],\n", .{});
         }
-        try out.print("  \"buildRan\": {s},\n  \"buildTool\": \"{s}\",\n  \"testsRan\": {s},\n  \"testFramework\": \"{s}\",\n  \"testsPassed\": {d},\n  \"testsFailed\": {d}\n}}\n",
-            .{
-                if (result.build_ran) "true" else "false", result.build_tool,
-                if (result.tests_ran) "true" else "false", result.test_fw,
-                result.tests_passed, result.tests_failed,
-            });
+        try out.print("  \"buildRan\": {s},\n  \"buildTool\": \"{s}\",\n  \"testsRan\": {s},\n  \"testFramework\": \"{s}\",\n  \"testsPassed\": {d},\n  \"testsFailed\": {d}\n}}\n", .{
+            if (result.build_ran) "true" else "false", result.build_tool,
+            if (result.tests_ran) "true" else "false", result.test_fw,
+            result.tests_passed,                       result.tests_failed,
+        });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "shell-run")) {
         var timeout_ms: u64 = 30_000;
@@ -1867,15 +1876,10 @@ pub fn main(init: std.process.Init) !void {
         else
             try gpa.dupe(u8, "null");
         defer gpa.free(block_json);
-        try out.print("{{\n  \"command\": \"{s}\",\n  \"exitCode\": {d},\n  \"stdout\": \"{s}\",\n  \"stderr\": \"{s}\",\n  \"durationMs\": {d},\n  \"timedOut\": {s},\n  \"blocked\": {s},\n  \"blockReason\": {s},\n  \"stdoutTruncated\": {s},\n  \"stderrTruncated\": {s}\n}}\n",
-            .{
-                cmd_esc, result.exit_code, stdout_esc, stderr_esc, result.duration_ms,
-                if (result.timed_out) "true" else "false",
-                if (result.blocked) "true" else "false",
-                block_json,
-                if (stdout_trunc) "true" else "false",
-                if (stderr_trunc) "true" else "false",
-            });
+        try out.print("{{\n  \"command\": \"{s}\",\n  \"exitCode\": {d},\n  \"stdout\": \"{s}\",\n  \"stderr\": \"{s}\",\n  \"durationMs\": {d},\n  \"timedOut\": {s},\n  \"blocked\": {s},\n  \"blockReason\": {s},\n  \"stdoutTruncated\": {s},\n  \"stderrTruncated\": {s}\n}}\n", .{
+            cmd_esc,                                   result.exit_code,                        stdout_esc, stderr_esc,                            result.duration_ms,
+            if (result.timed_out) "true" else "false", if (result.blocked) "true" else "false", block_json, if (stdout_trunc) "true" else "false", if (stderr_trunc) "true" else "false",
+        });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "project-state")) {
         if (args.len < 3) {
@@ -1930,11 +1934,7 @@ pub fn main(init: std.process.Init) !void {
         const result = try root.computeMetrics(gpa, io);
         try out.print(
             "{{\n  \"cacheEntries\": {d},\n  \"projectStates\": {d},\n  \"totalDecisions\": {d},\n  \"totalPatterns\": {d},\n  \"deviceProfiled\": {s},\n  \"compatBaselineSet\": {s},\n  \"estimatedTokenSavings\": {d},\n  \"note\": \"savings estimated at 80% hit rate x 200 tokens/hit\"\n}}\n",
-            .{ result.cache_entries, result.project_states,
-               result.total_decisions, result.total_patterns,
-               if (result.device_profiled) "true" else "false",
-               if (result.compat_baseline_set) "true" else "false",
-               result.estimated_token_savings },
+            .{ result.cache_entries, result.project_states, result.total_decisions, result.total_patterns, if (result.device_profiled) "true" else "false", if (result.compat_baseline_set) "true" else "false", result.estimated_token_savings },
         );
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "rollback")) {
@@ -2009,11 +2009,7 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(action_esc);
         try out.print(
             "{{\n  \"path\": \"{s}\",\n  \"status\": \"{s}\",\n  \"confidence\": \"{s}\",\n  \"gitBranch\": \"{s}\",\n  \"gitDirty\": {s},\n  \"buildOk\": {s},\n  \"testsOk\": {s},\n  \"secretsFound\": {s},\n  \"issues\": [",
-            .{ path_esc, result.status, result.confidence, branch_esc,
-               if (result.git_dirty) "true" else "false",
-               if (result.build_ok) "true" else "false",
-               if (result.tests_ok) "true" else "false",
-               if (result.secrets_found) "true" else "false" },
+            .{ path_esc, result.status, result.confidence, branch_esc, if (result.git_dirty) "true" else "false", if (result.build_ok) "true" else "false", if (result.tests_ok) "true" else "false", if (result.secrets_found) "true" else "false" },
         );
         for (result.issues, 0..) |iss, i| {
             const comma: []const u8 = if (i + 1 < result.issues.len) "," else "";
@@ -2141,9 +2137,9 @@ pub fn main(init: std.process.Init) !void {
             try err.flush();
             std.process.exit(1);
         }
-        const lang        = args[2];
+        const lang = args[2];
         const script_path = args[3];
-        const extra_args  = if (args.len > 4) args[4..] else args[0..0];
+        const extra_args = if (args.len > 4) args[4..] else args[0..0];
         const json = root.computeWorkerRun(gpa, io, lang, script_path, extra_args, root.WORKER_DEFAULT_TIMEOUT_MS) catch |e| switch (e) {
             error.UnknownLang => {
                 try err.print("error: unknown language '{s}'. Supported: python py node js deno bun go golang ruby rb bash sh swift zig lua php\n", .{lang});
