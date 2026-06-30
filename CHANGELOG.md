@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.38.0] — 2026-06-30
+
+### New
+- `git-cache <repo-path>` — reads branch, HEAD SHA, dirty state, ahead/behind counts, and last 10 commits in one call; caches result to `~/.cache/foreman-tools/gc-{sha256(repo)}.json` invalidated by HEAD SHA; returns `{ hit, branch, head, dirty, ahead, behind, commits: [{hash, subject, author, date}] }`; second call within the same HEAD returns `hit: true` with zero git subprocesses; replaces repeated `status`/`commits`/`changes-preview` calls within a session
+
 ## [0.37.0] — 2026-06-30
 
 ### New

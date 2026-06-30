@@ -60,6 +60,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  secret-scan <path>\n", .{});
         try err.print("  device-scan\n", .{});
         try err.print("  delta-context <repo-path> [ref]\n", .{});
+        try err.print("  git-cache <repo-path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1668,6 +1669,36 @@ pub fn main(init: std.process.Init) !void {
             try out.print("]}}", .{});
         }
         if (result.symbols.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "git-cache")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools git-cache <repo-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const result = root.computeGitCache(gpa, io, args[2]) catch |e| switch (e) {
+            error.NotAGitRepo => {
+                try err.print("error: not a git repo: {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.NoHome => {
+                try err.print("error: HOME not set\n", .{});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        try out.print("{{\n  \"hit\": {s},\n  \"branch\": \"{s}\",\n  \"head\": \"{s}\",\n  \"dirty\": {s},\n  \"ahead\": {d},\n  \"behind\": {d},\n  \"commits\": [",
+            .{ if (result.hit) "true" else "false", result.branch, result.head,
+               if (result.dirty) "true" else "false", result.ahead, result.behind });
+        for (result.commits, 0..) |c, i| {
+            if (i > 0) try out.print(",", .{});
+            try out.print("\n    {{\"hash\": \"{s}\", \"subject\": \"{s}\", \"author\": \"{s}\", \"date\": \"{s}\"}}",
+                .{ c.hash, c.subject, c.author, c.date });
+        }
+        if (result.commits.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
     } else {

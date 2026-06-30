@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.37.0";
+pub const VERSION = "0.38.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5664,6 +5664,222 @@ pub fn computeDeltaContext(
     return .{
         .ref     = try gpa.dupe(u8, ref),
         .symbols = try result_symbols.toOwnedSlice(gpa),
+    };
+}
+
+// --- git-cache subcommand ---
+
+pub const GitCacheCommit = struct { hash: []u8, subject: []u8, author: []u8, date: []u8 };
+pub const GitCacheResult = struct {
+    hit: bool,
+    branch: []u8,
+    head: []u8,
+    dirty: bool,
+    ahead: u32,
+    behind: u32,
+    commits: []GitCacheCommit,
+};
+
+// Parse "N\tM\n" output from git rev-list --left-right --count HEAD...@{u}
+fn parseAheadBehind(raw: []const u8) struct { ahead: u32, behind: u32 } {
+    const tab = std.mem.indexOfScalar(u8, raw, '\t') orelse return .{ .ahead = 0, .behind = 0 };
+    const ahead = std.fmt.parseInt(u32, std.mem.trimEnd(u8, raw[0..tab], " \r\n"), 10) catch 0;
+    const behind = std.fmt.parseInt(u32, std.mem.trimEnd(u8, raw[tab + 1 ..], " \r\n"), 10) catch 0;
+    return .{ .ahead = ahead, .behind = behind };
+}
+
+fn gitCachePath(gpa: std.mem.Allocator, home: []const u8, repo: []const u8) ![]u8 {
+    const key = sha256Hex(repo);
+    return std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools/gc-{s}.json", .{ home, key });
+}
+
+pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !GitCacheResult {
+    // Current HEAD SHA
+    const head_raw = runGit(gpa, io, repo, &.{ "rev-parse", "HEAD" }) catch
+        return error.NotAGitRepo;
+    defer gpa.free(head_raw);
+    const head_sha = std.mem.trimEnd(u8, head_raw, " \r\n");
+
+    // Locate cache file
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const cache_path = try gitCachePath(gpa, home, repo);
+    defer gpa.free(cache_path);
+
+    // Try to read the cache
+    if (std.Io.Dir.openFileAbsolute(io, cache_path, .{})) |cf| {
+        var rbuf: [4096]u8 = undefined;
+        var reader = cf.reader(io, &rbuf);
+        const content = reader.interface.allocRemaining(gpa, .limited(512 * 1024)) catch blk: {
+            cf.close(io);
+            break :blk null;
+        };
+        cf.close(io);
+        if (content) |c| {
+            defer gpa.free(c);
+            // First line is the stored HEAD SHA
+            if (std.mem.indexOfScalar(u8, c, '\n')) |nl| {
+                const stored_head = c[0..nl];
+                if (std.mem.eql(u8, stored_head, head_sha)) {
+                    // Parse the stored JSON
+                    const json = c[nl + 1 ..];
+                    const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch null;
+                    if (parsed) |pv| {
+                        defer pv.deinit();
+                        if (pv.value == .object) {
+                            const obj = pv.value.object;
+                            const branch_v = obj.get("branch") orelse std.json.Value{ .string = "" };
+                            const dirty_v  = obj.get("dirty")  orelse std.json.Value{ .bool = false };
+                            const ahead_v  = obj.get("ahead")  orelse std.json.Value{ .integer = 0 };
+                            const behind_v = obj.get("behind") orelse std.json.Value{ .integer = 0 };
+                            const branch_s = if (branch_v == .string) branch_v.string else "";
+                            const dirty_b  = if (dirty_v  == .bool)   dirty_v.bool   else false;
+                            const ahead_n: u32  = if (ahead_v  == .integer) @intCast(@max(0, ahead_v.integer))  else 0;
+                            const behind_n: u32 = if (behind_v == .integer) @intCast(@max(0, behind_v.integer)) else 0;
+                            // Parse commits array
+                            var cached_commits: std.ArrayList(GitCacheCommit) = .empty;
+                            errdefer {
+                                for (cached_commits.items) |cc| {
+                                    gpa.free(cc.hash); gpa.free(cc.subject);
+                                    gpa.free(cc.author); gpa.free(cc.date);
+                                }
+                                cached_commits.deinit(gpa);
+                            }
+                            if (obj.get("commits")) |commits_v| {
+                                if (commits_v == .array) {
+                                    for (commits_v.array.items) |entry| {
+                                        if (entry != .object) continue;
+                                        const eo = entry.object;
+                                        const h = if (eo.get("hash"))    |v| if (v == .string) v.string else "" else "";
+                                        const s = if (eo.get("subject")) |v| if (v == .string) v.string else "" else "";
+                                        const a = if (eo.get("author"))  |v| if (v == .string) v.string else "" else "";
+                                        const d = if (eo.get("date"))    |v| if (v == .string) v.string else "" else "";
+                                        try cached_commits.append(gpa, .{
+                                            .hash    = try gpa.dupe(u8, h),
+                                            .subject = try gpa.dupe(u8, s),
+                                            .author  = try gpa.dupe(u8, a),
+                                            .date    = try gpa.dupe(u8, d),
+                                        });
+                                    }
+                                }
+                            }
+                            return .{
+                                .hit     = true,
+                                .branch  = try gpa.dupe(u8, branch_s),
+                                .head    = try gpa.dupe(u8, head_sha),
+                                .dirty   = dirty_b,
+                                .ahead   = ahead_n,
+                                .behind  = behind_n,
+                                .commits = try cached_commits.toOwnedSlice(gpa),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    } else |_| {}
+
+    // Cache miss — run git commands
+    const branch_raw = runGit(gpa, io, repo, &.{ "rev-parse", "--abbrev-ref", "HEAD" }) catch
+        try gpa.dupe(u8, "HEAD\n");
+    defer gpa.free(branch_raw);
+    const branch = try gpa.dupe(u8, std.mem.trimEnd(u8, branch_raw, " \r\n"));
+
+    const status_raw = runGit(gpa, io, repo, &.{ "status", "--porcelain" }) catch
+        try gpa.dupe(u8, "");
+    defer gpa.free(status_raw);
+    const dirty = std.mem.trimEnd(u8, status_raw, " \r\n").len > 0;
+
+    var ahead: u32 = 0;
+    var behind: u32 = 0;
+    if (runGit(gpa, io, repo, &.{ "rev-list", "--left-right", "--count", "HEAD...@{u}" })) |ab_raw| {
+        defer gpa.free(ab_raw);
+        const ab = parseAheadBehind(ab_raw);
+        ahead = ab.ahead;
+        behind = ab.behind;
+    } else |_| {}
+
+    // Recent commits: hash\tsubject\tauthor\tdate
+    const log_raw = runGit(gpa, io, repo, &.{
+        "log", "-n", "10", "--format=%H\t%s\t%an\t%ad", "--date=short",
+    }) catch try gpa.dupe(u8, "");
+    defer gpa.free(log_raw);
+
+    var commits: std.ArrayList(GitCacheCommit) = .empty;
+    errdefer {
+        for (commits.items) |c| {
+            gpa.free(c.hash);
+            gpa.free(c.subject);
+            gpa.free(c.author);
+            gpa.free(c.date);
+        }
+        commits.deinit(gpa);
+    }
+
+    var log_line_start: usize = 0;
+    while (log_line_start < log_raw.len) {
+        const log_line_end = std.mem.indexOfScalarPos(u8, log_raw, log_line_start, '\n') orelse log_raw.len;
+        const log_line = log_raw[log_line_start..log_line_end];
+        log_line_start = log_line_end + 1;
+        if (log_line.len == 0) continue;
+        // Split on tabs
+        var fields: [4][]const u8 = .{ "", "", "", "" };
+        var fi: usize = 0;
+        var fs: usize = 0;
+        for (log_line, 0..) |ch, ci| {
+            if (ch == '\t' and fi < 3) {
+                fields[fi] = log_line[fs..ci];
+                fi += 1;
+                fs = ci + 1;
+            }
+        }
+        fields[fi] = log_line[fs..];
+        try commits.append(gpa, .{
+            .hash    = try gpa.dupe(u8, fields[0]),
+            .subject = try gpa.dupe(u8, fields[1]),
+            .author  = try gpa.dupe(u8, fields[2]),
+            .date    = try gpa.dupe(u8, fields[3]),
+        });
+    }
+
+    // Write cache — serialize to JSON first, then write atomically
+    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    defer gpa.free(cache_dir);
+    std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch {};
+    const tmp_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{cache_path});
+    defer gpa.free(tmp_path);
+
+    if (std.Io.Dir.createFileAbsolute(io, tmp_path, .{})) |wf| {
+        var wbuf: [4096]u8 = undefined;
+        var w = wf.writerStreaming(io, &wbuf);
+        const write_ok = blk: {
+            // First line: head SHA for invalidation
+            w.interface.writeAll(head_sha) catch break :blk false;
+            w.interface.writeAll("\n") catch break :blk false;
+            // JSON state (no hit field in stored form)
+            w.interface.print("{{\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"ahead\":{d},\"behind\":{d},\"commits\":[",
+                .{ branch, head_sha, if (dirty) "true" else "false", ahead, behind }) catch break :blk false;
+            for (commits.items, 0..) |cm, ci| {
+                if (ci > 0) w.interface.writeAll(",") catch break :blk false;
+                w.interface.print("{{\"hash\":\"{s}\",\"subject\":\"{s}\",\"author\":\"{s}\",\"date\":\"{s}\"}}",
+                    .{ cm.hash, cm.subject, cm.author, cm.date }) catch break :blk false;
+            }
+            w.interface.writeAll("]}") catch break :blk false;
+            w.interface.flush() catch break :blk false;
+            break :blk true;
+        };
+        wf.close(io);
+        if (write_ok) atomicRenameAbsolute(tmp_path, cache_path);
+    } else |_| {}
+
+    return .{
+        .hit     = false,
+        .branch  = branch,
+        .head    = try gpa.dupe(u8, head_sha),
+        .dirty   = dirty,
+        .ahead   = ahead,
+        .behind  = behind,
+        .commits = try commits.toOwnedSlice(gpa),
     };
 }
 
