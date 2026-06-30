@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.35.0] — 2026-06-30
+
+### New
+- `secret-scan <path>` — walks the project tree and flags likely hardcoded secrets; returns `{ findings: [{file, line, pattern, severity}], truncated }`; two detection modes: (1) prefix-match for specific token formats (Stripe sk_live_/sk_test_, AWS AKIA, GitHub ghp_/gho_/ghs_/github_pat_, GitLab glpat-, Slack xoxb-/xoxp-, PEM private keys, Google AIza/ya29); (2) assignment-key match for generic patterns (password, api_key, api_secret, secret, access_token, auth_token, private_key) with placeholder filtering; skips comment lines, binary files, and .example/.sample/.template files; findings capped at 200
+
 ## [0.34.0] — 2026-06-30
 
 ### New

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.34.0";
+pub const VERSION = "0.35.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5012,6 +5012,278 @@ pub fn computeSymbolFind(gpa: std.mem.Allocator, io: std.Io, root: []const u8, n
         .references = try refs.toOwnedSlice(gpa),
         .capped     = capped,
     };
+}
+
+// --- secret-scan subcommand ---
+
+const SECRET_SCAN_MAX_FINDINGS: usize = 200;
+const SECRET_SCAN_MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
+
+pub const SecretFinding = struct { file: []u8, line: u32, pattern: []const u8, severity: []const u8 };
+pub const SecretScanResult = struct { findings: []SecretFinding, truncated: bool };
+
+const SecretPatternMode = enum { prefix, assignment_key };
+const SecretPatternDef = struct {
+    needle: []const u8,
+    name: []const u8,
+    severity: []const u8,
+    mode: SecretPatternMode,
+};
+
+const SECRET_PATTERNS = [_]SecretPatternDef{
+    // Specific token prefixes (high-confidence, case-sensitive)
+    .{ .needle = "sk_live_",                             .name = "stripe-secret-key",          .severity = "high",   .mode = .prefix },
+    .{ .needle = "sk_test_",                             .name = "stripe-test-key",             .severity = "medium", .mode = .prefix },
+    .{ .needle = "AKIA",                                 .name = "aws-access-key-id",           .severity = "high",   .mode = .prefix },
+    .{ .needle = "ghp_",                                 .name = "github-pat",                  .severity = "high",   .mode = .prefix },
+    .{ .needle = "gho_",                                 .name = "github-oauth-token",          .severity = "high",   .mode = .prefix },
+    .{ .needle = "ghs_",                                 .name = "github-server-token",         .severity = "high",   .mode = .prefix },
+    .{ .needle = "github_pat_",                          .name = "github-fine-grained-pat",     .severity = "high",   .mode = .prefix },
+    .{ .needle = "glpat-",                               .name = "gitlab-pat",                  .severity = "high",   .mode = .prefix },
+    .{ .needle = "xoxb-",                                .name = "slack-bot-token",             .severity = "high",   .mode = .prefix },
+    .{ .needle = "xoxp-",                                .name = "slack-user-token",            .severity = "high",   .mode = .prefix },
+    .{ .needle = "-----BEGIN RSA PRIVATE KEY-----",      .name = "rsa-private-key",            .severity = "high",   .mode = .prefix },
+    .{ .needle = "-----BEGIN OPENSSH PRIVATE KEY-----",  .name = "ssh-private-key",            .severity = "high",   .mode = .prefix },
+    .{ .needle = "-----BEGIN EC PRIVATE KEY-----",       .name = "ec-private-key",             .severity = "high",   .mode = .prefix },
+    .{ .needle = "-----BEGIN PGP PRIVATE KEY BLOCK-----",.name = "pgp-private-key",            .severity = "high",   .mode = .prefix },
+    .{ .needle = "AIza",                                 .name = "google-api-key",              .severity = "high",   .mode = .prefix },
+    .{ .needle = "ya29.",                                .name = "google-oauth-token",          .severity = "high",   .mode = .prefix },
+    // Assignment-key patterns: needle found in variable name + real value after = or :
+    .{ .needle = "password",     .name = "hardcoded-password",    .severity = "high",   .mode = .assignment_key },
+    .{ .needle = "passwd",       .name = "hardcoded-password",    .severity = "high",   .mode = .assignment_key },
+    .{ .needle = "api_secret",   .name = "hardcoded-api-secret",  .severity = "high",   .mode = .assignment_key },
+    .{ .needle = "api_key",      .name = "hardcoded-api-key",     .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "apikey",       .name = "hardcoded-api-key",     .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "secret_key",   .name = "hardcoded-secret-key",  .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "secret",       .name = "hardcoded-secret",      .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "access_token", .name = "hardcoded-token",       .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "auth_token",   .name = "hardcoded-token",       .severity = "medium", .mode = .assignment_key },
+    .{ .needle = "private_key",  .name = "hardcoded-private-key", .severity = "medium", .mode = .assignment_key },
+};
+
+fn secretScanIsCommentLine(line: []const u8) bool {
+    const t = std.mem.trimStart(u8, line, " \t");
+    return std.mem.startsWith(u8, t, "//") or
+        std.mem.startsWith(u8, t, "#") or
+        std.mem.startsWith(u8, t, "*") or
+        std.mem.startsWith(u8, t, "--") or
+        std.mem.startsWith(u8, t, "/*") or
+        std.mem.startsWith(u8, t, "<!--");
+}
+
+fn secretScanIsExampleFile(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, ".example") or
+        std.mem.endsWith(u8, name, ".sample") or
+        std.mem.endsWith(u8, name, ".template") or
+        std.mem.endsWith(u8, name, ".dist");
+}
+
+fn secretScanCaseInsensitiveContains(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i <= haystack.len - needle.len) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |c, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(c)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+fn secretScanPrefixContinuationLen(line: []const u8, pos: usize, needle_len: usize) usize {
+    var count: usize = 0;
+    var i = pos + needle_len;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '/' or
+            c == '+' or c == '.' or c == '@' or c == '=') {
+            count += 1;
+        } else break;
+    }
+    return count;
+}
+
+fn secretScanFindAssignmentSep(line: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '=') {
+            if (i + 1 < line.len and line[i + 1] == '=') { i += 1; continue; }
+            if (i > 0 and (line[i - 1] == '!' or line[i - 1] == '<' or line[i - 1] == '>')) continue;
+            return i;
+        }
+    }
+    // YAML colon: not :: and not ://
+    if (std.mem.indexOfScalar(u8, line, ':')) |cp| {
+        if (cp + 1 < line.len and line[cp + 1] != ':' and line[cp + 1] != '/') return cp;
+    }
+    return null;
+}
+
+fn secretScanExtractValue(line: []const u8, sep_pos: usize) []const u8 {
+    if (sep_pos + 1 >= line.len) return "";
+    const after = std.mem.trimStart(u8, line[sep_pos + 1 ..], " \t");
+    const trimmed = std.mem.trimEnd(u8, after, " \t;,\r");
+    if (trimmed.len >= 2) {
+        const q = trimmed[0];
+        if ((q == '"' or q == '\'' or q == '`') and trimmed[trimmed.len - 1] == q)
+            return trimmed[1 .. trimmed.len - 1];
+    }
+    return trimmed;
+}
+
+fn secretScanIsCleanKey(key: []const u8) bool {
+    for (key) |c| {
+        if (c == '(' or c == ')' or c == '{' or c == '}' or c == ';') return false;
+    }
+    return true;
+}
+
+fn secretScanIsPlaceholder(val: []const u8) bool {
+    if (val.len < 6) return true;
+    if (val[0] == '{' or val[0] == '[' or val[0] == '(' or val[0] == '$' or
+        val[0] == '.' or std.ascii.isDigit(val[0])) return true;
+    const env_prefixes = [_][]const u8{ "os.", "ENV[", "env.", "process.", "config.", "settings.", "getenv", "std." };
+    for (env_prefixes) |ep| { if (std.mem.startsWith(u8, val, ep)) return true; }
+    const null_literals = [_][]const u8{ "None", "null", "undefined", "true", "false", "True", "False", "NULL", "nil" };
+    for (null_literals) |nl| { if (std.mem.eql(u8, val, nl)) return true; }
+    const type_decls = [_][]const u8{ "struct", "enum", "union", "fn ", "interface", "class", "impl", "type " };
+    for (type_decls) |td| { if (std.mem.startsWith(u8, val, td)) return true; }
+    if (val.len >= 4) {
+        const first = val[0];
+        var all_same = true;
+        for (val) |c| { if (c != first) { all_same = false; break; } }
+        if (all_same) return true;
+    }
+    var buf: [64]u8 = undefined;
+    const check_len = @min(val.len, 64);
+    for (val[0..check_len], 0..) |c, idx| buf[idx] = std.ascii.toLower(c);
+    const lower = buf[0..check_len];
+    const placeholder_pfx = [_][]const u8{
+        "your", "my_api", "example", "placeholder", "replace", "changeme",
+        "change_me", "put_", "insert_", "enter_", "add_", "dummy",
+        "fake", "sample", "test_", "not_real", "xxxxxxxxx", "12345678",
+    };
+    for (placeholder_pfx) |ph| { if (std.mem.startsWith(u8, lower, ph)) return true; }
+    return false;
+}
+
+fn scanFileForSecrets(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    abs_path: []const u8,
+    rel_path: []const u8,
+    findings: *std.ArrayList(SecretFinding),
+    truncated: *bool,
+) !void {
+    const file = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch return;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(SECRET_SCAN_MAX_FILE_BYTES)) catch return;
+    defer gpa.free(content);
+    if (content.len >= 4 and (
+        std.mem.eql(u8, content[0..4], "\xcf\xfa\xed\xfe") or
+        std.mem.eql(u8, content[0..4], "\xfe\xed\xfa\xcf") or
+        std.mem.eql(u8, content[0..4], "\xca\xfe\xba\xbe") or
+        std.mem.eql(u8, content[0..4], "\x7fELF"))) return;
+
+    var line_num: u32 = 1;
+    var line_start: usize = 0;
+    var last_flagged: u32 = 0;
+    while (line_start < content.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
+        const line = content[line_start..line_end];
+        if (line_num != last_flagged and !secretScanIsCommentLine(line)) {
+            for (SECRET_PATTERNS) |pat| {
+                if (findings.items.len >= SECRET_SCAN_MAX_FINDINGS) { truncated.* = true; return; }
+                var matched = false;
+                switch (pat.mode) {
+                    .prefix => {
+                        if (std.mem.indexOf(u8, line, pat.needle)) |pos| {
+                            if (secretScanPrefixContinuationLen(line, pos, pat.needle.len) >= 8)
+                                matched = true;
+                        }
+                    },
+                    .assignment_key => {
+                        if (secretScanFindAssignmentSep(line)) |sep_pos| {
+                            const key = line[0..sep_pos];
+                            if (secretScanIsCleanKey(key) and secretScanCaseInsensitiveContains(key, pat.needle)) {
+                                const val = secretScanExtractValue(line, sep_pos);
+                                if (!secretScanIsPlaceholder(val)) matched = true;
+                            }
+                        }
+                    },
+                }
+                if (matched) {
+                    try findings.append(gpa, .{
+                        .file     = try gpa.dupe(u8, rel_path),
+                        .line     = line_num,
+                        .pattern  = pat.name,
+                        .severity = pat.severity,
+                    });
+                    last_flagged = line_num;
+                    break;
+                }
+            }
+        }
+        line_num += 1;
+        line_start = line_end + 1;
+    }
+}
+
+fn walkSecretScan(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    rel_prefix: []const u8,
+    root: []const u8,
+    findings: *std.ArrayList(SecretFinding),
+    truncated: *bool,
+) !void {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (findings.items.len >= SECRET_SCAN_MAX_FINDINGS) { truncated.* = true; return; }
+        if (entry.kind == .file) {
+            if (shouldSkipGrepFile(entry.name)) continue;
+            if (secretScanIsExampleFile(entry.name)) continue;
+            const rel_path: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(rel_path);
+            const abs_path = try std.fs.path.join(gpa, &.{ root, rel_path });
+            defer gpa.free(abs_path);
+            try scanFileForSecrets(gpa, io, abs_path, rel_path, findings, truncated);
+        } else if (entry.kind == .directory) {
+            if (shouldSkipScanDir(entry.name)) continue;
+            const sub_prefix: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(sub_prefix);
+            var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            try walkSecretScan(gpa, io, sub, sub_prefix, root, findings, truncated);
+        }
+    }
+}
+
+pub fn computeSecretScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8) !SecretScanResult {
+    var dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch
+        return error.RootNotFound;
+    defer dir.close(io);
+    var findings: std.ArrayList(SecretFinding) = .empty;
+    errdefer {
+        for (findings.items) |f| gpa.free(f.file);
+        findings.deinit(gpa);
+    }
+    var truncated = false;
+    try walkSecretScan(gpa, io, dir, "", root, &findings, &truncated);
+    return .{ .findings = try findings.toOwnedSlice(gpa), .truncated = truncated };
 }
 
 // --- Tests ---

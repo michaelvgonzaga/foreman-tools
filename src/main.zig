@@ -56,6 +56,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  run-tests <path>\n", .{});
         try err.print("  build <path>\n", .{});
         try err.print("  env-inspect <path>\n", .{});
+        try err.print("  symbol-find <path> <symbol>\n", .{});
+        try err.print("  secret-scan <path>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1431,6 +1433,45 @@ pub fn main(init: std.process.Init) !void {
         if (result.failures.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"truncated\": {s}\n}}\n", .{if (result.truncated) "true" else "false"});
         try out.flush();
+    } else if (std.mem.eql(u8, args[1], "symbol-find")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools symbol-find <path> <symbol>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeSymbolFind(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.RootNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else               => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            if (result.definition) |d| gpa.free(d.file);
+            for (result.references) |rf| gpa.free(rf.file);
+            gpa.free(result.references);
+        }
+
+        try out.print("{{\n  \"symbol\": \"{s}\",\n  \"kind\": \"{s}\",\n  \"definition\": ", .{ result.symbol, result.kind });
+        if (result.definition) |d| {
+            const esc = try root.allocJsonEscape(gpa, d.file);
+            defer gpa.free(esc);
+            try out.print("{{\"file\": \"{s}\", \"line\": {d}}}", .{ esc, d.line });
+        } else {
+            try out.print("null", .{});
+        }
+        try out.print(",\n  \"references\": [", .{});
+        for (result.references, 0..) |rf, i| {
+            const esc = try root.allocJsonEscape(gpa, rf.file);
+            defer gpa.free(esc);
+            if (i > 0) try out.print(",", .{});
+            try out.print("\n    {{\"file\": \"{s}\", \"line\": {d}}}", .{ esc, rf.line });
+        }
+        if (result.references.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"capped\": {s}\n}}\n", .{if (result.capped) "true" else "false"});
+        try out.flush();
     } else if (std.mem.eql(u8, args[1], "env-inspect")) {
         if (args.len < 3) {
             try err.print("usage: foreman-tools env-inspect <path>\n", .{});
@@ -1551,6 +1592,31 @@ pub fn main(init: std.process.Init) !void {
         if (result.warnings.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s}\n}}\n",
             .{ result.duration_ms, if (result.truncated) "true" else "false" });
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "secret-scan")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools secret-scan <path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const result = root.computeSecretScan(gpa, io, args[2]) catch |e| switch (e) {
+            error.RootNotFound => {
+                try err.print("error: path not found: {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        try out.print("{{\n  \"findings\": [", .{});
+        for (result.findings, 0..) |f, i| {
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"file\": \"{s}\", \"line\": {d}, \"pattern\": \"{s}\", \"severity\": \"{s}\"}}",
+                .{ f.file, f.line, f.pattern, f.severity },
+            );
+        }
+        if (result.findings.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"truncated\": {s}\n}}\n", .{if (result.truncated) "true" else "false"});
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});
