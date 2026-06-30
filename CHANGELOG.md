@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.50.0] — 2026-06-30
+
+### New
+- `sandbox-check <command...>` — classifies a shell operation by severity (`safe` / `caution` / `destructive` / `blocked`) and returns whether it is allowed; returns `{ operation, allowed, severity, reason }`; pattern table of 30 entries covers: blocked (sudo rm, mkfs, fdisk, dd if=, fork bomb), destructive (rm -rf, git reset --hard, git push --force, git clean -f, DROP TABLE, --no-verify, git branch -D), caution (git push, git commit, git tag, npm/yarn/cargo publish, brew install/upgrade, gh release create, gh pr create); case-insensitive matching against lowercased operation string; foundation for Module 27 (Permissions / Sandbox)
+
 ## [0.49.0] — 2026-06-30
 
 ### New

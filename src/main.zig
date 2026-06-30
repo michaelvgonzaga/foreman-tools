@@ -73,6 +73,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  report <path>\n", .{});
         try err.print("  metrics\n", .{});
         try err.print("  session-snapshot <foreman-root>\n", .{});
+        try err.print("  sandbox-check <command...>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1929,6 +1930,25 @@ pub fn main(init: std.process.Init) !void {
                if (result.device_profiled) "true" else "false",
                if (result.compat_baseline_set) "true" else "false",
                result.estimated_token_savings },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "sandbox-check")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools sandbox-check <command...>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const operation = try std.mem.join(gpa, " ", args[2..]);
+        defer gpa.free(operation);
+        const result = try root.computeSandboxCheck(gpa, operation);
+        defer gpa.free(result.operation);
+        const op_esc = try root.allocJsonEscape(gpa, result.operation);
+        defer gpa.free(op_esc);
+        const reason_esc = try root.allocJsonEscape(gpa, result.reason);
+        defer gpa.free(reason_esc);
+        try out.print(
+            "{{\n  \"operation\": \"{s}\",\n  \"allowed\": {s},\n  \"severity\": \"{s}\",\n  \"reason\": \"{s}\"\n}}\n",
+            .{ op_esc, if (result.allowed) "true" else "false", result.severity, reason_esc },
         );
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "session-snapshot")) {

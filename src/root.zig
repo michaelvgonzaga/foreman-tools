@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.49.0";
+pub const VERSION = "0.50.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6769,6 +6769,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "report",            .description = "composite project status — git state + build + tests + secrets",                         .args = "<path>"     },
         .{ .name = "metrics",           .description = "telemetry snapshot — cache entries, project states, decisions, estimated token savings", .args = ""           },
         .{ .name = "session-snapshot",  .description = "write ground-truth session state to ~/.foreman/session-snapshot.json before compaction", .args = "<foreman-root>" },
+        .{ .name = "sandbox-check",     .description = "classify a shell operation by severity (safe/caution/destructive/blocked) and return whether it is allowed", .args = "<command...>" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -7267,6 +7268,84 @@ pub fn computeSnapshot(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const
     }
 
     return json; // caller must gpa.free
+}
+
+// --- sandbox-check subcommand ---
+
+pub const SandboxSeverity = enum { safe, caution, destructive, blocked };
+
+pub const SandboxCheckResult = struct {
+    operation: []const u8, // duped — caller must free
+    allowed: bool,
+    severity: []const u8,  // static string literal
+    reason: []const u8,    // static string literal
+};
+
+const SandboxPattern = struct {
+    needle: []const u8,
+    severity: SandboxSeverity,
+    reason: []const u8,
+};
+
+const SANDBOX_PATTERNS = [_]SandboxPattern{
+    // blocked — never allowed
+    .{ .needle = "sudo rm",              .severity = .blocked,     .reason = "privileged recursive delete" },
+    .{ .needle = "mkfs",                 .severity = .blocked,     .reason = "filesystem format" },
+    .{ .needle = "fdisk",                .severity = .blocked,     .reason = "disk partition editor" },
+    .{ .needle = "dd if=",               .severity = .blocked,     .reason = "raw disk write" },
+    .{ .needle = ":(){:|:&};:",           .severity = .blocked,     .reason = "fork bomb" },
+    // destructive — not allowed without override
+    .{ .needle = "rm -rf",               .severity = .destructive, .reason = "recursive force delete" },
+    .{ .needle = "rm -fr",               .severity = .destructive, .reason = "recursive force delete" },
+    .{ .needle = "rm -r",                .severity = .destructive, .reason = "recursive delete" },
+    .{ .needle = "git reset --hard",     .severity = .destructive, .reason = "discards uncommitted changes" },
+    .{ .needle = "git push --force",     .severity = .destructive, .reason = "force-pushes over remote history" },
+    .{ .needle = "git push -f",          .severity = .destructive, .reason = "force-pushes over remote history" },
+    .{ .needle = "git checkout .",       .severity = .destructive, .reason = "discards all working-tree changes" },
+    .{ .needle = "git restore .",        .severity = .destructive, .reason = "discards all working-tree changes" },
+    .{ .needle = "git clean -f",         .severity = .destructive, .reason = "removes untracked files" },
+    .{ .needle = "drop table",           .severity = .destructive, .reason = "drops database table" },
+    .{ .needle = "drop database",        .severity = .destructive, .reason = "drops entire database" },
+    .{ .needle = "truncate table",       .severity = .destructive, .reason = "deletes all rows in table" },
+    .{ .needle = "git branch -d",        .severity = .destructive, .reason = "force-deletes git branch" },
+    .{ .needle = "--no-verify",          .severity = .destructive, .reason = "bypasses git hooks" },
+    // caution — allowed with warning
+    .{ .needle = "git push",             .severity = .caution,     .reason = "pushes to remote" },
+    .{ .needle = "git commit",           .severity = .caution,     .reason = "creates a commit" },
+    .{ .needle = "git tag",              .severity = .caution,     .reason = "creates or deletes a tag" },
+    .{ .needle = "npm publish",          .severity = .caution,     .reason = "publishes package publicly" },
+    .{ .needle = "yarn publish",         .severity = .caution,     .reason = "publishes package publicly" },
+    .{ .needle = "cargo publish",        .severity = .caution,     .reason = "publishes crate publicly" },
+    .{ .needle = "brew install",         .severity = .caution,     .reason = "installs system package" },
+    .{ .needle = "brew upgrade",         .severity = .caution,     .reason = "upgrades system package" },
+    .{ .needle = "pip install",          .severity = .caution,     .reason = "installs python package" },
+    .{ .needle = "npm install",          .severity = .caution,     .reason = "installs node package" },
+    .{ .needle = "gh release create",    .severity = .caution,     .reason = "publishes a GitHub release" },
+    .{ .needle = "gh pr create",         .severity = .caution,     .reason = "opens a pull request" },
+};
+
+pub fn computeSandboxCheck(gpa: std.mem.Allocator, operation: []const u8) !SandboxCheckResult {
+    // Lowercase the operation once; all needles in SANDBOX_PATTERNS are already lowercase
+    const op_lower = try gpa.alloc(u8, operation.len);
+    defer gpa.free(op_lower);
+    _ = std.ascii.lowerString(op_lower, operation);
+
+    var worst: SandboxSeverity = .safe;
+    var worst_reason: []const u8 = "no destructive patterns matched";
+
+    for (SANDBOX_PATTERNS) |pat| {
+        if (!std.mem.containsAtLeast(u8, op_lower, 1, pat.needle)) continue;
+        const rank: u8 = switch (pat.severity) { .safe => 0, .caution => 1, .destructive => 2, .blocked => 3 };
+        const best: u8  = switch (worst)         { .safe => 0, .caution => 1, .destructive => 2, .blocked => 3 };
+        if (rank > best) { worst = pat.severity; worst_reason = pat.reason; }
+    }
+
+    return .{
+        .operation = try gpa.dupe(u8, operation),
+        .allowed   = switch (worst) { .safe => true, .caution => true, .destructive => false, .blocked => false },
+        .severity  = switch (worst) { .safe => "safe", .caution => "caution", .destructive => "destructive", .blocked => "blocked" },
+        .reason    = worst_reason,
+    };
 }
 
 // --- Tests ---
