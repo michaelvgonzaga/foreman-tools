@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.36.0] — 2026-06-30
+
+### New
+- `device-scan` — snapshots hardware + installed tools + optimal build settings to `~/.foreman/profile.json`; pre-warms `cache-fetch ~/.foreman/profile.json device` so the next session-start reads `hit: true` without any tool-detection shell calls; returns `{ profile_id, hardware: {cpu, cores, ram_gb, os, arch}, tools: {name, version, present}, optimal: {zig_build_flags}, shell, scanned_at, path }`; detects M1–M5 Apple Silicon and maps to Zig `-Dcpu=apple_mN` flag; covers foreman_tools, zig, git, gh, node, python3, brew
+
 ## [0.35.0] — 2026-06-30
 
 ### New

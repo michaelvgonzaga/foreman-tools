@@ -58,6 +58,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  env-inspect <path>\n", .{});
         try err.print("  symbol-find <path> <symbol>\n", .{});
         try err.print("  secret-scan <path>\n", .{});
+        try err.print("  device-scan\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1617,6 +1618,25 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.findings.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"truncated\": {s}\n}}\n", .{if (result.truncated) "true" else "false"});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "device-scan")) {
+        const result = root.computeDeviceScan(gpa, io) catch |e| switch (e) {
+            error.NoHome => {
+                try err.print("error: HOME not set\n", .{});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        try out.print("{{\n  \"profile_id\": \"{s}\",\n  \"hardware\": {{\"cpu\": \"{s}\", \"cores\": {d}, \"ram_gb\": {d}, \"os\": \"macos\", \"arch\": \"{s}\"}},\n  \"tools\": {{",
+            .{ result.profile_id, result.hardware.cpu, result.hardware.cores, result.hardware.ram_gb, result.hardware.arch });
+        for (result.tools, 0..) |t, i| {
+            if (i > 0) try out.print(",", .{});
+            try out.print("\n    \"{s}\": {{\"version\": \"{s}\", \"present\": {s}}}",
+                .{ t.name, t.version, if (t.present) "true" else "false" });
+        }
+        try out.print("\n  }},\n  \"optimal\": {{\"zig_build_flags\": \"{s}\"}},\n  \"shell\": \"{s}\",\n  \"scanned_at\": {d},\n  \"path\": \"{s}\"\n}}\n",
+            .{ result.optimal.zig_build_flags, result.shell, result.scanned_at, result.path });
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

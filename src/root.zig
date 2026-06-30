@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.35.0";
+pub const VERSION = "0.36.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5284,6 +5284,201 @@ pub fn computeSecretScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8) !
     var truncated = false;
     try walkSecretScan(gpa, io, dir, "", root, &findings, &truncated);
     return .{ .findings = try findings.toOwnedSlice(gpa), .truncated = truncated };
+}
+
+// --- device-scan subcommand ---
+
+pub const DeviceScanHardware = struct { cpu: []u8, cores: u32, ram_gb: u32, os: []const u8, arch: []u8 };
+pub const DeviceScanOptimal = struct { zig_build_flags: []const u8 };
+pub const DeviceScanTool = struct { name: []const u8, version: []u8, present: bool };
+pub const DeviceScanResult = struct {
+    profile_id: []u8,
+    hardware: DeviceScanHardware,
+    tools: []DeviceScanTool,
+    optimal: DeviceScanOptimal,
+    shell: []u8,
+    scanned_at: u64,
+    path: []u8,
+};
+
+fn runSysctlN(gpa: std.mem.Allocator, io: std.Io, key: []const u8) ![]u8 {
+    const argv = [_][]const u8{ "sysctl", "-n", key };
+    const result = std.process.run(gpa, io, .{ .argv = &argv }) catch
+        return try gpa.dupe(u8, "");
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    return try gpa.dupe(u8, std.mem.trimEnd(u8, result.stdout, " \t\r\n"));
+}
+
+fn deviceScanSlugify(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+    var buf = try gpa.alloc(u8, s.len);
+    var out: usize = 0;
+    for (s) |c| {
+        if (std.ascii.isAlphanumeric(c)) {
+            buf[out] = std.ascii.toLower(c);
+            out += 1;
+        } else if (c == ' ' or c == '-' or c == '_') {
+            if (out > 0 and buf[out - 1] != '_') {
+                buf[out] = '_';
+                out += 1;
+            }
+        }
+    }
+    // strip trailing underscore
+    while (out > 0 and buf[out - 1] == '_') out -= 1;
+    const result = try gpa.dupe(u8, buf[0..out]);
+    gpa.free(buf);
+    return result;
+}
+
+fn deviceScanZigFlags(cpu: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, cpu, "M1") != null) return "-Dcpu=apple_m1";
+    if (std.mem.indexOf(u8, cpu, "M2") != null) return "-Dcpu=apple_m2";
+    if (std.mem.indexOf(u8, cpu, "M3") != null) return "-Dcpu=apple_m3";
+    if (std.mem.indexOf(u8, cpu, "M4") != null) return "-Dcpu=apple_m4";
+    if (std.mem.indexOf(u8, cpu, "M5") != null) return "-Dcpu=apple_m5";
+    return "-Doptimize=ReleaseSafe";
+}
+
+pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
+    // Hardware
+    const cpu_raw = try runSysctlN(gpa, io, "machdep.cpu.brand_string");
+    const cores_raw = try runSysctlN(gpa, io, "hw.physicalcpu");
+    const mem_raw = try runSysctlN(gpa, io, "hw.memsize");
+    defer gpa.free(cpu_raw);
+    defer gpa.free(cores_raw);
+    defer gpa.free(mem_raw);
+
+    const cores = std.fmt.parseInt(u32, cores_raw, 10) catch 0;
+    const mem_bytes = std.fmt.parseInt(u64, mem_raw, 10) catch 0;
+    const ram_gb: u32 = @intCast(mem_bytes / (1024 * 1024 * 1024));
+
+    const arch_result = std.process.run(gpa, io, .{ .argv = &[_][]const u8{ "uname", "-m" } }) catch null;
+    const arch_raw = if (arch_result) |r| blk: {
+        defer gpa.free(r.stderr);
+        break :blk r.stdout;
+    } else try gpa.dupe(u8, "arm64");
+    const arch = try gpa.dupe(u8, std.mem.trimEnd(u8, arch_raw, " \t\r\n"));
+    if (arch_result != null) gpa.free(arch_raw);
+
+    const cpu = try gpa.dupe(u8, cpu_raw);
+
+    // Shell
+    const shell_ptr = std.c.getenv("SHELL") orelse null;
+    const shell_full: []u8 = if (shell_ptr) |p|
+        try gpa.dupe(u8, std.mem.sliceTo(p, 0))
+    else
+        try gpa.dupe(u8, "unknown");
+    // basename of shell path
+    const shell = if (std.mem.lastIndexOfScalar(u8, shell_full, '/')) |sl|
+        try gpa.dupe(u8, shell_full[sl + 1 ..])
+    else
+        shell_full;
+    if (std.mem.lastIndexOfScalar(u8, shell_full, '/') != null) gpa.free(shell_full);
+
+    // Tools
+    const tool_specs = [_]struct { name: []const u8, flag: []const u8 }{
+        .{ .name = "foreman_tools", .flag = "doctor" },
+        .{ .name = "zig",           .flag = "version" },
+        .{ .name = "git",           .flag = "--version" },
+        .{ .name = "gh",            .flag = "--version" },
+        .{ .name = "node",          .flag = "--version" },
+        .{ .name = "python3",       .flag = "--version" },
+        .{ .name = "brew",          .flag = "--version" },
+    };
+    const tool_bin_names = [_][]const u8{ "foreman-tools", "zig", "git", "gh", "node", "python3", "brew" };
+
+    var tools_list = try gpa.alloc(DeviceScanTool, tool_specs.len);
+    for (tool_specs, 0..) |spec, i| {
+        const info = try checkBinary(gpa, io, tool_bin_names[i], spec.flag);
+        tools_list[i] = .{ .name = spec.name, .version = info.version, .present = info.present };
+    }
+
+    // Optimal settings
+    const zig_flags = deviceScanZigFlags(cpu);
+
+    // Profile ID
+    const cpu_slug = try deviceScanSlugify(gpa, cpu);
+    defer gpa.free(cpu_slug);
+    const profile_id = try std.fmt.allocPrint(gpa, "{s}_{d}gb_{s}", .{ cpu_slug, ram_gb, arch });
+
+    // Timestamp (REALTIME seconds)
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const scanned_at: u64 = @intCast(ts.sec);
+
+    // Write profile to ~/.foreman/profile.json
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    defer gpa.free(foreman_dir);
+    const profile_path = try std.fmt.allocPrint(gpa, "{s}/profile.json", .{foreman_dir});
+    defer gpa.free(profile_path);
+    const tmp_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{profile_path});
+    defer gpa.free(tmp_path);
+
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+    const pf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch null;
+    if (pf) |f| {
+        var wbuf: [4096]u8 = undefined;
+        var w = f.writerStreaming(io, &wbuf);
+        // write JSON — best effort, ignore errors
+        const ok = blk: {
+            w.interface.writeAll("{\"profile_id\":\"") catch break :blk false;
+            w.interface.writeAll(profile_id) catch break :blk false;
+            w.interface.writeAll("\",\"hardware\":{\"cpu\":\"") catch break :blk false;
+            w.interface.writeAll(cpu) catch break :blk false;
+            w.interface.print("\",\"cores\":{d},\"ram_gb\":{d},\"os\":\"macos\",\"arch\":\"", .{ cores, ram_gb }) catch break :blk false;
+            w.interface.writeAll(arch) catch break :blk false;
+            w.interface.writeAll("\"},\"tools\":{") catch break :blk false;
+            for (tools_list, 0..) |t, idx| {
+                if (idx > 0) w.interface.writeAll(",") catch break :blk false;
+                w.interface.print("\"{s}\":{{\"version\":\"{s}\",\"present\":{s}}}", .{
+                    t.name, t.version, if (t.present) "true" else "false",
+                }) catch break :blk false;
+            }
+            w.interface.print("}},\"optimal\":{{\"zig_build_flags\":\"{s}\"}},\"shell\":\"{s}\",\"scanned_at\":{d}}}", .{
+                zig_flags, shell, scanned_at,
+            }) catch break :blk false;
+            w.interface.flush() catch break :blk false;
+            break :blk true;
+        };
+        f.close(io);
+        if (ok) {
+            atomicRenameAbsolute(tmp_path, profile_path);
+            // Pre-warm cache so `cache-fetch ~/.foreman/profile.json device` hits next session
+            var tools_buf: [4096]u8 = undefined;
+            var tools_len: usize = 0;
+            var tools_ok = true;
+            for (tools_list, 0..) |t, idx| {
+                const sep: []const u8 = if (idx == 0) "" else ",";
+                const part = std.fmt.bufPrint(tools_buf[tools_len..], "{s}\"{s}\":{{\"version\":\"{s}\",\"present\":{s}}}", .{
+                    sep, t.name, t.version, if (t.present) "true" else "false",
+                }) catch { tools_ok = false; break; };
+                tools_len += part.len;
+            }
+            if (tools_ok) {
+                const cache_json = std.fmt.allocPrint(gpa,
+                    "{{\"profile_id\":\"{s}\",\"hardware\":{{\"cpu\":\"{s}\",\"cores\":{d},\"ram_gb\":{d},\"os\":\"macos\",\"arch\":\"{s}\"}},\"tools\":{{{s}}},\"optimal\":{{\"zig_build_flags\":\"{s}\"}},\"shell\":\"{s}\",\"scanned_at\":{d}}}",
+                    .{ profile_id, cpu, cores, ram_gb, arch, tools_buf[0..tools_len], zig_flags, shell, scanned_at },
+                ) catch null;
+                if (cache_json) |cj| {
+                    defer gpa.free(cj);
+                    _ = computeCacheStore(gpa, io, profile_path, "device", cj) catch {};
+                }
+            }
+        }
+    }
+
+    return .{
+        .profile_id = profile_id,
+        .hardware   = .{ .cpu = cpu, .cores = cores, .ram_gb = ram_gb, .os = "macos", .arch = arch },
+        .tools      = tools_list,
+        .optimal    = .{ .zig_build_flags = zig_flags },
+        .shell      = shell,
+        .scanned_at = scanned_at,
+        .path       = try gpa.dupe(u8, profile_path),
+    };
 }
 
 // --- Tests ---
