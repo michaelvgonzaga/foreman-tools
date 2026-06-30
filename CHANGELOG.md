@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.37.0] — 2026-06-30
+
+### New
+- `delta-context <repo-path> [ref]` — finds which symbols changed between ref and HEAD, then resolves callers for each; returns `{ ref, symbols: [{name, kind, file, line, callers: [{file, line}]}] }`; walks changed files via `git diff --name-only`, extracts changed line ranges from `@@ -old +new @@` hunk headers, maps lines to owning symbols via outline detection, then runs `symbol-find` per symbol for caller resolution; capped at 8 files, 10 symbols, 10 callers; replaces reading raw git diffs + grepping for usages
+
 ## [0.36.0] — 2026-06-30
 
 ### New

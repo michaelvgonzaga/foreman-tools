@@ -59,6 +59,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  symbol-find <path> <symbol>\n", .{});
         try err.print("  secret-scan <path>\n", .{});
         try err.print("  device-scan\n", .{});
+        try err.print("  delta-context <repo-path> [ref]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1637,6 +1638,37 @@ pub fn main(init: std.process.Init) !void {
         }
         try out.print("\n  }},\n  \"optimal\": {{\"zig_build_flags\": \"{s}\"}},\n  \"shell\": \"{s}\",\n  \"scanned_at\": {d},\n  \"path\": \"{s}\"\n}}\n",
             .{ result.optimal.zig_build_flags, result.shell, result.scanned_at, result.path });
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "delta-context")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools delta-context <repo-path> [ref]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const ref = if (args.len >= 4) args[3] else "HEAD";
+        const result = root.computeDeltaContext(gpa, io, args[2], ref) catch |e| switch (e) {
+            error.GitFailed => {
+                try err.print("error: git diff failed in: {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        try out.print("{{\n  \"ref\": \"{s}\",\n  \"symbols\": [", .{result.ref});
+        for (result.symbols, 0..) |ds, i| {
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"name\": \"{s}\", \"kind\": \"{s}\", \"file\": \"{s}\", \"line\": {d}, \"callers\": [",
+                .{ ds.name, ds.kind, ds.file, ds.line },
+            );
+            for (ds.callers, 0..) |c, ci| {
+                if (ci > 0) try out.print(",", .{});
+                try out.print("{{\"file\": \"{s}\", \"line\": {d}}}", .{ c.file, c.line });
+            }
+            try out.print("]}}", .{});
+        }
+        if (result.symbols.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

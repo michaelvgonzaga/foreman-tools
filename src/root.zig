@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.36.0";
+pub const VERSION = "0.37.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5478,6 +5478,192 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
         .shell      = shell,
         .scanned_at = scanned_at,
         .path       = try gpa.dupe(u8, profile_path),
+    };
+}
+
+// --- delta-context subcommand ---
+
+const DELTA_MAX_FILES: usize = 8;
+const DELTA_MAX_SYMBOLS: usize = 10;
+const DELTA_MAX_CALLERS: usize = 10;
+
+pub const DeltaCaller = struct { file: []u8, line: u32 };
+pub const DeltaSymbol = struct {
+    name: []u8,
+    kind: []const u8,
+    file: []u8,
+    line: u32,
+    callers: []DeltaCaller,
+};
+pub const DeltaContextResult = struct {
+    ref: []u8,
+    symbols: []DeltaSymbol,
+};
+
+// Parse "@@ -old_start,old_count +new_start,new_count @@" hunk header.
+// Returns {new_start, new_count} or null if not a hunk header.
+fn parseHunkNewRange(line: []const u8) ?struct { start: u32, count: u32 } {
+    if (!std.mem.startsWith(u8, line, "@@ ")) return null;
+    // Find '+' in "... +new_start,new_count ..."
+    const plus_pos = std.mem.indexOf(u8, line, " +") orelse return null;
+    const rest = line[plus_pos + 2 ..];
+    // Parse new_start
+    var i: usize = 0;
+    while (i < rest.len and std.ascii.isDigit(rest[i])) : (i += 1) {}
+    const start = std.fmt.parseInt(u32, rest[0..i], 10) catch return null;
+    // Parse optional ,count
+    var count: u32 = 1;
+    if (i < rest.len and rest[i] == ',') {
+        i += 1;
+        var j = i;
+        while (j < rest.len and std.ascii.isDigit(rest[j])) : (j += 1) {}
+        count = std.fmt.parseInt(u32, rest[i..j], 10) catch 1;
+    }
+    return .{ .start = start, .count = count };
+}
+
+// Run "git diff -U0 [ref] -- <rel_path>" in repo and collect changed new-file line numbers.
+fn collectChangedLines(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    repo: []const u8,
+    rel_path: []const u8,
+    ref: []const u8,
+    changed: *std.ArrayList(u32),
+) !void {
+    const argv = [_][]const u8{ "env", "-C", repo, "git", "diff", "-U0", ref, "--", rel_path };
+    const result = std.process.run(gpa, io, .{ .argv = &argv }) catch return;
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    var line_start: usize = 0;
+    while (line_start < result.stdout.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, result.stdout, line_start, '\n') orelse result.stdout.len;
+        const line = result.stdout[line_start..line_end];
+        if (parseHunkNewRange(line)) |range| {
+            var ln: u32 = range.start;
+            const end_ln = range.start + range.count;
+            while (ln < end_ln) : (ln += 1) {
+                try changed.append(gpa, ln);
+            }
+        }
+        line_start = line_end + 1;
+    }
+}
+
+// Find which symbol a given line belongs to (symbol owns lines from its line until next symbol's line).
+fn findOwningSymbol(symbols: []const Symbol, line: u32) ?usize {
+    if (symbols.len == 0) return null;
+    var best: ?usize = null;
+    for (symbols, 0..) |sym, i| {
+        if (sym.line <= line) {
+            if (best == null or sym.line > symbols[best.?].line) best = i;
+        }
+    }
+    return best;
+}
+
+pub fn computeDeltaContext(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    repo: []const u8,
+    ref: []const u8,
+) !DeltaContextResult {
+    // 1. Get changed files
+    const files_argv = [_][]const u8{ "env", "-C", repo, "git", "diff", "--name-only", ref };
+    const files_result = std.process.run(gpa, io, .{ .argv = &files_argv }) catch
+        return error.GitFailed;
+    defer gpa.free(files_result.stdout);
+    defer gpa.free(files_result.stderr);
+
+    var result_symbols: std.ArrayList(DeltaSymbol) = .empty;
+    errdefer {
+        for (result_symbols.items) |ds| {
+            gpa.free(ds.name);
+            gpa.free(ds.file);
+            for (ds.callers) |c| gpa.free(c.file);
+            gpa.free(ds.callers);
+        }
+        result_symbols.deinit(gpa);
+    }
+
+    var seen_symbols = std.StringHashMap(void).init(gpa);
+    defer seen_symbols.deinit();
+
+    var file_count: usize = 0;
+    var file_start: usize = 0;
+    while (file_start < files_result.stdout.len and file_count < DELTA_MAX_FILES) {
+        const file_end = std.mem.indexOfScalarPos(u8, files_result.stdout, file_start, '\n') orelse files_result.stdout.len;
+        const rel_path = std.mem.trimEnd(u8, files_result.stdout[file_start..file_end], " \t\r");
+        file_start = file_end + 1;
+        if (rel_path.len == 0) continue;
+        // Skip non-source files
+        if (shouldSkipGrepFile(rel_path)) continue;
+        file_count += 1;
+
+        // 2. Collect changed line numbers for this file
+        var changed: std.ArrayList(u32) = .empty;
+        defer changed.deinit(gpa);
+        try collectChangedLines(gpa, io, repo, rel_path, ref, &changed);
+        if (changed.items.len == 0) continue;
+
+        // 3. Outline the current file
+        const abs_path = try std.fs.path.join(gpa, &.{ repo, rel_path });
+        defer gpa.free(abs_path);
+        const outline = computeOutline(gpa, io, abs_path) catch continue;
+        defer {
+            for (outline.symbols) |s| gpa.free(s.name);
+            gpa.free(outline.symbols);
+            gpa.free(outline.path);
+        }
+        if (outline.symbols.len == 0) continue;
+
+        // 4. Map changed lines → owning symbols (deduplicated)
+        for (changed.items) |ln| {
+            if (result_symbols.items.len >= DELTA_MAX_SYMBOLS) break;
+            const idx = findOwningSymbol(outline.symbols, ln) orelse continue;
+            const sym = outline.symbols[idx];
+            // Deduplicate by name
+            const key = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ rel_path, sym.name });
+            defer gpa.free(key);
+            if (seen_symbols.contains(key)) continue;
+            try seen_symbols.put(try gpa.dupe(u8, key), {});
+
+            // 5. Find callers via symbol-find
+            const sf = computeSymbolFind(gpa, io, repo, sym.name) catch null;
+            var callers_list: []DeltaCaller = &.{};
+            if (sf) |found| {
+                defer {
+                    if (found.definition) |d| gpa.free(d.file);
+                    for (found.references) |rf| gpa.free(rf.file);
+                    gpa.free(found.references);
+                }
+                const caller_count = @min(found.references.len, DELTA_MAX_CALLERS);
+                callers_list = try gpa.alloc(DeltaCaller, caller_count);
+                for (found.references[0..caller_count], 0..) |rf, ci| {
+                    callers_list[ci] = .{
+                        .file = try gpa.dupe(u8, rf.file),
+                        .line = rf.line,
+                    };
+                }
+            }
+
+            try result_symbols.append(gpa, .{
+                .name    = try gpa.dupe(u8, sym.name),
+                .kind    = sym.kind,
+                .file    = try gpa.dupe(u8, rel_path),
+                .line    = sym.line,
+                .callers = callers_list,
+            });
+        }
+    }
+
+    // Free seen_symbols keys
+    var it = seen_symbols.keyIterator();
+    while (it.next()) |k| gpa.free(k.*);
+
+    return .{
+        .ref     = try gpa.dupe(u8, ref),
+        .symbols = try result_symbols.toOwnedSlice(gpa),
     };
 }
 
