@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.54.1] — 2026-07-01
+
+### Fixed
+- Rebuilt universal binary from v0.54.0 source — prior release shipped a stale v0.53.0 binary; `worker-run` and `worker-list` were unreachable via Homebrew
+
 ## [0.54.0] — 2026-07-01
 
 ### New
