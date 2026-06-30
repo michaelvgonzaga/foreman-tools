@@ -63,6 +63,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  git-cache <repo-path>\n", .{});
         try err.print("  project-state <path> [record-decision <what> [<why>]]\n", .{});
         try err.print("  project-state <path> [record-pattern <pattern>]\n", .{});
+        try err.print("  shell-run [--timeout <ms>] <shell-command>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1702,6 +1703,52 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.commits.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "shell-run")) {
+        var timeout_ms: u64 = 30_000;
+        var cmd_idx: usize = 2;
+        if (args.len >= 5 and std.mem.eql(u8, args[2], "--timeout")) {
+            timeout_ms = std.fmt.parseInt(u64, args[3], 10) catch 30_000;
+            cmd_idx = 4;
+        }
+        if (args.len <= cmd_idx) {
+            try err.print("usage: foreman-tools shell-run [--timeout <ms>] <shell-command>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const command = args[cmd_idx];
+        const result = root.computeShellRun(gpa, io, command, timeout_ms) catch |e| switch (e) {
+            else => return e,
+        };
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+        const DMAX = root.SHELL_RUN_DISPLAY_MAX;
+        const stdout_trunc = result.stdout.len > DMAX;
+        const stderr_trunc = result.stderr.len > DMAX;
+        const stdout_display = result.stdout[0..@min(result.stdout.len, DMAX)];
+        const stderr_display = result.stderr[0..@min(result.stderr.len, DMAX)];
+        const stdout_esc = try root.allocJsonEscape(gpa, stdout_display);
+        defer gpa.free(stdout_esc);
+        const stderr_esc = try root.allocJsonEscape(gpa, stderr_display);
+        defer gpa.free(stderr_esc);
+        const cmd_esc = try root.allocJsonEscape(gpa, result.command);
+        defer gpa.free(cmd_esc);
+        const block_esc = try root.allocJsonEscape(gpa, result.block_reason);
+        defer gpa.free(block_esc);
+        const block_json = if (result.block_reason.len > 0)
+            try std.fmt.allocPrint(gpa, "\"{s}\"", .{block_esc})
+        else
+            try gpa.dupe(u8, "null");
+        defer gpa.free(block_json);
+        try out.print("{{\n  \"command\": \"{s}\",\n  \"exitCode\": {d},\n  \"stdout\": \"{s}\",\n  \"stderr\": \"{s}\",\n  \"durationMs\": {d},\n  \"timedOut\": {s},\n  \"blocked\": {s},\n  \"blockReason\": {s},\n  \"stdoutTruncated\": {s},\n  \"stderrTruncated\": {s}\n}}\n",
+            .{
+                cmd_esc, result.exit_code, stdout_esc, stderr_esc, result.duration_ms,
+                if (result.timed_out) "true" else "false",
+                if (result.blocked) "true" else "false",
+                block_json,
+                if (stdout_trunc) "true" else "false",
+                if (stderr_trunc) "true" else "false",
+            });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "project-state")) {
         if (args.len < 3) {

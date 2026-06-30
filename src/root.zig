@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.39.0";
+pub const VERSION = "0.40.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5880,6 +5880,99 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
         .ahead   = ahead,
         .behind  = behind,
         .commits = try commits.toOwnedSlice(gpa),
+    };
+}
+
+// --- shell-run ---
+
+pub const SHELL_RUN_DISPLAY_MAX: usize = 128 * 1024;
+
+pub const ShellRunResult = struct {
+    command:          []const u8, // not owned
+    exit_code:        i32,
+    stdout:           []u8,       // owned by gpa
+    stderr:           []u8,       // owned by gpa
+    duration_ms:      u64,
+    timed_out:        bool,
+    blocked:          bool,
+    block_reason:     []const u8, // string literal, not owned
+};
+
+fn shellRunRmRfDanger(lower: []const u8) bool {
+    const pats = [_][]const u8{ "rm -rf /", "rm -rf ~/", "rm -rf ~" };
+    for (pats) |pat| {
+        var i: usize = 0;
+        while (std.mem.indexOf(u8, lower[i..], pat)) |rel| {
+            const pos = i + rel;
+            const after = pos + pat.len;
+            if (after >= lower.len) return true;
+            const c = lower[after];
+            if (c == ' ' or c == '\t' or c == '\n' or c == ';' or
+                c == '&' or c == '|' or c == '*' or c == '/') return true;
+            i = pos + 1;
+        }
+    }
+    return false;
+}
+
+fn shellRunBlockReason(lower: []const u8) ?[]const u8 {
+    if (shellRunRmRfDanger(lower)) return "rm -rf on root or home";
+    if (std.mem.indexOf(u8, lower, "mkfs") != null) return "filesystem format (mkfs)";
+    if (std.mem.indexOf(u8, lower, "dd ") != null and
+        std.mem.indexOf(u8, lower, "of=/dev/") != null) return "raw disk write (dd of=/dev/)";
+    if (std.mem.indexOf(u8, lower, "drop table") != null) return "SQL drop table";
+    if (std.mem.indexOf(u8, lower, "drop database") != null) return "SQL drop database";
+    if (std.mem.indexOf(u8, lower, "truncate table") != null) return "SQL truncate table";
+    return null;
+}
+
+pub fn computeShellRun(gpa: std.mem.Allocator, io: std.Io, command: []const u8, timeout_ms: u64) !ShellRunResult {
+    // Destructive pattern check (case-insensitive, first 4KB)
+    var lower_buf: [4096]u8 = undefined;
+    const check_len = @min(command.len, lower_buf.len);
+    _ = std.ascii.lowerString(lower_buf[0..check_len], command[0..check_len]);
+    if (shellRunBlockReason(lower_buf[0..check_len])) |reason| {
+        return .{
+            .command      = command,
+            .exit_code    = -1,
+            .stdout       = try gpa.dupe(u8, ""),
+            .stderr       = try gpa.dupe(u8, ""),
+            .duration_ms  = 0,
+            .timed_out    = false,
+            .blocked      = true,
+            .block_reason = reason,
+        };
+    }
+
+    var ts_start: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_start);
+
+    const r = std.process.run(gpa, io, .{ .argv = &.{ "/bin/sh", "-c", command } }) catch |e| return e;
+    errdefer gpa.free(r.stdout);
+    errdefer gpa.free(r.stderr);
+
+    var ts_end: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
+    const duration_ms: u64 = blk: {
+        const s0 = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
+        const s1 = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        break :blk if (s1 > s0) s1 - s0 else 0;
+    };
+
+    const exit_code: i32 = switch (r.term) {
+        .exited => |c| @as(i32, @intCast(c)),
+        else    => -1,
+    };
+
+    return .{
+        .command      = command,
+        .exit_code    = exit_code,
+        .stdout       = r.stdout,
+        .stderr       = r.stderr,
+        .duration_ms  = duration_ms,
+        .timed_out    = duration_ms >= timeout_ms,
+        .blocked      = false,
+        .block_reason = "",
     };
 }
 

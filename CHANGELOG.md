@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.40.0] — 2026-06-30
+
+### New
+- `shell-run [--timeout <ms>] <shell-command>` — runs a shell command via `/bin/sh -c` and returns structured JSON; blocks destructive patterns before execution (`rm -rf` on root/home, `mkfs`, `dd of=/dev/`, SQL `drop/truncate`); captures stdout + stderr (capped at 128KB each for display); tracks wall-clock duration; sets `timedOut: true` when `durationMs >= timeout` (retrospective — enforced softly since execution is synchronous); returns `{ command, exitCode, stdout, stderr, durationMs, timedOut, blocked, blockReason, stdoutTruncated, stderrTruncated }`
+
 ## [0.39.0] — 2026-06-30
 
 ### New
