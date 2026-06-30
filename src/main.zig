@@ -67,6 +67,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  quality-gate <path>\n", .{});
         try err.print("  validate-schema <file> <schema>\n", .{});
         try err.print("  prod-ready <path>\n", .{});
+        try err.print("  registry\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1913,6 +1914,15 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.known_patterns.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"lastBuildResult\": null,\n  \"lastTestResult\": null\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "registry")) {
+        const result = root.computeRegistry();
+        try out.print("{{\n  \"version\": \"{s}\",\n  \"subcommands\": [\n", .{result.version});
+        for (result.subcommands, 0..) |cmd, i| {
+            const comma: []const u8 = if (i + 1 < result.subcommands.len) "," else "";
+            try out.print("    {{\"name\": \"{s}\", \"description\": \"{s}\", \"args\": \"{s}\"}}{s}\n", .{ cmd.name, cmd.description, cmd.args, comma });
+        }
+        try out.print("  ]\n}}\n", .{});
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

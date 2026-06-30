@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.44.0] — 2026-06-30
+
+### New
+- `registry` — machine-readable catalog of all foreman-tools subcommands; returns `{ version, subcommands: [{name, description, args}] }`; 50 subcommands listed; zero allocations — pure comptime static data; foundation for Module 1 (Foreman Core) capability registry
+
 ## [0.43.0] — 2026-06-30
 
 ### New

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.43.0";
+pub const VERSION = "0.44.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6697,6 +6697,75 @@ pub fn computeProjectState(gpa: std.mem.Allocator, io: std.Io, project_path: []c
         .decisions    = try decisions.toOwnedSlice(gpa),
         .known_patterns = try patterns.toOwnedSlice(gpa),
     };
+}
+
+// --- registry ---
+
+pub const RegistrySubcommand = struct {
+    name: []const u8,
+    description: []const u8,
+    args: []const u8,
+};
+
+pub const RegistryResult = struct {
+    version: []const u8,
+    subcommands: []const RegistrySubcommand,
+};
+
+pub fn computeRegistry() RegistryResult {
+    const cmds: []const RegistrySubcommand = &[_]RegistrySubcommand{
+        .{ .name = "doctor",          .description = "session deps (claude/git/gh present + versions)",                    .args = ""                                   },
+        .{ .name = "compat-check",    .description = "tool version drift vs baseline; surfaces rollback advice",           .args = "[--baseline|--update-baseline]"     },
+        .{ .name = "status",          .description = "workspace up-to-date vs origin",                                    .args = "<workspace>"                        },
+        .{ .name = "changes-preview", .description = "incoming commits + files changed",                                  .args = "<repo>"                             },
+        .{ .name = "commits",         .description = "commits since a tag",                                               .args = "<repo> [tag]"                       },
+        .{ .name = "gh-user",         .description = "GitHub auth + login info",                                          .args = ""                                   },
+        .{ .name = "release-info",    .description = "latest tag, next version, dirty state",                             .args = "<repo>"                             },
+        .{ .name = "repo-info",       .description = "remote owner/repo/url",                                             .args = "<repo>"                             },
+        .{ .name = "tag-exists",      .description = "check if a tag exists",                                             .args = "<repo> <tag>"                       },
+        .{ .name = "scan",            .description = "project structure, entry point, file inventory",                    .args = "<path>"                             },
+        .{ .name = "diff-dirs",       .description = "structural diff of two directories",                                .args = "<path1> <path2>"                    },
+        .{ .name = "grep",            .description = "search for a string across files",                                  .args = "<root> <pattern> [ext]"             },
+        .{ .name = "find-files",      .description = "find files by name/glob",                                           .args = "<root> <glob>"                      },
+        .{ .name = "json-query",      .description = "extract a value from a JSON file",                                  .args = "<file> <dot-path>"                  },
+        .{ .name = "git-diff",        .description = "structured diff summary",                                           .args = "<repo> [ref]"                       },
+        .{ .name = "list-dir",        .description = "immediate directory contents",                                      .args = "<path>"                             },
+        .{ .name = "file-stats",      .description = "line count + byte size of a file",                                  .args = "<file>"                             },
+        .{ .name = "env-scan",        .description = ".env* file keys (keys only, never values)",                         .args = "<root>"                             },
+        .{ .name = "toml-query",      .description = "extract a value from a TOML file",                                  .args = "<file> <dot-path>"                  },
+        .{ .name = "parse-stack",     .description = "structured file:line:col:fn from a stack trace (stdin)",            .args = ""                                   },
+        .{ .name = "list-projects",   .description = "GitHub repos with isForeman + isLocal flags",                      .args = "<foreman-root>"                     },
+        .{ .name = "tarball-sha",     .description = "GitHub tarball SHA256 with retry",                                  .args = "<owner> <repo> <tag>"               },
+        .{ .name = "formula-info",    .description = "Homebrew formula fields (url, sha256, version)",                    .args = "<tap-path> <formula-name>"          },
+        .{ .name = "validate-hooks",  .description = "Claude Code Stop hooks present check",                              .args = ""                                   },
+        .{ .name = "gh-release",      .description = "GitHub release creation via notes file",                            .args = "<owner> <repo> <tag> <title> <notes-file>" },
+        .{ .name = "file-hash",       .description = "SHA256 hash of a local file",                                      .args = "<file>"                             },
+        .{ .name = "cache-fetch",     .description = "retrieve cached sub-key for a file; hit:true means skip read",     .args = "<file> <sub-key>"                   },
+        .{ .name = "cache-store",     .description = "store extracted JSON keyed to file content (stdin)",                .args = "<file> <sub-key>"                   },
+        .{ .name = "cache-check",     .description = "persistent change detection for a file",                            .args = "<file>"                             },
+        .{ .name = "context-scan",    .description = "compact project summary (structure + top files by size)",           .args = "<path>"                             },
+        .{ .name = "context-rank",    .description = "relevance ranking — score files by query (top 15)",                 .args = "<root> <query>"                     },
+        .{ .name = "context-changed", .description = "changed files with unified diff content",                           .args = "<repo> [ref]"                       },
+        .{ .name = "context-evidence",.description = "relevant excerpts from a file without reading the whole thing",     .args = "<file> <pattern>"                   },
+        .{ .name = "yaml-query",      .description = "extract a value from a YAML file",                                  .args = "<file> <dot-path>"                  },
+        .{ .name = "outline",         .description = "structural outline of a source file (function/class names + lines)",.args = "<file>"                             },
+        .{ .name = "deps",            .description = "project dependencies from any package manifest",                    .args = "<root>"                             },
+        .{ .name = "run-tests",       .description = "run tests + get structured pass/fail/failures",                     .args = "<root>"                             },
+        .{ .name = "build",           .description = "detect build system, run build, get structured errors/warnings",    .args = "<root>"                             },
+        .{ .name = "env-inspect",     .description = "detect languages, runtimes, package managers, missing deps",        .args = "<root>"                             },
+        .{ .name = "symbol-find",     .description = "locate a symbol's definition and all references",                   .args = "<root> <symbol>"                    },
+        .{ .name = "secret-scan",     .description = "scan for hardcoded secrets across a project",                       .args = "<root>"                             },
+        .{ .name = "device-scan",     .description = "snapshot hardware + tools + optimal settings to profile.json",      .args = ""                                   },
+        .{ .name = "delta-context",   .description = "changed symbols since a ref + their callers",                       .args = "<repo> [ref]"                       },
+        .{ .name = "git-cache",       .description = "branch, HEAD, dirty state, ahead/behind, last 10 commits (cached)",.args = "<repo>"                             },
+        .{ .name = "project-state",   .description = "read/write project decisions and known patterns across sessions",   .args = "<path> [record-decision <what> [<why>] | record-pattern <pattern>]" },
+        .{ .name = "shell-run",       .description = "run a shell command safely — blocks destructive patterns",          .args = "[--timeout <ms>] <command>"         },
+        .{ .name = "quality-gate",    .description = "aggregate build + test results into a severity-bucketed verdict",   .args = "<root>"                             },
+        .{ .name = "validate-schema", .description = "validate a JSON file against a JSON Schema subset",                 .args = "<file> <schema>"                    },
+        .{ .name = "prod-ready",      .description = "composite production readiness: quality-gate + secret-scan + env-inspect", .args = "<root>"                     },
+        .{ .name = "registry",        .description = "machine-readable catalog of all subcommands (this output)",         .args = ""                                   },
+    };
+    return .{ .version = VERSION, .subcommands = cmds };
 }
 
 // --- Tests ---
