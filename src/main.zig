@@ -77,6 +77,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  rollback <repo-path> [--list | --revert <id>]\n", .{});
         try err.print("  capability-promote <command...>\n", .{});
         try err.print("  ant <path> [--since <ms>]\n", .{});
+        try err.print("  worker-run <lang> <script> [args...]   langs: python,node,deno,bun,go,ruby,bash,swift,zig,lua,php\n", .{});
+        try err.print("  worker-list\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2119,6 +2121,37 @@ pub fn main(init: std.process.Init) !void {
         const json = root.computeAnt(gpa, io, ant_path, since_ms) catch |e| switch (e) {
             error.PathNotFound => {
                 try err.print("error: path not found: {s}\n", .{ant_path});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "worker-list")) {
+        const json = try root.computeWorkerList(gpa);
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "worker-run")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools worker-run <lang> <script> [args...]\n", .{});
+            try err.print("langs: python py node js deno bun go golang ruby rb bash sh swift zig lua php\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const lang        = args[2];
+        const script_path = args[3];
+        const extra_args  = if (args.len > 4) args[4..] else args[0..0];
+        const json = root.computeWorkerRun(gpa, io, lang, script_path, extra_args, root.WORKER_DEFAULT_TIMEOUT_MS) catch |e| switch (e) {
+            error.UnknownLang => {
+                try err.print("error: unknown language '{s}'. Supported: python py node js deno bun go golang ruby rb bash sh swift zig lua php\n", .{lang});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.InterpreterNotFound => {
+                try err.print("error: no interpreter found for '{s}'. Install it and ensure it is in PATH.\n", .{lang});
                 try err.flush();
                 std.process.exit(1);
             },

@@ -2,6 +2,12 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.54.0] — 2026-06-30
+
+### New
+- `worker-run <lang> <script> [args...]` — Module 10 Language Worker Manager (M1); executes a script file in a named language runtime; 11 runtimes with aliases: python (py), node (js), deno, bun, go (golang), ruby (rb), bash (sh), swift, zig, lua, php; interpreter discovery is PATH-based with ordered candidates (e.g. python3 before python, lua5.4 before lua5.3); deno gets `--allow-all`; zig and go get `run` prefix automatically; output: `{ lang, interpreter, script, exit_code, stdout, stderr, duration_ms, timed_out, truncated }`; stdout/stderr capped at 64KB; timeout is retrospective (30s default, reported in `timed_out` field); non-zero script exit codes are surfaced in `exit_code` — foreman-tools itself exits 0 as long as the interpreter was found and ran
+- `worker-list` — returns all 11 supported language workers as `{ workers: [{lang, binary, ext}], count }` — Claude can call this to know what's available before choosing a runtime
+
 ## [0.53.1] — 2026-06-30
 
 ### Dev tooling

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.53.0";
+pub const VERSION = "0.54.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6773,6 +6773,8 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "rollback",            .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
         .{ .name = "capability-promote", .description = "score a shell command for promotion eligibility as a foreman-tools subcommand (0-100 + recommendation)", .args = "<command...>" },
         .{ .name = "ant",               .description = "list files changed in a path since a timestamp (mtime-based, no git required)",                             .args = "<path> [--since <ms>]" },
+        .{ .name = "worker-run",        .description = "run a script in a language runtime (python/node/deno/bun/go/ruby/bash/swift/zig/lua/php) — returns structured JSON", .args = "<lang> <script> [args...]" },
+        .{ .name = "worker-list",       .description = "list all supported language workers with binary name and file extension",                                            .args = ""                          },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -7773,6 +7775,151 @@ pub fn computeAnt(gpa: std.mem.Allocator, io: std.Io, root_path: []const u8, sin
         \\  ]
         \\}}
     , .{ root_esc, since_ms, now_ms, total, if (truncated) "true" else "false", arr.items });
+}
+
+// --- worker-run / worker-list subcommands (Module 10 — Language Worker Manager) ---
+
+const WORKER_OUTPUT_CAP: usize = 64 * 1024;
+pub const WORKER_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+const WorkerEntry = struct {
+    lang:       []const u8,
+    candidates: []const []const u8,
+    prefix:     []const []const u8,
+    ext:        []const u8,
+    alias:      bool = false,
+};
+
+const WORKER_LANGS = [_]WorkerEntry{
+    .{ .lang = "python",  .candidates = &.{ "python3", "python" },             .prefix = &.{},                       .ext = "py"    },
+    .{ .lang = "py",      .candidates = &.{ "python3", "python" },             .prefix = &.{},                       .ext = "py",    .alias = true },
+    .{ .lang = "node",    .candidates = &.{ "node", "nodejs" },                .prefix = &.{},                       .ext = "js"    },
+    .{ .lang = "js",      .candidates = &.{ "node", "nodejs" },                .prefix = &.{},                       .ext = "js",    .alias = true },
+    .{ .lang = "deno",    .candidates = &.{ "deno" },                          .prefix = &.{ "run", "--allow-all" }, .ext = "ts"    },
+    .{ .lang = "bun",     .candidates = &.{ "bun" },                           .prefix = &.{},                       .ext = "ts"    },
+    .{ .lang = "go",      .candidates = &.{ "go" },                            .prefix = &.{ "run" },                .ext = "go"    },
+    .{ .lang = "golang",  .candidates = &.{ "go" },                            .prefix = &.{ "run" },                .ext = "go",    .alias = true },
+    .{ .lang = "ruby",    .candidates = &.{ "ruby" },                          .prefix = &.{},                       .ext = "rb"    },
+    .{ .lang = "rb",      .candidates = &.{ "ruby" },                          .prefix = &.{},                       .ext = "rb",    .alias = true },
+    .{ .lang = "bash",    .candidates = &.{ "bash", "sh" },                    .prefix = &.{},                       .ext = "sh"    },
+    .{ .lang = "sh",      .candidates = &.{ "sh", "bash" },                    .prefix = &.{},                       .ext = "sh",    .alias = true },
+    .{ .lang = "swift",   .candidates = &.{ "swift" },                         .prefix = &.{},                       .ext = "swift" },
+    .{ .lang = "zig",     .candidates = &.{ "zig" },                           .prefix = &.{ "run" },                .ext = "zig"   },
+    .{ .lang = "lua",     .candidates = &.{ "lua", "lua5.4", "lua5.3", "lua5.2" }, .prefix = &.{},                  .ext = "lua"   },
+    .{ .lang = "php",     .candidates = &.{ "php", "php8", "php7" },           .prefix = &.{},                       .ext = "php"   },
+};
+
+fn workerFindEntry(lang: []const u8) ?WorkerEntry {
+    for (&WORKER_LANGS) |e| {
+        if (std.mem.eql(u8, e.lang, lang)) return e;
+    }
+    return null;
+}
+
+pub fn computeWorkerList(gpa: std.mem.Allocator) ![]u8 {
+    var arr: std.ArrayList(u8) = .empty;
+    defer arr.deinit(gpa);
+    var first = true;
+    for (&WORKER_LANGS) |e| {
+        if (e.alias) continue;
+        if (!first) try arr.appendSlice(gpa, ", ");
+        first = false;
+        const entry = try std.fmt.allocPrint(gpa,
+            \\{{"lang": "{s}", "binary": "{s}", "ext": "{s}"}}
+        , .{ e.lang, e.candidates[0], e.ext });
+        defer gpa.free(entry);
+        try arr.appendSlice(gpa, entry);
+    }
+    return std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "workers": [{s}],
+        \\  "count": {d}
+        \\}}
+    , .{ arr.items, blk: {
+        var n: u32 = 0;
+        for (&WORKER_LANGS) |e| { if (!e.alias) n += 1; }
+        break :blk n;
+    } });
+}
+
+pub fn computeWorkerRun(
+    gpa:        std.mem.Allocator,
+    io:         std.Io,
+    lang:       []const u8,
+    script_path: []const u8,
+    extra_args: []const []const u8,
+    timeout_ms: u64,
+) ![]u8 {
+    const entry = workerFindEntry(lang) orelse return error.UnknownLang;
+
+    var ts_start: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_start);
+
+    const RunOk = struct { stdout: []u8, stderr: []u8, exit: i32, interp: []const u8 };
+    var run_ok: ?RunOk = null;
+
+    for (entry.candidates) |cand| {
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(gpa);
+        try argv.append(gpa, cand);
+        for (entry.prefix) |a| try argv.append(gpa, a);
+        try argv.append(gpa, script_path);
+        for (extra_args) |a| try argv.append(gpa, a);
+
+        const r = std.process.run(gpa, io, .{ .argv = argv.items }) catch |e| switch (e) {
+            error.FileNotFound, error.AccessDenied, error.InvalidExe => continue,
+            else => return e,
+        };
+        run_ok = .{
+            .stdout = r.stdout,
+            .stderr = r.stderr,
+            .exit   = switch (r.term) { .exited => |c| @as(i32, @intCast(c)), else => -1 },
+            .interp = cand,
+        };
+        break;
+    }
+
+    const res = run_ok orelse return error.InterpreterNotFound;
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    var ts_end: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_end);
+    const duration_ms: u64 = blk: {
+        const s0 = @as(u64, @intCast(ts_start.sec)) * 1000 + @as(u64, @intCast(ts_start.nsec)) / 1_000_000;
+        const s1 = @as(u64, @intCast(ts_end.sec))   * 1000 + @as(u64, @intCast(ts_end.nsec))   / 1_000_000;
+        break :blk if (s1 > s0) s1 - s0 else 0;
+    };
+
+    const truncated = res.stdout.len > WORKER_OUTPUT_CAP or res.stderr.len > WORKER_OUTPUT_CAP;
+    const out_slice  = res.stdout[0..@min(res.stdout.len, WORKER_OUTPUT_CAP)];
+    const err_slice  = res.stderr[0..@min(res.stderr.len, WORKER_OUTPUT_CAP)];
+
+    const lang_esc   = try allocJsonEscape(gpa, lang);         defer gpa.free(lang_esc);
+    const interp_esc = try allocJsonEscape(gpa, res.interp);   defer gpa.free(interp_esc);
+    const script_esc = try allocJsonEscape(gpa, script_path);  defer gpa.free(script_esc);
+    const out_esc    = try allocJsonEscape(gpa, out_slice);     defer gpa.free(out_esc);
+    const err_esc    = try allocJsonEscape(gpa, err_slice);     defer gpa.free(err_esc);
+
+    return std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "lang": "{s}",
+        \\  "interpreter": "{s}",
+        \\  "script": "{s}",
+        \\  "exit_code": {d},
+        \\  "stdout": "{s}",
+        \\  "stderr": "{s}",
+        \\  "duration_ms": {d},
+        \\  "timed_out": {s},
+        \\  "truncated": {s}
+        \\}}
+    , .{
+        lang_esc, interp_esc, script_esc,
+        res.exit, out_esc, err_esc,
+        duration_ms,
+        if (duration_ms >= timeout_ms) "true" else "false",
+        if (truncated) "true" else "false",
+    });
 }
 
 // --- Tests ---

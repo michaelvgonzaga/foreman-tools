@@ -2,6 +2,15 @@ const std = @import("std");
 
 const RunResult = struct { stdout: []u8, stderr: []u8, exit: i32 };
 
+fn writeStressScript(io: std.Io, abs_path: []const u8, content: []const u8) !void {
+    const file = try std.Io.Dir.createFileAbsolute(io, abs_path, .{});
+    defer file.close(io);
+    var buf: [512]u8 = undefined;
+    var w = file.writerStreaming(io, &buf);
+    try w.interface.writeAll(content);
+    try w.interface.flush();
+}
+
 const Ctx = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -398,6 +407,45 @@ pub fn main(init: std.process.Init) !void {
     ctx.smoke("capability-check empty string", &.{ "capability-check", "" });
     ctx.smoke("capability-promote complex pipe cmd", &.{ "capability-promote", "grep -r 'pattern' . | sort | uniq -c | sort -rn | head -20" });
     ctx.smoke("sandbox-check empty cmd", &.{ "sandbox-check", "" });
+
+    // ----------------------------------------------------------------
+    // Tier 1 (continued): worker-list + worker-run smoke
+    // ----------------------------------------------------------------
+    ctx.header("Tier 1 (continued): worker-run / worker-list");
+    ctx.smoke("worker-list", &.{"worker-list"});
+
+    // Write temp test scripts (direct file creation — no subprocess needed)
+    const py_script = "/tmp/ft-stress-worker.py";
+    const js_script = "/tmp/ft-stress-worker.js";
+    const sh_script = "/tmp/ft-stress-worker.sh";
+    const sh_fail   = "/tmp/ft-stress-worker-fail.sh";
+    writeStressScript(io, py_script, "print(42)\n") catch {};
+    writeStressScript(io, js_script, "console.log(42)\n") catch {};
+    writeStressScript(io, sh_script, "echo 42\n") catch {};
+    writeStressScript(io, sh_fail,   "exit 7\n") catch {};
+
+    ctx.smoke("worker-run python", &.{ "worker-run", "python", py_script });
+    ctx.smoke("worker-run py (alias)", &.{ "worker-run", "py", py_script });
+    ctx.smoke("worker-run node", &.{ "worker-run", "node", js_script });
+    ctx.smoke("worker-run bash", &.{ "worker-run", "bash", sh_script });
+    ctx.smoke("worker-run sh (alias)", &.{ "worker-run", "sh", sh_script });
+
+    // Tier 2: worker-run field assertions
+    ctx.checkStr("worker-run python: interpreter=python3", &.{ "worker-run", "python", py_script }, "interpreter", "python3");
+    ctx.checkStr("worker-run python: lang=python", &.{ "worker-run", "python", py_script }, "lang", "python");
+    ctx.checkStr("worker-run node: lang=node", &.{ "worker-run", "node", js_script }, "lang", "node");
+    ctx.checkStr("worker-run bash stdout=42", &.{ "worker-run", "bash", sh_script }, "stdout", "42\n");
+    ctx.checkBool("worker-run bash: timed_out=false", &.{ "worker-run", "bash", sh_script }, "timed_out", false);
+    ctx.checkBool("worker-run bash: truncated=false", &.{ "worker-run", "bash", sh_script }, "truncated", false);
+    ctx.checkIntGt("worker-list count>=11", &.{"worker-list"}, "count", 10);
+    ctx.checkArrayLen("worker-list workers>=11", &.{"worker-list"}, "workers", 11);
+    // Script exits non-zero → still exit 0 from foreman-tools (exit_code field carries the value)
+    ctx.checkBool("worker-run failing script: truncated=false", &.{ "worker-run", "bash", sh_fail }, "truncated", false);
+
+    // Tier 3: worker-run adversarial
+    ctx.bad("worker-run no args → exit 1", &.{"worker-run"}, 1);
+    ctx.bad("worker-run unknown lang → exit 1", &.{ "worker-run", "cobol", sh_script }, 1);
+    ctx.bad("worker-run missing script arg → exit 1", &.{ "worker-run", "bash" }, 1);
 
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
