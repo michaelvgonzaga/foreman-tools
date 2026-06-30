@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.48.0";
+pub const VERSION = "0.49.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6763,8 +6763,12 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "quality-gate",    .description = "aggregate build + test results into a severity-bucketed verdict",   .args = "<root>"                             },
         .{ .name = "validate-schema", .description = "validate a JSON file against a JSON Schema subset",                 .args = "<file> <schema>"                    },
         .{ .name = "prod-ready",      .description = "composite production readiness: quality-gate + secret-scan + env-inspect", .args = "<root>"                     },
-        .{ .name = "registry",          .description = "machine-readable catalog of all subcommands (this output)",         .args = ""                                   },
-        .{ .name = "capability-check",  .description = "check if a capability is natively available in foreman-tools or needs Claude fallback", .args = "<query...>"                },
+        .{ .name = "registry",          .description = "machine-readable catalog of all subcommands (this output)",              .args = ""                    },
+        .{ .name = "capability-check",  .description = "check if a capability is natively available in foreman-tools or needs Claude fallback", .args = "<query...>" },
+        .{ .name = "route",             .description = "task router — returns execution plan with subcommand, argHint, confidence, reason",     .args = "<task...>"  },
+        .{ .name = "report",            .description = "composite project status — git state + build + tests + secrets",                         .args = "<path>"     },
+        .{ .name = "metrics",           .description = "telemetry snapshot — cache entries, project states, decisions, estimated token savings", .args = ""           },
+        .{ .name = "session-snapshot",  .description = "write ground-truth session state to ~/.foreman/session-snapshot.json before compaction", .args = "<foreman-root>" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -7190,6 +7194,79 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
         .compat_baseline_set   = compat_baseline_set,
         .estimated_token_savings = estimated_token_savings,
     };
+}
+
+// --- session-snapshot subcommand ---
+
+pub fn computeSnapshot(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) ![]u8 {
+    // Read ROADMAP.md and extract Active Work facts
+    const roadmap_path = try std.fmt.allocPrint(gpa, "{s}/ROADMAP.md", .{foreman_root});
+    defer gpa.free(roadmap_path);
+
+    var wave_line: []const u8 = "unknown";
+    var current_line: []const u8 = "unknown";
+    var wave_owned = false;
+    var current_owned = false;
+
+    roadmap_blk: {
+        var f = std.Io.Dir.openFileAbsolute(io, roadmap_path, .{}) catch break :roadmap_blk;
+        var rbuf: [4096]u8 = undefined;
+        var r = f.reader(io, &rbuf);
+        const content = r.interface.allocRemaining(gpa, .limited(512 * 1024)) catch break :roadmap_blk;
+        defer gpa.free(content);
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \r");
+            if (std.mem.startsWith(u8, line, "**Wave:**")) {
+                const val = std.mem.trim(u8, line["**Wave:**".len..], " ");
+                wave_line = gpa.dupe(u8, val) catch break :roadmap_blk;
+                wave_owned = true;
+            } else if (std.mem.startsWith(u8, line, "**Current:**")) {
+                const val = std.mem.trim(u8, line["**Current:**".len..], " ");
+                current_line = gpa.dupe(u8, val) catch break :roadmap_blk;
+                current_owned = true;
+            }
+        }
+    }
+    defer if (wave_owned) gpa.free(wave_line);
+    defer if (current_owned) gpa.free(current_line);
+
+    // JSON-escape extracted strings
+    const wave_esc = try allocJsonEscape(gpa, wave_line);
+    defer gpa.free(wave_esc);
+    const current_esc = try allocJsonEscape(gpa, current_line);
+    defer gpa.free(current_esc);
+
+    const json = try std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "version": "{s}",
+        \\  "wave": "{s}",
+        \\  "current": "{s}",
+        \\  "pending_errors": null
+        \\}}
+    , .{ VERSION, wave_esc, current_esc });
+
+    // Write to ~/.foreman/session-snapshot.json (atomic)
+    write_blk: {
+        const home_ptr = std.c.getenv("HOME") orelse break :write_blk;
+        const home: []const u8 = std.mem.span(home_ptr);
+        const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+        defer gpa.free(foreman_dir);
+        std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+        var tmp_buf: [512]u8 = undefined;
+        const snap_path = std.fmt.bufPrint(&tmp_buf, "{s}/.foreman/session-snapshot.json", .{home}) catch break :write_blk;
+        var tmp_buf2: [520]u8 = undefined;
+        const tmp_path = std.fmt.bufPrint(&tmp_buf2, "{s}.tmp", .{snap_path}) catch break :write_blk;
+        const wf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch break :write_blk;
+        var wbuf: [256]u8 = undefined;
+        var w = wf.writerStreaming(io, &wbuf);
+        w.interface.writeAll(json) catch { wf.close(io); break :write_blk; };
+        w.interface.flush() catch {};
+        wf.close(io);
+        atomicRenameAbsolute(tmp_path, snap_path);
+    }
+
+    return json; // caller must gpa.free
 }
 
 // --- Tests ---

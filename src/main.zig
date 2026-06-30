@@ -72,6 +72,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  route <task...>\n", .{});
         try err.print("  report <path>\n", .{});
         try err.print("  metrics\n", .{});
+        try err.print("  session-snapshot <foreman-root>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1929,6 +1930,16 @@ pub fn main(init: std.process.Init) !void {
                if (result.compat_baseline_set) "true" else "false",
                result.estimated_token_savings },
         );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "session-snapshot")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools session-snapshot <foreman-root>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const json = try root.computeSnapshot(gpa, io, args[2]);
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "report")) {
         if (args.len < 3) {

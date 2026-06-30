@@ -2,6 +2,14 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.49.0] — 2026-06-30
+
+### New
+- `session-snapshot <foreman-root>` — writes ground-truth session state to `~/.foreman/session-snapshot.json` before compaction; extracts `version` (binary constant), `wave` and `current` from ROADMAP.md Active Work section, `pending_errors: null`; atomic write (tmp + rename); also added `route`, `report`, `metrics`, and `session-snapshot` entries to `registry` output (were missing since v0.44.0)
+
+### Improved
+- `registry` — now includes all 56 subcommands including `route`, `report`, `metrics`, and `session-snapshot` added in v0.46–v0.49
+
 ## [0.48.0] — 2026-06-30
 
 ### New
