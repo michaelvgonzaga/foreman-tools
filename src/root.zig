@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.50.0";
+pub const VERSION = "0.51.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6770,6 +6770,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "metrics",           .description = "telemetry snapshot — cache entries, project states, decisions, estimated token savings", .args = ""           },
         .{ .name = "session-snapshot",  .description = "write ground-truth session state to ~/.foreman/session-snapshot.json before compaction", .args = "<foreman-root>" },
         .{ .name = "sandbox-check",     .description = "classify a shell operation by severity (safe/caution/destructive/blocked) and return whether it is allowed", .args = "<command...>" },
+        .{ .name = "rollback",          .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -7268,6 +7269,203 @@ pub fn computeSnapshot(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const
     }
 
     return json; // caller must gpa.free
+}
+
+// --- rollback subcommand (Module 29) ---
+
+fn rollbackSnapPath(gpa: std.mem.Allocator, home: []const u8, repo_path: []const u8) ![]u8 {
+    const name_buf = try gpa.alloc(u8, repo_path.len);
+    defer gpa.free(name_buf);
+    for (repo_path, 0..) |c, i| {
+        name_buf[i] = if (std.ascii.isAlphanumeric(c) or c == '-') c else '_';
+    }
+    const name_slice = if (name_buf.len > 80) name_buf[name_buf.len - 80..] else name_buf;
+    return std.fmt.allocPrint(gpa, "{s}/.foreman/snapshots/{s}.json", .{ home, name_slice });
+}
+
+pub fn computeRollbackSnapshot(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8) ![]u8 {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home: []const u8 = std.mem.span(home_ptr);
+
+    const git = try computeGitCache(gpa, io, repo_path);
+    var _ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &_ts);
+    const ts_ms: i64 = _ts.sec *% 1000 + @divTrunc(_ts.nsec, 1_000_000);
+
+    var id_buf: [32]u8 = undefined;
+    const id_str = try std.fmt.bufPrint(&id_buf, "{d}", .{ts_ms});
+
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    defer gpa.free(foreman_dir);
+    const snap_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman/snapshots", .{home});
+    defer gpa.free(snap_dir);
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+    std.Io.Dir.createDirAbsolute(io, snap_dir, .default_dir) catch {};
+
+    const snap_path = try rollbackSnapPath(gpa, home, repo_path);
+    defer gpa.free(snap_path);
+
+    var arr: std.ArrayList(u8) = .empty;
+    defer arr.deinit(gpa);
+    var count: u32 = 0;
+
+    existing_blk: {
+        var f = std.Io.Dir.openFileAbsolute(io, snap_path, .{}) catch break :existing_blk;
+        var rbuf: [4096]u8 = undefined;
+        var r = f.reader(io, &rbuf);
+        const content = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch break :existing_blk;
+        defer gpa.free(content);
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch break :existing_blk;
+        defer parsed.deinit();
+        if (parsed.value != .array) break :existing_blk;
+        const items = parsed.value.array.items;
+        const start: usize = if (items.len >= 19) items.len - 19 else 0;
+        for (items[start..]) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+            const eid = if (obj.get("id"))            |v| if (v == .string)  v.string  else "" else "";
+            const ebr = if (obj.get("branch"))        |v| if (v == .string)  v.string  else "" else "";
+            const ehd = if (obj.get("head"))           |v| if (v == .string)  v.string  else "" else "";
+            const edr = if (obj.get("dirty"))          |v| if (v == .bool)    v.bool    else false else false;
+            const ems: i64 = if (obj.get("created_at_ms")) |v| if (v == .integer) v.integer else 0 else 0;
+            if (arr.items.len > 0) try arr.append(gpa, ',');
+            const item_json = try std.fmt.allocPrint(gpa,
+                "{{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}",
+                .{ eid, ebr, ehd, if (edr) "true" else "false", ems });
+            defer gpa.free(item_json);
+            try arr.appendSlice(gpa, item_json);
+            count += 1;
+        }
+    }
+
+    if (arr.items.len > 0) try arr.append(gpa, ',');
+    const new_entry = try std.fmt.allocPrint(gpa,
+        "{{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}",
+        .{ id_str, git.branch, git.head, if (git.dirty) "true" else "false", ts_ms });
+    defer gpa.free(new_entry);
+    try arr.appendSlice(gpa, new_entry);
+    count += 1;
+
+    var tmp_buf: [640]u8 = undefined;
+    write_blk: {
+        const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{snap_path}) catch break :write_blk;
+        const wf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch break :write_blk;
+        var wbuf: [256]u8 = undefined;
+        var w = wf.writerStreaming(io, &wbuf);
+        w.interface.writeAll("[") catch { wf.close(io); break :write_blk; };
+        w.interface.writeAll(arr.items) catch {};
+        w.interface.writeAll("]") catch {};
+        w.interface.flush() catch {};
+        wf.close(io);
+        atomicRenameAbsolute(tmp_path, snap_path);
+    }
+
+    const snap_esc = try allocJsonEscape(gpa, snap_path);
+    defer gpa.free(snap_esc);
+    return std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "id": "{s}",
+        \\  "branch": "{s}",
+        \\  "head": "{s}",
+        \\  "dirty": {s},
+        \\  "created_at_ms": {d},
+        \\  "snapshot_count": {d},
+        \\  "snapshot_file": "{s}"
+        \\}}
+    , .{ id_str, git.branch, git.head, if (git.dirty) "true" else "false", ts_ms, count, snap_esc });
+}
+
+pub fn computeRollbackList(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8) ![]u8 {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home: []const u8 = std.mem.span(home_ptr);
+    const snap_path = try rollbackSnapPath(gpa, home, repo_path);
+    defer gpa.free(snap_path);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+
+    const repo_esc = try allocJsonEscape(gpa, repo_path);
+    defer gpa.free(repo_esc);
+    const header = try std.fmt.allocPrint(gpa, "{{\n  \"repo\": \"{s}\",\n  \"snapshots\": [", .{repo_esc});
+    defer gpa.free(header);
+    try out.appendSlice(gpa, header);
+
+    var count: u32 = 0;
+    list_blk: {
+        var f = std.Io.Dir.openFileAbsolute(io, snap_path, .{}) catch break :list_blk;
+        var rbuf: [4096]u8 = undefined;
+        var r = f.reader(io, &rbuf);
+        const content = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch break :list_blk;
+        defer gpa.free(content);
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch break :list_blk;
+        defer parsed.deinit();
+        if (parsed.value != .array) break :list_blk;
+        for (parsed.value.array.items) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+            const eid = if (obj.get("id"))            |v| if (v == .string)  v.string  else "" else "";
+            const ebr = if (obj.get("branch"))        |v| if (v == .string)  v.string  else "" else "";
+            const ehd = if (obj.get("head"))           |v| if (v == .string)  v.string  else "" else "";
+            const edr = if (obj.get("dirty"))          |v| if (v == .bool)    v.bool    else false else false;
+            const ems: i64 = if (obj.get("created_at_ms")) |v| if (v == .integer) v.integer else 0 else 0;
+            if (count > 0) try out.append(gpa, ',');
+            const entry = try std.fmt.allocPrint(gpa,
+                "\n    {{\"id\":\"{s}\",\"branch\":\"{s}\",\"head\":\"{s}\",\"dirty\":{s},\"created_at_ms\":{d}}}",
+                .{ eid, ebr, ehd, if (edr) "true" else "false", ems });
+            defer gpa.free(entry);
+            try out.appendSlice(gpa, entry);
+            count += 1;
+        }
+    }
+
+    const footer = try std.fmt.allocPrint(gpa, "\n  ],\n  \"count\": {d}\n}}", .{count});
+    defer gpa.free(footer);
+    try out.appendSlice(gpa, footer);
+    return out.toOwnedSlice(gpa);
+}
+
+pub fn computeRollbackRevert(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8, snapshot_id: []const u8) ![]u8 {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home: []const u8 = std.mem.span(home_ptr);
+    const snap_path = try rollbackSnapPath(gpa, home, repo_path);
+    defer gpa.free(snap_path);
+
+    var f = std.Io.Dir.openFileAbsolute(io, snap_path, .{}) catch return error.NoSnapshots;
+    var rbuf: [4096]u8 = undefined;
+    var r = f.reader(io, &rbuf);
+    const content = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch return error.NoSnapshots;
+    defer gpa.free(content);
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch return error.NoSnapshots;
+    defer parsed.deinit();
+
+    if (parsed.value != .array) return error.NoSnapshots;
+    for (parsed.value.array.items) |item| {
+        if (item != .object) continue;
+        const obj = item.object;
+        const eid = if (obj.get("id")) |v| if (v == .string) v.string else "" else "";
+        if (!std.mem.eql(u8, eid, snapshot_id)) continue;
+        const branch = if (obj.get("branch")) |v| if (v == .string) v.string else "" else "";
+        const head   = if (obj.get("head"))   |v| if (v == .string) v.string else "" else "";
+        const repo_esc   = try allocJsonEscape(gpa, repo_path);
+        defer gpa.free(repo_esc);
+        const branch_esc = try allocJsonEscape(gpa, branch);
+        defer gpa.free(branch_esc);
+        const head_esc   = try allocJsonEscape(gpa, head);
+        defer gpa.free(head_esc);
+        return std.fmt.allocPrint(gpa,
+            \\{{
+            \\  "snapshot_id": "{s}",
+            \\  "branch": "{s}",
+            \\  "head": "{s}",
+            \\  "commands": [
+            \\    "git -C {s} checkout {s}",
+            \\    "git -C {s} reset --hard {s}"
+            \\  ],
+            \\  "warning": "These commands discard uncommitted changes. Verify with sandbox-check first."
+            \\}}
+        , .{ snapshot_id, branch_esc, head_esc, repo_esc, branch_esc, repo_esc, head_esc });
+    }
+    return error.SnapshotNotFound;
 }
 
 // --- sandbox-check subcommand ---

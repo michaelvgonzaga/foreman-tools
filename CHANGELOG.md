@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.51.0] — 2026-06-30
+
+### New
+- `rollback <repo-path> [--list | --revert <id>]` — three-mode git-state snapshot system; default: capture current branch + HEAD SHA + dirty flag from git-cache, write to `~/.foreman/snapshots/<sanitized-path>.json` (capped at 20 entries, atomic write), return `{ id, branch, head, dirty, created_at_ms, snapshot_count, snapshot_file }`; `--list`: return all snapshots for that repo as `{ repo, snapshots: [...], count }`; `--revert <id>`: find snapshot by ID and return `{ snapshot_id, branch, head, commands: [git checkout, git reset --hard], warning }`; timestamps via `std.c.clock_gettime(CLOCK.REALTIME)`; foundation for Module 29 (Rollback / Recovery)
+
 ## [0.50.0] — 2026-06-30
 
 ### New

@@ -74,6 +74,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  metrics\n", .{});
         try err.print("  session-snapshot <foreman-root>\n", .{});
         try err.print("  sandbox-check <command...>\n", .{});
+        try err.print("  rollback <repo-path> [--list | --revert <id>]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1931,6 +1932,34 @@ pub fn main(init: std.process.Init) !void {
                if (result.compat_baseline_set) "true" else "false",
                result.estimated_token_savings },
         );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "rollback")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools rollback <repo-path> [--list | --revert <id>]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const repo_path = args[2];
+        if (args.len >= 4 and std.mem.eql(u8, args[3], "--list")) {
+            const json = try root.computeRollbackList(gpa, io, repo_path);
+            defer gpa.free(json);
+            try out.print("{s}\n", .{json});
+        } else if (args.len >= 5 and std.mem.eql(u8, args[3], "--revert")) {
+            const json = root.computeRollbackRevert(gpa, io, repo_path, args[4]) catch |e| switch (e) {
+                error.NoSnapshots, error.SnapshotNotFound => {
+                    try err.print("error: snapshot not found: {s}\n", .{args[4]});
+                    try err.flush();
+                    std.process.exit(1);
+                },
+                else => return e,
+            };
+            defer gpa.free(json);
+            try out.print("{s}\n", .{json});
+        } else {
+            const json = try root.computeRollbackSnapshot(gpa, io, repo_path);
+            defer gpa.free(json);
+            try out.print("{s}\n", .{json});
+        }
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "sandbox-check")) {
         if (args.len < 3) {
