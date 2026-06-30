@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.52.0";
+pub const VERSION = "0.53.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6772,6 +6772,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "sandbox-check",     .description = "classify a shell operation by severity (safe/caution/destructive/blocked) and return whether it is allowed", .args = "<command...>" },
         .{ .name = "rollback",            .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
         .{ .name = "capability-promote", .description = "score a shell command for promotion eligibility as a foreman-tools subcommand (0-100 + recommendation)", .args = "<command...>" },
+        .{ .name = "ant",               .description = "list files changed in a path since a timestamp (mtime-based, no git required)",                             .args = "<path> [--since <ms>]" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -7651,6 +7652,127 @@ pub fn computeCapabilityPromote(gpa: std.mem.Allocator, command: []const u8) ![]
         \\  "reasons": [{s}]
         \\}}
     , .{ cmd_esc, score, similar_json, recommendation, reasons_buf.items });
+}
+
+// --- ant subcommand (Ant colony: "what changed?" — mtime-based filesystem diff) ---
+
+const ANT_CAP: usize = 500;
+
+const AntEntry = struct {
+    path: []u8,
+    mtime_ms: i64,
+};
+
+fn antGetMtimeMs(io: std.Io, abs_path: []const u8) i64 {
+    const file = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch return 0;
+    defer file.close(io);
+    const st = file.stat(io) catch return 0;
+    return @intCast(@divTrunc(st.mtime.nanoseconds, 1_000_000));
+}
+
+fn walkAntFiles(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    rel_prefix: []const u8,
+    root: []const u8,
+    since_ms: i64,
+    changed: *std.ArrayList(AntEntry),
+    total: *u32,
+    truncated: *bool,
+) !void {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            if (shouldSkipScanDir(entry.name)) continue;
+            const sub_prefix: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            defer gpa.free(sub_prefix);
+            var sub = dir.openDir(io, entry.name, .{ .iterate = true }) catch continue;
+            defer sub.close(io);
+            try walkAntFiles(gpa, io, sub, sub_prefix, root, since_ms, changed, total, truncated);
+        } else if (entry.kind == .file) {
+            if (shouldSkipScanFile(entry.name)) continue;
+            const rel_path: []u8 = if (rel_prefix.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel_prefix, entry.name });
+            var transferred = false;
+            defer if (!transferred) gpa.free(rel_path);
+            const abs_path = std.fs.path.join(gpa, &.{ root, rel_path }) catch continue;
+            defer gpa.free(abs_path);
+            const mtime = antGetMtimeMs(io, abs_path);
+            if (mtime > since_ms) {
+                total.* += 1;
+                if (changed.items.len < ANT_CAP) {
+                    try changed.append(gpa, .{ .path = rel_path, .mtime_ms = mtime });
+                    transferred = true;
+                } else {
+                    truncated.* = true;
+                }
+            }
+        }
+    }
+}
+
+pub fn computeAnt(gpa: std.mem.Allocator, io: std.Io, root_path: []const u8, since_ms: i64) ![]u8 {
+    var dir = std.Io.Dir.openDirAbsolute(io, root_path, .{ .iterate = true }) catch
+        return error.PathNotFound;
+    defer dir.close(io);
+
+    var changed: std.ArrayList(AntEntry) = .empty;
+    defer {
+        for (changed.items) |e| gpa.free(e.path);
+        changed.deinit(gpa);
+    }
+    var total: u32 = 0;
+    var truncated = false;
+    try walkAntFiles(gpa, io, dir, "", root_path, since_ms, &changed, &total, &truncated);
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ms: i64 = ts.sec *% 1000 + @divTrunc(ts.nsec, 1_000_000);
+
+    const root_esc = try allocJsonEscape(gpa, root_path);
+    defer gpa.free(root_esc);
+
+    var arr: std.ArrayList(u8) = .empty;
+    defer arr.deinit(gpa);
+    for (changed.items, 0..) |e, idx| {
+        const path_esc = try allocJsonEscape(gpa, e.path);
+        defer gpa.free(path_esc);
+        if (idx > 0) try arr.appendSlice(gpa, ",\n");
+        const line = try std.fmt.allocPrint(gpa, "    {{\"path\": \"{s}\", \"mtimeMs\": {d}}}", .{ path_esc, e.mtime_ms });
+        defer gpa.free(line);
+        try arr.appendSlice(gpa, line);
+    }
+
+    if (changed.items.len == 0) {
+        return std.fmt.allocPrint(gpa,
+            \\{{
+            \\  "root": "{s}",
+            \\  "sinceMs": {d},
+            \\  "scannedAtMs": {d},
+            \\  "total": 0,
+            \\  "truncated": false,
+            \\  "changed": []
+            \\}}
+        , .{ root_esc, since_ms, now_ms });
+    }
+    return std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "root": "{s}",
+        \\  "sinceMs": {d},
+        \\  "scannedAtMs": {d},
+        \\  "total": {d},
+        \\  "truncated": {s},
+        \\  "changed": [
+        \\{s}
+        \\  ]
+        \\}}
+    , .{ root_esc, since_ms, now_ms, total, if (truncated) "true" else "false", arr.items });
 }
 
 // --- Tests ---

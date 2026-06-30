@@ -76,6 +76,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  sandbox-check <command...>\n", .{});
         try err.print("  rollback <repo-path> [--list | --revert <id>]\n", .{});
         try err.print("  capability-promote <command...>\n", .{});
+        try err.print("  ant <path> [--since <ms>]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2092,6 +2093,37 @@ pub fn main(init: std.process.Init) !void {
         const command = try std.mem.join(gpa, " ", args[2..]);
         defer gpa.free(command);
         const json = try root.computeCapabilityPromote(gpa, command);
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "ant")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools ant <path> [--since <ms>]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const ant_path = args[2];
+        var since_ms: i64 = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            const now: i64 = ts.sec *% 1000 + @divTrunc(ts.nsec, 1_000_000);
+            break :blk now - 86_400_000;
+        };
+        var arg_i: usize = 3;
+        while (arg_i < args.len) : (arg_i += 1) {
+            if (std.mem.eql(u8, args[arg_i], "--since") and arg_i + 1 < args.len) {
+                since_ms = std.fmt.parseInt(i64, args[arg_i + 1], 10) catch since_ms;
+                arg_i += 1;
+            }
+        }
+        const json = root.computeAnt(gpa, io, ant_path, since_ms) catch |e| switch (e) {
+            error.PathNotFound => {
+                try err.print("error: path not found: {s}\n", .{ant_path});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
         defer gpa.free(json);
         try out.print("{s}\n", .{json});
         try out.flush();

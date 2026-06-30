@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.53.0] — 2026-06-30
+
+### New
+- `ant <path> [--since <ms>]` — filesystem change detection (Ant colony: "what changed?"); walks `<path>` and returns files whose mtime exceeds `since_ms`; default is 24h ago when `--since` is omitted; uses `file.stat(io).mtime.nanoseconds` (Zig 0.16 Io API — no `std.c.stat` required); capped at 500 entries with `truncated` flag; skips same dirs/files as `scan` (`.git`, `node_modules`, binary extensions); output: `{ root, sinceMs, scannedAtMs, total, truncated, changed: [{path, mtimeMs}] }`; complements `context-changed` (git-based) for untracked files and non-git directories; foundation for Ant colony ("what changed since last session?") thin Hive runtime
+
 ## [0.52.0] — 2026-06-30
 
 ### New
