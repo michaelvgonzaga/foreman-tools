@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.52.0] — 2026-06-30
+
+### New
+- `capability-promote <command...>` — score a repeated shell command for promotion eligibility as a foreman-tools subcommand; returns `{ command, score, already_covered, similar_subcommand, recommendation, reasons }`; scoring signals: git operation (+20), parses structured output (+20), read-only / no side effects (+15), deterministic (+15), compact command (<80 chars, +10), takes path/repo argument (+10); baseline score 10; recommendation: "promote" (≥60), "consider" (≥40), "skip" (<40); if the command already matches an existing subcommand at exact/high confidence, returns `already_covered: true`, `score: 0`, `recommendation: "skip"`; foundation for Module 21 (Capability Promotion)
+
 ## [0.51.0] — 2026-06-30
 
 ### New

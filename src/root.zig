@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.51.0";
+pub const VERSION = "0.52.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6770,7 +6770,8 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "metrics",           .description = "telemetry snapshot — cache entries, project states, decisions, estimated token savings", .args = ""           },
         .{ .name = "session-snapshot",  .description = "write ground-truth session state to ~/.foreman/session-snapshot.json before compaction", .args = "<foreman-root>" },
         .{ .name = "sandbox-check",     .description = "classify a shell operation by severity (safe/caution/destructive/blocked) and return whether it is allowed", .args = "<command...>" },
-        .{ .name = "rollback",          .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
+        .{ .name = "rollback",            .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
+        .{ .name = "capability-promote", .description = "score a shell command for promotion eligibility as a foreman-tools subcommand (0-100 + recommendation)", .args = "<command...>" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -7544,6 +7545,112 @@ pub fn computeSandboxCheck(gpa: std.mem.Allocator, operation: []const u8) !Sandb
         .severity  = switch (worst) { .safe => "safe", .caution => "caution", .destructive => "destructive", .blocked => "blocked" },
         .reason    = worst_reason,
     };
+}
+
+// --- capability-promote (Module 21) ---
+
+pub fn computeCapabilityPromote(gpa: std.mem.Allocator, command: []const u8) ![]u8 {
+    // Lowercase command for pattern matching
+    const cmd_lower = try gpa.alloc(u8, command.len);
+    defer gpa.free(cmd_lower);
+    for (command, 0..) |c, i| cmd_lower[i] = std.ascii.toLower(c);
+
+    // Check if already covered by an existing subcommand at exact/high confidence
+    const check = try computeCapabilityCheck(gpa, command);
+    defer gpa.free(check.query);
+    const already_covered = check.available and
+        (std.mem.eql(u8, check.confidence, "exact") or std.mem.eql(u8, check.confidence, "high"));
+
+    if (already_covered) {
+        const sub = check.subcommand; // static registry string — safe to borrow after check.query freed
+        const cmd_esc = try allocJsonEscape(gpa, command);
+        defer gpa.free(cmd_esc);
+        const sub_esc = try allocJsonEscape(gpa, sub);
+        defer gpa.free(sub_esc);
+        return std.fmt.allocPrint(gpa,
+            \\{{
+            \\  "command": "{s}",
+            \\  "score": 0,
+            \\  "already_covered": true,
+            \\  "similar_subcommand": "{s}",
+            \\  "recommendation": "skip",
+            \\  "reasons": ["already covered by foreman-tools subcommand \"{s}\""]
+            \\}}
+        , .{ cmd_esc, sub_esc, sub_esc });
+    }
+
+    // Score promotion signals
+    var score: u32 = 10; // baseline
+    var reasons: [8][]const u8 = undefined;
+    var n: usize = 0;
+
+    if (std.mem.indexOf(u8, cmd_lower, "git ") != null or
+        std.mem.startsWith(u8, cmd_lower, "git")) {
+        score += 20; reasons[n] = "git operation"; n += 1;
+    }
+    if (std.mem.indexOf(u8, cmd_lower, "jq") != null or
+        std.mem.indexOf(u8, cmd_lower, " awk") != null or
+        std.mem.indexOf(u8, cmd_lower, "grep") != null or
+        std.mem.indexOf(u8, cmd_lower, " sed ") != null or
+        std.mem.indexOf(u8, cmd_lower, " head") != null or
+        std.mem.indexOf(u8, cmd_lower, " tail") != null) {
+        score += 20; reasons[n] = "parses structured output"; n += 1;
+    }
+    const has_side_effects =
+        std.mem.indexOf(u8, cmd_lower, "push") != null or
+        std.mem.indexOf(u8, cmd_lower, "commit") != null or
+        std.mem.indexOf(u8, cmd_lower, " rm ") != null or
+        std.mem.indexOf(u8, cmd_lower, "write") != null or
+        std.mem.indexOf(u8, cmd_lower, "install") != null or
+        std.mem.indexOf(u8, cmd_lower, "publish") != null;
+    if (!has_side_effects) {
+        score += 15; reasons[n] = "read-only / no side effects"; n += 1;
+    }
+    const has_nondeterminism =
+        std.mem.indexOf(u8, cmd_lower, "date") != null or
+        std.mem.indexOf(u8, cmd_lower, "random") != null or
+        std.mem.indexOf(u8, cmd_lower, "sleep") != null;
+    if (!has_nondeterminism) {
+        score += 15; reasons[n] = "deterministic"; n += 1;
+    }
+    if (command.len < 80) {
+        score += 10; reasons[n] = "compact command"; n += 1;
+    }
+    if (std.mem.indexOf(u8, cmd_lower, "/") != null or
+        std.mem.indexOf(u8, cmd_lower, "<path") != null or
+        std.mem.indexOf(u8, cmd_lower, "<repo") != null) {
+        score += 10; reasons[n] = "takes path/repo argument"; n += 1;
+    }
+
+    const recommendation: []const u8 = if (score >= 60) "promote" else if (score >= 40) "consider" else "skip";
+
+    // Build reasons JSON array content
+    var reasons_buf: std.ArrayList(u8) = .empty;
+    defer reasons_buf.deinit(gpa);
+    for (reasons[0..n], 0..) |r, i| {
+        if (i > 0) try reasons_buf.append(gpa, ',');
+        try reasons_buf.appendSlice(gpa, "\"");
+        try reasons_buf.appendSlice(gpa, r);
+        try reasons_buf.appendSlice(gpa, "\"");
+    }
+
+    const cmd_esc = try allocJsonEscape(gpa, command);
+    defer gpa.free(cmd_esc);
+
+    // similar_subcommand is only meaningful in the already_covered early-return path
+    const similar_json: []u8 = try gpa.dupe(u8, "null");
+    defer gpa.free(similar_json);
+
+    return std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "command": "{s}",
+        \\  "score": {d},
+        \\  "already_covered": false,
+        \\  "similar_subcommand": {s},
+        \\  "recommendation": "{s}",
+        \\  "reasons": [{s}]
+        \\}}
+    , .{ cmd_esc, score, similar_json, recommendation, reasons_buf.items });
 }
 
 // --- Tests ---

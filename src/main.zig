@@ -75,6 +75,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  session-snapshot <foreman-root>\n", .{});
         try err.print("  sandbox-check <command...>\n", .{});
         try err.print("  rollback <repo-path> [--list | --revert <id>]\n", .{});
+        try err.print("  capability-promote <command...>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2081,6 +2082,18 @@ pub fn main(init: std.process.Init) !void {
                 .{query_esc},
             );
         }
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "capability-promote")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools capability-promote <command...>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const command = try std.mem.join(gpa, " ", args[2..]);
+        defer gpa.free(command);
+        const json = try root.computeCapabilityPromote(gpa, command);
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "registry")) {
         const result = root.computeRegistry();
