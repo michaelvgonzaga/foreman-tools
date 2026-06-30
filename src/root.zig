@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.44.0";
+pub const VERSION = "0.45.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6763,9 +6763,112 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "quality-gate",    .description = "aggregate build + test results into a severity-bucketed verdict",   .args = "<root>"                             },
         .{ .name = "validate-schema", .description = "validate a JSON file against a JSON Schema subset",                 .args = "<file> <schema>"                    },
         .{ .name = "prod-ready",      .description = "composite production readiness: quality-gate + secret-scan + env-inspect", .args = "<root>"                     },
-        .{ .name = "registry",        .description = "machine-readable catalog of all subcommands (this output)",         .args = ""                                   },
+        .{ .name = "registry",          .description = "machine-readable catalog of all subcommands (this output)",         .args = ""                                   },
+        .{ .name = "capability-check",  .description = "check if a capability is natively available in foreman-tools or needs Claude fallback", .args = "<query...>"                },
     };
     return .{ .version = VERSION, .subcommands = cmds };
+}
+
+// --- capability-check ---
+
+pub const CapabilityCheckResult = struct {
+    query: []const u8,
+    available: bool,
+    source: []const u8,      // "native" | "claude"
+    subcommand: []const u8,  // "" when not found
+    description: []const u8, // "" when not found
+    args: []const u8,        // "" when not found
+    confidence: []const u8,  // "exact" | "high" | "medium" | "low" | "none"
+};
+
+pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !CapabilityCheckResult {
+    const reg = computeRegistry();
+
+    // Lowercase query once
+    const q_lower = try gpa.alloc(u8, query.len);
+    defer gpa.free(q_lower);
+    for (query, 0..) |c, i| q_lower[i] = std.ascii.toLower(c);
+
+    var best_score: u32 = 0;
+    var best_idx: usize = reg.subcommands.len;
+
+    for (reg.subcommands, 0..) |cmd, idx| {
+        const name_lower = try gpa.alloc(u8, cmd.name.len);
+        defer gpa.free(name_lower);
+        for (cmd.name, 0..) |c, i| name_lower[i] = std.ascii.toLower(c);
+
+        const desc_lower = try gpa.alloc(u8, cmd.description.len);
+        defer gpa.free(desc_lower);
+        for (cmd.description, 0..) |c, i| desc_lower[i] = std.ascii.toLower(c);
+
+        var score: u32 = 0;
+
+        if (std.mem.eql(u8, name_lower, q_lower)) {
+            score = 100;
+        } else if (std.mem.indexOf(u8, name_lower, q_lower) != null or
+                   std.mem.indexOf(u8, q_lower, name_lower) != null) {
+            score = 80;
+        } else {
+            var all_in_name: bool = true;
+            var all_in_desc: bool = true;
+            var any_in_name: bool = false;
+            var any_in_desc: bool = false;
+            var word_count: u32 = 0;
+            var it = std.mem.tokenizeScalar(u8, q_lower, ' ');
+            while (it.next()) |word| {
+                if (word.len < 3) continue; // skip stop words (to, of, a, ...)
+                word_count += 1;
+                if (std.mem.indexOf(u8, name_lower, word) != null) {
+                    any_in_name = true;
+                } else {
+                    all_in_name = false;
+                }
+                if (std.mem.indexOf(u8, desc_lower, word) != null) {
+                    any_in_desc = true;
+                } else {
+                    all_in_desc = false;
+                }
+            }
+            if (word_count > 0) {
+                if (all_in_name)       score = 70
+                else if (all_in_desc)  score = 50
+                else if (any_in_name)  score = 40
+                else if (any_in_desc)  score = 30;
+            }
+        }
+
+        if (score > best_score) {
+            best_score = score;
+            best_idx = idx;
+        }
+    }
+
+    const THRESHOLD: u32 = 30;
+    if (best_idx < reg.subcommands.len and best_score >= THRESHOLD) {
+        const cmd = reg.subcommands[best_idx];
+        const confidence: []const u8 = if (best_score >= 100) "exact"
+            else if (best_score >= 70) "high"
+            else if (best_score >= 50) "medium"
+            else "low";
+        return .{
+            .query       = try gpa.dupe(u8, query),
+            .available   = true,
+            .source      = "native",
+            .subcommand  = cmd.name,
+            .description = cmd.description,
+            .args        = cmd.args,
+            .confidence  = confidence,
+        };
+    }
+    return .{
+        .query       = try gpa.dupe(u8, query),
+        .available   = false,
+        .source      = "claude",
+        .subcommand  = "",
+        .description = "",
+        .args        = "",
+        .confidence  = "none",
+    };
 }
 
 // --- Tests ---

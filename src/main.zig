@@ -68,6 +68,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  validate-schema <file> <schema>\n", .{});
         try err.print("  prod-ready <path>\n", .{});
         try err.print("  registry\n", .{});
+        try err.print("  capability-check <query...>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1914,6 +1915,34 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.known_patterns.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"lastBuildResult\": null,\n  \"lastTestResult\": null\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "capability-check")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools capability-check <query...>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const query = try std.mem.join(gpa, " ", args[2..]);
+        defer gpa.free(query);
+        const result = try root.computeCapabilityCheck(gpa, query);
+        defer gpa.free(result.query);
+        const query_esc = try root.allocJsonEscape(gpa, result.query);
+        defer gpa.free(query_esc);
+        if (result.available) {
+            const desc_esc = try root.allocJsonEscape(gpa, result.description);
+            defer gpa.free(desc_esc);
+            const args_esc = try root.allocJsonEscape(gpa, result.args);
+            defer gpa.free(args_esc);
+            try out.print(
+                "{{\n  \"query\": \"{s}\",\n  \"available\": true,\n  \"source\": \"native\",\n  \"subcommand\": \"{s}\",\n  \"description\": \"{s}\",\n  \"args\": \"{s}\",\n  \"confidence\": \"{s}\"\n}}\n",
+                .{ query_esc, result.subcommand, desc_esc, args_esc, result.confidence },
+            );
+        } else {
+            try out.print(
+                "{{\n  \"query\": \"{s}\",\n  \"available\": false,\n  \"source\": \"claude\",\n  \"subcommand\": null,\n  \"description\": null,\n  \"args\": null,\n  \"confidence\": \"none\"\n}}\n",
+                .{query_esc},
+            );
+        }
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "registry")) {
         const result = root.computeRegistry();

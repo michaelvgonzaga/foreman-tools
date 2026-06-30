@@ -2,6 +2,11 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.45.0] — 2026-06-30
+
+### New
+- `capability-check <query...>` — checks whether a capability is natively available in foreman-tools or needs a Claude fallback; returns `{ query, available, source, subcommand, description, args, confidence }`; matching: exact name → "exact" (100), name substring → "high" (80), all query words in name → "high" (70), all in description → "medium" (50), any in name → "low" (40), any in description → "low" (30); words under 3 chars filtered to skip stop words; `available: false` → `source: "claude"`, `confidence: "none"`; foundation for Module 2 (Capability Registry) and Module 3 (Tool Router)
+
 ## [0.44.0] — 2026-06-30
 
 ### New
