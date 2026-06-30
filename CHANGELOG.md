@@ -2,6 +2,13 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.39.0] — 2026-06-30
+
+### New
+- `project-state <path>` — reads persisted project state from `~/.foreman/state/ps-{sha256(path)}.json`; returns `{ path, decisions: [{date, what, why}], knownPatterns: [...], lastBuildResult: null, lastTestResult: null }`; survives restarts and power loss (atomic writes)
+- `project-state <path> record-decision <what> [<why>]` — appends a decision with today's date, saves atomically, returns updated state; capped at 100 decisions
+- `project-state <path> record-pattern <pattern>` — appends a known pattern, saves atomically, returns updated state; capped at 50 patterns
+
 ## [0.38.0] — 2026-06-30
 
 ### New

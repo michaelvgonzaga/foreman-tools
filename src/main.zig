@@ -61,6 +61,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  device-scan\n", .{});
         try err.print("  delta-context <repo-path> [ref]\n", .{});
         try err.print("  git-cache <repo-path>\n", .{});
+        try err.print("  project-state <path> [record-decision <what> [<why>]]\n", .{});
+        try err.print("  project-state <path> [record-pattern <pattern>]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -1700,6 +1702,55 @@ pub fn main(init: std.process.Init) !void {
         }
         if (result.commits.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "project-state")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools project-state <path> [record-decision <what> [<why>]]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const ps_path = args[2];
+        var ps_mode: root.ProjectStateMode = .read;
+        if (args.len >= 5 and std.mem.eql(u8, args[3], "record-decision")) {
+            const what = args[4];
+            const why: []const u8 = if (args.len >= 6) args[5] else "";
+            ps_mode = .{ .record_decision = .{ .what = what, .why = why } };
+        } else if (args.len >= 5 and std.mem.eql(u8, args[3], "record-pattern")) {
+            ps_mode = .{ .record_pattern = args[4] };
+        }
+        const result = root.computeProjectState(gpa, io, ps_path, ps_mode) catch |e| switch (e) {
+            error.NoHome => {
+                try err.print("error: HOME not set\n", .{});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        const path_esc = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(path_esc);
+        try out.print("{{\n  \"path\": \"{s}\",\n  \"decisions\": [", .{path_esc});
+        for (result.decisions, 0..) |d, i| {
+            if (i > 0) try out.print(",", .{});
+            const date_esc = try root.allocJsonEscape(gpa, d.date);
+            defer gpa.free(date_esc);
+            const what_esc = try root.allocJsonEscape(gpa, d.what);
+            defer gpa.free(what_esc);
+            const why_esc = try root.allocJsonEscape(gpa, d.why);
+            defer gpa.free(why_esc);
+            try out.print("\n    {{\"date\": \"{s}\", \"what\": \"{s}\", \"why\": \"{s}\"}}", .{
+                date_esc, what_esc, why_esc,
+            });
+        }
+        if (result.decisions.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"knownPatterns\": [", .{});
+        for (result.known_patterns, 0..) |pat, i| {
+            if (i > 0) try out.print(",", .{});
+            const pat_esc = try root.allocJsonEscape(gpa, pat);
+            defer gpa.free(pat_esc);
+            try out.print("\n    \"{s}\"", .{pat_esc});
+        }
+        if (result.known_patterns.len > 0) try out.print("\n  ", .{});
+        try out.print("],\n  \"lastBuildResult\": null,\n  \"lastTestResult\": null\n}}\n", .{});
         try out.flush();
     } else {
         try err.print("unknown subcommand: {s}\n", .{args[1]});

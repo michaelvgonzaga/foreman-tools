@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.38.0";
+pub const VERSION = "0.39.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -5880,6 +5880,195 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
         .ahead   = ahead,
         .behind  = behind,
         .commits = try commits.toOwnedSlice(gpa),
+    };
+}
+
+// --- project-state ---
+
+const PROJECT_STATE_MAX_DECISIONS: usize = 100;
+const PROJECT_STATE_MAX_PATTERNS: usize = 50;
+
+pub const ProjectStateDecision = struct {
+    date: []u8,
+    what: []u8,
+    why: []u8,
+};
+
+pub const ProjectStateResult = struct {
+    path: []u8,
+    decisions: []ProjectStateDecision,
+    known_patterns: [][]u8,
+};
+
+pub const ProjectStateMode = union(enum) {
+    read,
+    record_decision: struct { what: []const u8, why: []const u8 },
+    record_pattern: []const u8,
+};
+
+fn projectStatePath(gpa: std.mem.Allocator, home: []const u8, project_path: []const u8) ![]u8 {
+    const key = sha256Hex(project_path);
+    return std.fmt.allocPrint(gpa, "{s}/.foreman/state/ps-{s}.json", .{ home, key });
+}
+
+fn tsToDateStr(gpa: std.mem.Allocator, ts_secs: u64) ![]u8 {
+    var d: u64 = ts_secs / 86400;
+    var y: u64 = 1970;
+    while (true) {
+        const leap = (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0);
+        const days_in_year: u64 = if (leap) 366 else 365;
+        if (d < days_in_year) break;
+        d -= days_in_year;
+        y += 1;
+    }
+    const leap = (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0);
+    const month_days = [12]u64{ 31, if (leap) @as(u64, 29) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    var m: u64 = 1;
+    for (month_days) |md| {
+        if (d < md) break;
+        d -= md;
+        m += 1;
+    }
+    d += 1;
+    return std.fmt.allocPrint(gpa, "{d:0>4}-{d:0>2}-{d:0>2}", .{ y, m, d });
+}
+
+fn parseProjectStateFile(gpa: std.mem.Allocator, io: std.Io, state_path: []const u8, decisions: *std.ArrayList(ProjectStateDecision), patterns: *std.ArrayList([]u8)) void {
+    const file = std.Io.Dir.openFileAbsolute(io, state_path, .{}) catch return;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(1 * 1024 * 1024)) catch return;
+    defer gpa.free(content);
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const obj = parsed.value.object;
+
+    // Parse decisions
+    if (obj.get("decisions")) |dv| {
+        if (dv == .array) {
+            for (dv.array.items) |item| {
+                if (item != .object) continue;
+                const d = item.object;
+                const date_v = d.get("date") orelse continue;
+                const what_v = d.get("what") orelse continue;
+                const why_v  = d.get("why")  orelse continue;
+                if (date_v != .string or what_v != .string or why_v != .string) continue;
+                const dec = ProjectStateDecision{
+                    .date = gpa.dupe(u8, date_v.string) catch continue,
+                    .what = gpa.dupe(u8, what_v.string) catch continue,
+                    .why  = gpa.dupe(u8, why_v.string)  catch continue,
+                };
+                decisions.append(gpa, dec) catch continue;
+                if (decisions.items.len >= PROJECT_STATE_MAX_DECISIONS) break;
+            }
+        }
+    }
+
+    // Parse knownPatterns
+    if (obj.get("knownPatterns")) |pv| {
+        if (pv == .array) {
+            for (pv.array.items) |item| {
+                if (item != .string) continue;
+                const pat = gpa.dupe(u8, item.string) catch continue;
+                patterns.append(gpa, pat) catch continue;
+                if (patterns.items.len >= PROJECT_STATE_MAX_PATTERNS) break;
+            }
+        }
+    }
+}
+
+fn writeProjectStateFile(gpa: std.mem.Allocator, io: std.Io, state_path: []const u8, decisions: []const ProjectStateDecision, patterns: []const []u8) void {
+    const tmp_path = std.fmt.allocPrint(gpa, "{s}.tmp", .{state_path}) catch return;
+    defer gpa.free(tmp_path);
+    const f = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch return;
+    var wbuf: [4096]u8 = undefined;
+    var w = f.writerStreaming(io, &wbuf);
+    const ok = blk: {
+        w.interface.writeAll("{\"decisions\":[") catch break :blk false;
+        for (decisions, 0..) |dec, i| {
+            if (i > 0) w.interface.writeAll(",") catch break :blk false;
+            const date_esc = allocJsonEscape(gpa, dec.date) catch break :blk false;
+            defer gpa.free(date_esc);
+            const what_esc = allocJsonEscape(gpa, dec.what) catch break :blk false;
+            defer gpa.free(what_esc);
+            const why_esc = allocJsonEscape(gpa, dec.why) catch break :blk false;
+            defer gpa.free(why_esc);
+            w.interface.print("{{\"date\":\"{s}\",\"what\":\"{s}\",\"why\":\"{s}\"}}", .{
+                date_esc, what_esc, why_esc,
+            }) catch break :blk false;
+        }
+        w.interface.writeAll("],\"knownPatterns\":[") catch break :blk false;
+        for (patterns, 0..) |pat, i| {
+            if (i > 0) w.interface.writeAll(",") catch break :blk false;
+            const pat_esc = allocJsonEscape(gpa, pat) catch break :blk false;
+            defer gpa.free(pat_esc);
+            w.interface.print("\"{s}\"", .{pat_esc}) catch break :blk false;
+        }
+        w.interface.writeAll("]}\n") catch break :blk false;
+        w.interface.flush() catch break :blk false;
+        break :blk true;
+    };
+    f.close(io);
+    if (ok) atomicRenameAbsolute(tmp_path, state_path);
+}
+
+pub fn computeProjectState(gpa: std.mem.Allocator, io: std.Io, project_path: []const u8, mode: ProjectStateMode) !ProjectStateResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+
+    // Ensure state directory exists
+    const state_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman/state", .{home});
+    defer gpa.free(state_dir);
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    defer gpa.free(foreman_dir);
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+    std.Io.Dir.createDirAbsolute(io, state_dir, .default_dir) catch {};
+
+    const state_path = try projectStatePath(gpa, home, project_path);
+    defer gpa.free(state_path);
+
+    var decisions: std.ArrayList(ProjectStateDecision) = .empty;
+    var patterns: std.ArrayList([]u8) = .empty;
+
+    parseProjectStateFile(gpa, io, state_path, &decisions, &patterns);
+
+    var dirty = false;
+
+    switch (mode) {
+        .read => {},
+        .record_decision => |rec| {
+            if (decisions.items.len < PROJECT_STATE_MAX_DECISIONS) {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                const date_str = try tsToDateStr(gpa, @intCast(ts.sec));
+                const dec = ProjectStateDecision{
+                    .date = date_str,
+                    .what = try gpa.dupe(u8, rec.what),
+                    .why  = try gpa.dupe(u8, rec.why),
+                };
+                try decisions.append(gpa, dec);
+                dirty = true;
+            }
+        },
+        .record_pattern => |pat| {
+            if (patterns.items.len < PROJECT_STATE_MAX_PATTERNS) {
+                const dup = try gpa.dupe(u8, pat);
+                try patterns.append(gpa, dup);
+                dirty = true;
+            }
+        },
+    }
+
+    if (dirty) {
+        writeProjectStateFile(gpa, io, state_path, decisions.items, patterns.items);
+    }
+
+    return .{
+        .path         = try gpa.dupe(u8, project_path),
+        .decisions    = try decisions.toOwnedSlice(gpa),
+        .known_patterns = try patterns.toOwnedSlice(gpa),
     };
 }
 
