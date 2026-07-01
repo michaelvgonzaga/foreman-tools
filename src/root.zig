@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.64.0";
+pub const VERSION = "0.65.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -3991,6 +3991,7 @@ pub const RunTestsResult = struct {
     role_confidence: []const u8, // "certain" | "uncertain"
     uncertainty_reason: []const u8, // "" when certain
     uncertainty_candidates: []const []const u8, // empty when certain
+    resolved_by: []const u8, // "detection" | "ledger" | "tie-break"
 };
 
 // Collects every test framework whose marker is present, in priority order.
@@ -4370,8 +4371,11 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
     const fw_candidates = try detectTestFrameworkCandidates(gpa, io, path);
     defer gpa.free(fw_candidates);
     if (fw_candidates.len == 0) return error.NoTestFramework;
-    const fw = fw_candidates[0];
-    const fw_uncertain = fw_candidates.len > 1;
+    const fw_question = try std.fmt.allocPrint(gpa, "which test framework for {s}: candidates are {s}", .{ path, std.mem.join(gpa, ", ", fw_candidates) catch "" });
+    defer gpa.free(fw_question);
+    const fw_resolution = try resolveCandidateViaLedger(gpa, io, fw_question, fw_candidates);
+    const fw = fw_resolution.chosen;
+    const fw_uncertain = std.mem.eql(u8, fw_resolution.resolved_by, "tie-break");
 
     const fw_argv: []const []const u8 = if (std.mem.eql(u8, fw, "jest"))
         &.{ "env", "-C", path, "npx", "jest" }
@@ -4416,8 +4420,14 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
             .failures = failures,
             .truncated = false,
             .role_confidence = if (fw_uncertain) "uncertain" else "certain",
-            .uncertainty_reason = if (fw_uncertain) "multiple test frameworks detected; picked the first by priority order" else "",
-            .uncertainty_candidates = if (fw_uncertain) (gpa.dupe([]const u8, fw_candidates) catch &[_][]const u8{}) else &[_][]const u8{},
+            .uncertainty_reason = if (fw_uncertain)
+                "multiple test frameworks detected; picked the first by priority order"
+            else if (std.mem.eql(u8, fw_resolution.resolved_by, "ledger"))
+                "multiple test frameworks detected; resolved by ledger precedent"
+            else
+                "",
+            .uncertainty_candidates = if (fw_candidates.len > 1) (gpa.dupe([]const u8, fw_candidates) catch &[_][]const u8{}) else &[_][]const u8{},
+            .resolved_by = fw_resolution.resolved_by,
         };
     };
     defer gpa.free(r.stdout);
@@ -4474,8 +4484,14 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
         .failures = failures,
         .truncated = truncated,
         .role_confidence = if (fw_uncertain) "uncertain" else "certain",
-        .uncertainty_reason = if (fw_uncertain) "multiple test frameworks detected; picked the first by priority order" else "",
-        .uncertainty_candidates = if (fw_uncertain) try gpa.dupe([]const u8, fw_candidates) else &[_][]const u8{},
+        .uncertainty_reason = if (fw_uncertain)
+            "multiple test frameworks detected; picked the first by priority order"
+        else if (std.mem.eql(u8, fw_resolution.resolved_by, "ledger"))
+            "multiple test frameworks detected; resolved by ledger precedent"
+        else
+            "",
+        .uncertainty_candidates = if (fw_candidates.len > 1) try gpa.dupe([]const u8, fw_candidates) else &[_][]const u8{},
+        .resolved_by = fw_resolution.resolved_by,
     };
 }
 
@@ -4779,6 +4795,7 @@ pub const BuildResult = struct {
     role_confidence: []const u8, // "certain" | "uncertain"
     uncertainty_reason: []const u8, // "" when certain
     uncertainty_candidates: []const []const u8, // empty when certain
+    resolved_by: []const u8, // "detection" | "ledger" | "tie-break"
 };
 
 fn appendBuildError(
@@ -5049,8 +5066,11 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
     const tool_candidates = try detectBuildToolCandidates(gpa, io, path);
     defer gpa.free(tool_candidates);
     if (tool_candidates.len == 0) return error.NoBuildSystem;
-    const tool = tool_candidates[0];
-    const tool_uncertain = tool_candidates.len > 1;
+    const tool_question = try std.fmt.allocPrint(gpa, "which build tool for {s}: candidates are {s}", .{ path, std.mem.join(gpa, ", ", tool_candidates) catch "" });
+    defer gpa.free(tool_question);
+    const tool_resolution = try resolveCandidateViaLedger(gpa, io, tool_question, tool_candidates);
+    const tool = tool_resolution.chosen;
+    const tool_uncertain = std.mem.eql(u8, tool_resolution.resolved_by, "tie-break");
 
     const argv: []const []const u8 = if (std.mem.eql(u8, tool, "cargo"))
         &.{ "env", "-C", path, "cargo", "build" }
@@ -5090,8 +5110,14 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
             .duration_ms = 0,
             .truncated = false,
             .role_confidence = if (tool_uncertain) "uncertain" else "certain",
-            .uncertainty_reason = if (tool_uncertain) "multiple build systems detected; picked the first by priority order" else "",
-            .uncertainty_candidates = if (tool_uncertain) (gpa.dupe([]const u8, tool_candidates) catch &[_][]const u8{}) else &[_][]const u8{},
+            .uncertainty_reason = if (tool_uncertain)
+                "multiple build systems detected; picked the first by priority order"
+            else if (std.mem.eql(u8, tool_resolution.resolved_by, "ledger"))
+                "multiple build systems detected; resolved by ledger precedent"
+            else
+                "",
+            .uncertainty_candidates = if (tool_candidates.len > 1) (gpa.dupe([]const u8, tool_candidates) catch &[_][]const u8{}) else &[_][]const u8{},
+            .resolved_by = tool_resolution.resolved_by,
         };
     };
     defer gpa.free(r.stdout);
@@ -5143,8 +5169,14 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
         .duration_ms = duration_ms,
         .truncated = truncated,
         .role_confidence = if (tool_uncertain) "uncertain" else "certain",
-        .uncertainty_reason = if (tool_uncertain) "multiple build systems detected; picked the first by priority order" else "",
-        .uncertainty_candidates = if (tool_uncertain) try gpa.dupe([]const u8, tool_candidates) else &[_][]const u8{},
+        .uncertainty_reason = if (tool_uncertain)
+            "multiple build systems detected; picked the first by priority order"
+        else if (std.mem.eql(u8, tool_resolution.resolved_by, "ledger"))
+            "multiple build systems detected; resolved by ledger precedent"
+        else
+            "",
+        .uncertainty_candidates = if (tool_candidates.len > 1) try gpa.dupe([]const u8, tool_candidates) else &[_][]const u8{},
+        .resolved_by = tool_resolution.resolved_by,
     };
 }
 
@@ -6711,23 +6743,14 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
     if (build_opt) |br| {
         build_ran = true;
         build_tool = br.tool;
-        if (std.mem.eql(u8, br.role_confidence, "uncertain")) {
+        if (br.uncertainty_candidates.len > 0) {
             const candidates_joined = std.mem.join(gpa, ", ", br.uncertainty_candidates) catch "";
-            const question = try std.fmt.allocPrint(gpa, "which build tool for {s}: candidates are {s}", .{ path, candidates_joined });
-            defer gpa.free(question);
-            if (try findLedgerPrecedent(gpa, io, question)) |entry| {
-                defer {
-                    gpa.free(entry.id);
-                    gpa.free(entry.date);
-                    gpa.free(entry.winner);
-                    gpa.free(entry.question);
-                    gpa.free(entry.reasoning);
-                }
+            if (std.mem.eql(u8, br.resolved_by, "ledger")) {
                 try low.append(gpa, .{
                     .source = "build",
                     .file = "",
                     .line = 0,
-                    .message = try std.fmt.allocPrint(gpa, "build tool ambiguous ({s}) but resolved by ledger precedent \"{s}\": {s}", .{ candidates_joined, entry.id, entry.reasoning }),
+                    .message = try std.fmt.allocPrint(gpa, "build tool ambiguous ({s}) but resolved by ledger precedent — using \"{s}\"", .{ candidates_joined, br.tool }),
                 });
             } else {
                 try medium.append(gpa, .{
@@ -6782,23 +6805,14 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
         test_fw = tr.framework;
         tests_passed = tr.passed;
         tests_failed = tr.failed;
-        if (std.mem.eql(u8, tr.role_confidence, "uncertain")) {
+        if (tr.uncertainty_candidates.len > 0) {
             const candidates_joined = std.mem.join(gpa, ", ", tr.uncertainty_candidates) catch "";
-            const question = try std.fmt.allocPrint(gpa, "which test framework for {s}: candidates are {s}", .{ path, candidates_joined });
-            defer gpa.free(question);
-            if (try findLedgerPrecedent(gpa, io, question)) |entry| {
-                defer {
-                    gpa.free(entry.id);
-                    gpa.free(entry.date);
-                    gpa.free(entry.winner);
-                    gpa.free(entry.question);
-                    gpa.free(entry.reasoning);
-                }
+            if (std.mem.eql(u8, tr.resolved_by, "ledger")) {
                 try low.append(gpa, .{
                     .source = "tests",
                     .file = "",
                     .line = 0,
-                    .message = try std.fmt.allocPrint(gpa, "test framework ambiguous ({s}) but resolved by ledger precedent \"{s}\": {s}", .{ candidates_joined, entry.id, entry.reasoning }),
+                    .message = try std.fmt.allocPrint(gpa, "test framework ambiguous ({s}) but resolved by ledger precedent — using \"{s}\"", .{ candidates_joined, tr.framework }),
                 });
             } else {
                 try medium.append(gpa, .{
@@ -7309,6 +7323,122 @@ fn findLedgerPrecedent(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !?
         };
     }
     return null;
+}
+
+// True if `needle` appears in `haystack` bounded by non-alphanumeric chars
+// (or string edges) on both sides — "go" matches "go build" but not "Cargo".
+fn containsWholeWord(haystack: []const u8, needle: []const u8) bool {
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, start, needle)) |pos| {
+        const before_ok = pos == 0 or !std.ascii.isAlphanumeric(haystack[pos - 1]);
+        const after_pos = pos + needle.len;
+        const after_ok = after_pos >= haystack.len or !std.ascii.isAlphanumeric(haystack[after_pos]);
+        if (before_ok and after_ok) return true;
+        start = pos + 1;
+    }
+    return false;
+}
+
+// Exact-match ledger lookup (unlike findLedgerPrecedent's fuzzy word-overlap
+// scorer): tool/framework-choice questions are templated ("which X for
+// <path>: candidates are <list>"), so fuzzy matching on shared boilerplate
+// words would conflate two different projects' unrelated ambiguities. Exact
+// equality is safe here because the caller builds the question identically
+// every time for the same path + candidate set.
+fn findExactLedgerEntry(gpa: std.mem.Allocator, io: std.Io, question: []const u8) !?LedgerEntry {
+    const home_ptr = std.c.getenv("HOME") orelse return null;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/ledger.json", .{home});
+    defer gpa.free(ledger_path);
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+
+    var entries: std.ArrayList(LedgerEntry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            gpa.free(e.id);
+            gpa.free(e.date);
+            gpa.free(e.winner);
+            gpa.free(e.question);
+            gpa.free(e.reasoning);
+        }
+        entries.deinit(gpa);
+    }
+    parseLedgerFile(gpa, io, ledger_path, &entries, now_ts);
+
+    for (entries.items) |e| {
+        if (e.is_stale) continue;
+        if (std.mem.eql(u8, e.question, question)) {
+            return LedgerEntry{
+                .id = try gpa.dupe(u8, e.id),
+                .date = try gpa.dupe(u8, e.date),
+                .recorded_ts = e.recorded_ts,
+                .revalidation_due_ts = e.revalidation_due_ts,
+                .winner = try gpa.dupe(u8, e.winner),
+                .question = try gpa.dupe(u8, e.question),
+                .reasoning = try gpa.dupe(u8, e.reasoning),
+                .is_stale = e.is_stale,
+            };
+        }
+    }
+    return null;
+}
+
+pub const CandidateResolution = struct {
+    chosen: []const u8,
+    // "detection" — only one candidate ever existed, nothing ambiguous.
+    // "ledger" — multiple candidates existed but a recorded, non-stale
+    //   ledger precedent named exactly one of them, so it overrides the
+    //   tie-break.
+    // "tie-break" — multiple candidates, no unambiguous precedent found;
+    //   `chosen` is just candidates[0] by priority order — genuinely
+    //   uncertain.
+    resolved_by: []const u8,
+};
+
+// Resolves a set of detection candidates (build tools, test frameworks) the
+// same way capability-check/route resolve tasks: check the ledger for a
+// precedent before silently trusting a priority-order tie-break. `question`
+// must be built identically on every call for the same path + candidate set
+// (callers use "which <thing> for <path>: candidates are <list>") — this
+// function requires an exact match, not a fuzzy one.
+fn resolveCandidateViaLedger(gpa: std.mem.Allocator, io: std.Io, question: []const u8, candidates: []const []const u8) !CandidateResolution {
+    if (candidates.len <= 1) {
+        return .{ .chosen = candidates[0], .resolved_by = "detection" };
+    }
+    if (try findExactLedgerEntry(gpa, io, question)) |entry| {
+        defer {
+            gpa.free(entry.id);
+            gpa.free(entry.date);
+            gpa.free(entry.winner);
+            gpa.free(entry.question);
+            gpa.free(entry.reasoning);
+        }
+        var reasoning_lower_buf: [512]u8 = undefined;
+        const rlen = @min(entry.reasoning.len, reasoning_lower_buf.len);
+        for (entry.reasoning[0..rlen], 0..) |c, i| reasoning_lower_buf[i] = std.ascii.toLower(c);
+        const reasoning_lower = reasoning_lower_buf[0..rlen];
+        // Only override when EXACTLY one candidate name appears as a whole
+        // word in the reasoning — an unambiguous signal. Reasoning that
+        // mentions two candidates (e.g. explaining why one was rejected) is
+        // not a reliable "this one wins" signal — a wrong confident pick is
+        // worse than falling through to the tie-break, so ambiguous mentions
+        // are treated as no match.
+        var matched: ?[]const u8 = null;
+        var match_count: u32 = 0;
+        for (candidates) |c| {
+            if (containsWholeWord(reasoning_lower, c)) {
+                matched = c;
+                match_count += 1;
+            }
+        }
+        if (match_count == 1) {
+            return .{ .chosen = matched.?, .resolved_by = "ledger" };
+        }
+    }
+    return .{ .chosen = candidates[0], .resolved_by = "tie-break" };
 }
 
 pub fn computeCapabilityCheck(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !CapabilityCheckResult {
@@ -10880,4 +11010,25 @@ test "ledgerWordOverlapScore: no overlap scores 0" {
 test "ledgerWordOverlapScore: short words below length 3 are ignored" {
     const score = ledgerWordOverlapScore("is it ok", "some unrelated question");
     try std.testing.expectEqual(@as(u32, 0), score);
+}
+
+test "containsWholeWord: matches a bounded word" {
+    try std.testing.expect(containsWholeWord("go build ./...", "go"));
+    try std.testing.expect(containsWholeWord("make is the correct choice", "make"));
+}
+
+test "containsWholeWord: regression — 'go' must not match inside 'Cargo'" {
+    // The exact bug found live: candidate "go" falsely matched substring
+    // "go" inside "cargo" (car-go), silently overriding to the wrong tool.
+    try std.testing.expect(!containsWholeWord("dummy cargo.toml present", "go"));
+}
+
+test "containsWholeWord: no match when absent entirely" {
+    try std.testing.expect(!containsWholeWord("this reasoning mentions neither", "zig"));
+}
+
+test "containsWholeWord: word at string boundaries matches" {
+    try std.testing.expect(containsWholeWord("zig", "zig"));
+    try std.testing.expect(containsWholeWord("use zig", "zig"));
+    try std.testing.expect(containsWholeWord("zig is correct", "zig"));
 }

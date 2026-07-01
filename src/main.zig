@@ -1477,7 +1477,7 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         if (result.failures.len > 0) try out.print("\n  ", .{});
-        try out.print("],\n  \"truncated\": {s},\n  \"roleConfidence\": \"{s}\",\n  \"uncertaintyReason\": \"{s}\",\n  \"uncertaintyCandidates\": [", .{ if (result.truncated) "true" else "false", result.role_confidence, result.uncertainty_reason });
+        try out.print("],\n  \"truncated\": {s},\n  \"roleConfidence\": \"{s}\",\n  \"resolvedBy\": \"{s}\",\n  \"uncertaintyReason\": \"{s}\",\n  \"uncertaintyCandidates\": [", .{ if (result.truncated) "true" else "false", result.role_confidence, result.resolved_by, result.uncertainty_reason });
         for (result.uncertainty_candidates, 0..) |c, i| {
             if (i > 0) try out.print(", ", .{});
             try out.print("\"{s}\"", .{c});
@@ -1648,7 +1648,7 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         if (result.warnings.len > 0) try out.print("\n  ", .{});
-        try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s},\n  \"roleConfidence\": \"{s}\",\n  \"uncertaintyReason\": \"{s}\",\n  \"uncertaintyCandidates\": [", .{ result.duration_ms, if (result.truncated) "true" else "false", result.role_confidence, result.uncertainty_reason });
+        try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s},\n  \"roleConfidence\": \"{s}\",\n  \"resolvedBy\": \"{s}\",\n  \"uncertaintyReason\": \"{s}\",\n  \"uncertaintyCandidates\": [", .{ result.duration_ms, if (result.truncated) "true" else "false", result.role_confidence, result.resolved_by, result.uncertainty_reason });
         for (result.uncertainty_candidates, 0..) |c, i| {
             if (i > 0) try out.print(", ", .{});
             try out.print("\"{s}\"", .{c});
