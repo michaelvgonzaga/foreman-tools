@@ -49,6 +49,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  context-rank <root-path> <query>\n", .{});
         try err.print("  context-changed <repo-path> [ref]\n", .{});
         try err.print("  context-evidence <file-path> <pattern>\n", .{});
+        try err.print("  context-budget <file-path> [<file-path>...]\n", .{});
+        try err.print("  context-gate <path> --task \"<task description>\"\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -1156,6 +1158,85 @@ pub fn main(init: std.process.Init) !void {
             try out.writeAll("\n");
         }
         try out.writeAll("  ]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-budget")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools context-budget <file-path> [<file-path>...]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = try root.computeContextBudget(gpa, io, args[2..]);
+        defer {
+            for (result.breakdown) |e| gpa.free(e.path);
+            gpa.free(result.breakdown);
+        }
+
+        try out.print("{{\n  \"tokenEstimate\": {d},\n  \"risk\": \"{s}\",\n  \"breakdown\": [\n", .{ result.tokenEstimate, result.risk });
+        for (result.breakdown, 0..) |e, i| {
+            const esc_path = try root.allocJsonEscape(gpa, e.path);
+            defer gpa.free(esc_path);
+            try out.print("    {{\"path\": \"{s}\", \"bytes\": {d}, \"tokens\": {d}}}", .{ esc_path, e.bytes, e.tokens });
+            if (i + 1 < result.breakdown.len) try out.writeAll(",");
+            try out.writeAll("\n");
+        }
+        try out.writeAll("  ]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-gate")) {
+        var task: ?[]const u8 = null;
+        var i: usize = 3;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--task") and i + 1 < args.len) {
+                task = args[i + 1];
+                i += 1;
+            }
+        }
+
+        if (args.len < 3 or task == null) {
+            try err.print("usage: 4orman-tools context-gate <path> --task \"<task description>\"\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeContextGate(gpa, io, args[2], task.?) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            gpa.free(result.task);
+            for (result.includeFiles) |f| gpa.free(f);
+            gpa.free(result.includeFiles);
+            gpa.free(result.reason);
+        }
+
+        const esc_task = try root.allocJsonEscape(gpa, result.task);
+        defer gpa.free(esc_task);
+        const esc_reason = try root.allocJsonEscape(gpa, result.reason);
+        defer gpa.free(esc_reason);
+
+        try out.print(
+            "{{\n  \"task\": \"{s}\",\n  \"token_estimate\": {d},\n  \"risk\": \"{s}\",\n  \"include\": {{\n    \"files\": [",
+            .{ esc_task, result.tokenEstimate, result.risk },
+        );
+        for (result.includeFiles, 0..) |f, fi| {
+            const esc_f = try root.allocJsonEscape(gpa, f);
+            defer gpa.free(esc_f);
+            if (fi > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{esc_f});
+        }
+        try out.print(
+            "],\n    \"errors\": [],\n    \"diff\": {s}\n  }},\n  \"exclude\": {{\n    \"dirs\": [\"zig-cache\", \".zig-cache\", \"zig-out\", \".git\", \"node_modules\"],\n    \"large_files\": true,\n    \"secrets\": {s}\n  }},\n  \"next_action\": {{\n    \"send_to_ai\": {s},\n    \"reason\": \"{s}\"\n  }}\n}}\n",
+            .{
+                if (result.includeDiff) "true" else "false",
+                if (result.excludeSecrets) "true" else "false",
+                if (result.sendToAi) "true" else "false",
+                esc_reason,
+            },
+        );
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
         if (args.len < 3) {
