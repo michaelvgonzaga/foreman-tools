@@ -3,3 +3,6 @@ zig-cache/
 zig-out/
 .DS_Store
 *.tar.gz
+foreman-tools
+foreman-tools-arm64
+foreman-tools-x86_64
