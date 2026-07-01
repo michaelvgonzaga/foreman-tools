@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  git-cache <repo-path>\n", .{});
         try err.print("  project-state <path> [record-decision <what> [<why>]]\n", .{});
         try err.print("  project-state <path> [record-pattern <pattern>]\n", .{});
-        try err.print("  ledger [show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]\n", .{});
+        try err.print("  ledger [show | record <winner> <question> <reasoning> | record-jungian <question> <chosen> <shadow> <synthesis> | check-stale | validate <id> | score <question> <sources-json>]\n", .{});
         try err.print("  shell-run [--timeout <ms>] <shell-command>\n", .{});
         try err.print("  quality-gate <path>\n", .{});
         try err.print("  validate-schema <file> <schema>\n", .{});
@@ -2012,6 +2012,13 @@ pub fn main(init: std.process.Init) !void {
                         std.process.exit(1);
                     }
                     ledger_mode = .{ .validate = args[3] };
+                } else if (std.mem.eql(u8, args[2], "record-jungian")) {
+                    if (args.len < 7) {
+                        try err.print("usage: 4orman-tools ledger record-jungian <question> <chosen> <shadow> <synthesis>\n", .{});
+                        try err.flush();
+                        std.process.exit(1);
+                    }
+                    ledger_mode = .{ .record_jungian = .{ .question = args[3], .chosen = args[4], .shadow = args[5], .synthesis = args[6] } };
                 }
             }
             const lresult = root.computeLedger(gpa, io, ledger_mode) catch |e| switch (e) {
@@ -2035,8 +2042,14 @@ pub fn main(init: std.process.Init) !void {
                 defer gpa.free(q_esc);
                 const r_esc = try root.allocJsonEscape(gpa, e.reasoning);
                 defer gpa.free(r_esc);
-                try out.print("\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"recorded_ts\": {d}, \"revalidation_due_ts\": {d}, \"winner\": \"{s}\", \"question\": \"{s}\", \"reasoning\": \"{s}\", \"is_stale\": {s}}}", .{
-                    id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, win_esc, q_esc, r_esc,
+                const cat_esc = try root.allocJsonEscape(gpa, e.category);
+                defer gpa.free(cat_esc);
+                const shadow_esc = try root.allocJsonEscape(gpa, e.shadow);
+                defer gpa.free(shadow_esc);
+                const synth_esc = try root.allocJsonEscape(gpa, e.synthesis);
+                defer gpa.free(synth_esc);
+                try out.print("\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"recorded_ts\": {d}, \"revalidation_due_ts\": {d}, \"category\": \"{s}\", \"winner\": \"{s}\", \"question\": \"{s}\", \"reasoning\": \"{s}\", \"shadow\": \"{s}\", \"synthesis\": \"{s}\", \"is_stale\": {s}}}", .{
+                    id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, cat_esc, win_esc, q_esc, r_esc, shadow_esc, synth_esc,
                     if (e.is_stale) "true" else "false",
                 });
             }

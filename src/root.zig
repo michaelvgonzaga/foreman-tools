@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.65.0";
+pub const VERSION = "0.66.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7285,6 +7285,9 @@ fn findLedgerPrecedent(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !?
             gpa.free(e.winner);
             gpa.free(e.question);
             gpa.free(e.reasoning);
+            gpa.free(e.category);
+            gpa.free(e.shadow);
+            gpa.free(e.synthesis);
         }
         entries.deinit(gpa);
     }
@@ -7297,7 +7300,10 @@ fn findLedgerPrecedent(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !?
     var best_score: u32 = 0;
     var best_idx: ?usize = null;
     for (entries.items, 0..) |e, idx| {
-        if (e.is_stale) continue;
+        // Jungian entries are values trade-offs, not factual/tool-choice
+        // precedent — they must never silently override a capability-check,
+        // route, build, or test-framework decision.
+        if (e.is_stale or std.mem.eql(u8, e.category, "jungian")) continue;
         const qn_lower = try gpa.alloc(u8, e.question.len);
         defer gpa.free(qn_lower);
         for (e.question, 0..) |c, i| qn_lower[i] = std.ascii.toLower(c);
@@ -7320,6 +7326,9 @@ fn findLedgerPrecedent(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !?
             .question = try gpa.dupe(u8, e.question),
             .reasoning = try gpa.dupe(u8, e.reasoning),
             .is_stale = e.is_stale,
+            .category = try gpa.dupe(u8, e.category),
+            .shadow = try gpa.dupe(u8, e.shadow),
+            .synthesis = try gpa.dupe(u8, e.synthesis),
         };
     }
     return null;
@@ -7363,13 +7372,18 @@ fn findExactLedgerEntry(gpa: std.mem.Allocator, io: std.Io, question: []const u8
             gpa.free(e.winner);
             gpa.free(e.question);
             gpa.free(e.reasoning);
+            gpa.free(e.category);
+            gpa.free(e.shadow);
+            gpa.free(e.synthesis);
         }
         entries.deinit(gpa);
     }
     parseLedgerFile(gpa, io, ledger_path, &entries, now_ts);
 
     for (entries.items) |e| {
-        if (e.is_stale) continue;
+        // Same boundary as findLedgerPrecedent: jungian entries never
+        // resolve a tool-choice ambiguity.
+        if (e.is_stale or std.mem.eql(u8, e.category, "jungian")) continue;
         if (std.mem.eql(u8, e.question, question)) {
             return LedgerEntry{
                 .id = try gpa.dupe(u8, e.id),
@@ -7380,6 +7394,9 @@ fn findExactLedgerEntry(gpa: std.mem.Allocator, io: std.Io, question: []const u8
                 .question = try gpa.dupe(u8, e.question),
                 .reasoning = try gpa.dupe(u8, e.reasoning),
                 .is_stale = e.is_stale,
+                .category = try gpa.dupe(u8, e.category),
+                .shadow = try gpa.dupe(u8, e.shadow),
+                .synthesis = try gpa.dupe(u8, e.synthesis),
             };
         }
     }
@@ -9093,6 +9110,9 @@ pub const LedgerEntry = struct {
     question: []u8,
     reasoning: []u8,
     is_stale: bool,
+    category: []u8, // "rps" (default, factual Claude-vs-Zig contest) | "jungian" (values trade-off)
+    shadow: []u8, // "" for "rps" entries — jungian: strongest case against the chosen path
+    synthesis: []u8, // "" for "rps" entries — jungian: what's retained/sacrificed
 };
 
 pub const LedgerResult = struct {
@@ -9104,6 +9124,11 @@ pub const LedgerResult = struct {
 pub const LedgerMode = union(enum) {
     show: void,
     record: struct { winner: []const u8, question: []const u8, reasoning: []const u8 },
+    // Values trade-off, not a factual contest — no winner. `chosen` is the
+    // decision; `shadow` is the strongest case against it (not a strawman);
+    // `synthesis` states what's retained from the rejected alternative and
+    // what's consciously sacrificed.
+    record_jungian: struct { question: []const u8, chosen: []const u8, shadow: []const u8, synthesis: []const u8 },
     check_stale: void,
     validate: []const u8,
 };
@@ -9140,6 +9165,21 @@ fn parseLedgerFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries
             .integer => |n| n,
             else => continue,
         };
+        // Added after the original schema shipped — missing on every entry
+        // recorded before this migration. Default to "rps"/"" so old entries
+        // keep parsing exactly as they did.
+        const category_str: []const u8 = if (o.get("category")) |cv| switch (cv) {
+            .string => cv.string,
+            else => "rps",
+        } else "rps";
+        const shadow_str: []const u8 = if (o.get("shadow")) |sv| switch (sv) {
+            .string => sv.string,
+            else => "",
+        } else "";
+        const synthesis_str: []const u8 = if (o.get("synthesis")) |sv| switch (sv) {
+            .string => sv.string,
+            else => "",
+        } else "";
         const entry = LedgerEntry{
             .id = gpa.dupe(u8, id_v.string) catch continue,
             .date = gpa.dupe(u8, date_v.string) catch continue,
@@ -9149,6 +9189,9 @@ fn parseLedgerFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries
             .question = gpa.dupe(u8, q_v.string) catch continue,
             .reasoning = gpa.dupe(u8, r_v.string) catch continue,
             .is_stale = now_ts > rev_ts,
+            .category = gpa.dupe(u8, category_str) catch continue,
+            .shadow = gpa.dupe(u8, shadow_str) catch continue,
+            .synthesis = gpa.dupe(u8, synthesis_str) catch continue,
         };
         entries.append(gpa, entry) catch continue;
         if (entries.items.len >= LEDGER_MAX_ENTRIES) break;
@@ -9175,9 +9218,16 @@ fn writeLedgerFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries
             defer gpa.free(q_esc);
             const r_esc = allocJsonEscape(gpa, e.reasoning) catch break :blk false;
             defer gpa.free(r_esc);
-            w.interface.print("{{\"id\":\"{s}\",\"date\":\"{s}\",\"recorded_ts\":{d},\"revalidation_due_ts\":{d},\"winner\":\"{s}\",\"question\":\"{s}\",\"reasoning\":\"{s}\",\"is_stale\":{s}}}", .{
+            const cat_esc = allocJsonEscape(gpa, e.category) catch break :blk false;
+            defer gpa.free(cat_esc);
+            const shadow_esc = allocJsonEscape(gpa, e.shadow) catch break :blk false;
+            defer gpa.free(shadow_esc);
+            const synth_esc = allocJsonEscape(gpa, e.synthesis) catch break :blk false;
+            defer gpa.free(synth_esc);
+            w.interface.print("{{\"id\":\"{s}\",\"date\":\"{s}\",\"recorded_ts\":{d},\"revalidation_due_ts\":{d},\"winner\":\"{s}\",\"question\":\"{s}\",\"reasoning\":\"{s}\",\"is_stale\":{s},\"category\":\"{s}\",\"shadow\":\"{s}\",\"synthesis\":\"{s}\"}}", .{
                 id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, win_esc, q_esc, r_esc,
                 if (e.is_stale) "true" else "false",
+                cat_esc, shadow_esc, synth_esc,
             }) catch break :blk false;
         }
         w.interface.writeAll("]}\n") catch break :blk false;
@@ -9221,6 +9271,35 @@ pub fn computeLedger(gpa: std.mem.Allocator, io: std.Io, mode: LedgerMode) !Ledg
                 .question = try gpa.dupe(u8, rec.question),
                 .reasoning = try gpa.dupe(u8, rec.reasoning),
                 .is_stale = false,
+                .category = try gpa.dupe(u8, "rps"),
+                .shadow = try gpa.dupe(u8, ""),
+                .synthesis = try gpa.dupe(u8, ""),
+            };
+            try entries.append(gpa, entry);
+            writeLedgerFile(gpa, io, ledger_path, entries.items);
+        },
+        .record_jungian => |rj| {
+            // No "winner" concept for a values trade-off — the chosen path
+            // is stored in the `winner` field for schema-consistency with
+            // "rps" entries (same free-text field, different meaning by
+            // category), rather than adding yet another column.
+            const date = try tsToDateStr(gpa, @intCast(now_ts));
+            defer gpa.free(date);
+            const id_src = try std.fmt.allocPrint(gpa, "jungian:{s}:{s}", .{ rj.question, date });
+            defer gpa.free(id_src);
+            const hex = sha256Hex(id_src);
+            const entry = LedgerEntry{
+                .id = try gpa.dupe(u8, hex[0..16]),
+                .date = try gpa.dupe(u8, date),
+                .recorded_ts = now_ts,
+                .revalidation_due_ts = now_ts + LEDGER_STALE_SECS,
+                .winner = try gpa.dupe(u8, rj.chosen),
+                .question = try gpa.dupe(u8, rj.question),
+                .reasoning = try gpa.dupe(u8, ""),
+                .is_stale = false,
+                .category = try gpa.dupe(u8, "jungian"),
+                .shadow = try gpa.dupe(u8, rj.shadow),
+                .synthesis = try gpa.dupe(u8, rj.synthesis),
             };
             try entries.append(gpa, entry);
             writeLedgerFile(gpa, io, ledger_path, entries.items);
@@ -11031,4 +11110,51 @@ test "containsWholeWord: word at string boundaries matches" {
     try std.testing.expect(containsWholeWord("zig", "zig"));
     try std.testing.expect(containsWholeWord("use zig", "zig"));
     try std.testing.expect(containsWholeWord("zig is correct", "zig"));
+}
+
+// Locks in that parseLedgerFile keeps reading pre-Jungian-category
+// ledger.json files (no "category"/"shadow"/"synthesis" fields) correctly,
+// with safe defaults, once those fields are added to the schema. Written
+// before the schema change so it fails loudly if the migration breaks
+// backward compat with every ledger.json already on disk.
+test "parseLedgerFile: old-format entry (no category/shadow/synthesis) parses with defaults" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const path = "/tmp/4orman-tools-test-ledger-compat-old-format.json";
+    const old_format =
+        \\{"entries":[{"id":"abc123","date":"2026-01-01","recorded_ts":1,"revalidation_due_ts":99999999999,"winner":"zig","question":"old question","reasoning":"old reasoning","is_stale":false}]}
+    ;
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        defer f.close(io);
+        var wbuf: [512]u8 = undefined;
+        var w = f.writerStreaming(io, &wbuf);
+        try w.interface.writeAll(old_format);
+        try w.interface.flush();
+    }
+
+    var entries: std.ArrayList(LedgerEntry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            gpa.free(e.id);
+            gpa.free(e.date);
+            gpa.free(e.winner);
+            gpa.free(e.question);
+            gpa.free(e.reasoning);
+            gpa.free(e.category);
+            gpa.free(e.shadow);
+            gpa.free(e.synthesis);
+        }
+        entries.deinit(gpa);
+    }
+    parseLedgerFile(gpa, io, path, &entries, 2);
+
+    try std.testing.expectEqual(@as(usize, 1), entries.items.len);
+    const e = entries.items[0];
+    try std.testing.expectEqualStrings("abc123", e.id);
+    try std.testing.expectEqualStrings("old question", e.question);
+    try std.testing.expectEqualStrings("old reasoning", e.reasoning);
+    try std.testing.expectEqualStrings("rps", e.category);
+    try std.testing.expectEqualStrings("", e.shadow);
+    try std.testing.expectEqualStrings("", e.synthesis);
 }
