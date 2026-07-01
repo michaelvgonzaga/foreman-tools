@@ -989,6 +989,54 @@ Miss:
 
 ---
 
+---
+
+## `plugin-run <name> [args...]`
+
+Executes a plugin and returns its JSON stdout verbatim.
+
+**Success** — the script's own JSON output (shape is plugin-defined).
+
+**Error cases** (exit 1):
+```json
+{ "error": "plugin not found" }
+{ "error": "invalid manifest: missing field 'entry'" }
+{ "error": "worker failed: <stderr from script>" }
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| output | any | verbatim JSON stdout from the plugin script |
+
+---
+
+## `plugin-list`
+
+```json
+{
+  "plugins": [
+    { "name": "summarize-pr", "lang": "python", "description": "fetch a PR and return a structured summary", "args": "<pr-url>", "entry": "run.py" }
+  ],
+  "count": 1,
+  "skipped": []
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `plugins` | array | one entry per valid plugin in `~/.foreman/plugins/` |
+| `plugins[].name` | string | directory name under `~/.foreman/plugins/` |
+| `plugins[].lang` | string | any `worker-run` runtime |
+| `plugins[].description` | string | from manifest |
+| `plugins[].args` | string | hint string for `route`/`capability-check` |
+| `plugins[].entry` | string | script filename relative to plugin directory |
+| `count` | int | number of valid plugins |
+| `skipped` | array | paths of directories with missing or malformed manifests |
+
+**Errors:** exit 1 only if `~/.foreman/plugins/` cannot be opened. Missing/malformed individual manifests are skipped and listed in `skipped`.
+
+---
+
 ## Schema change policy
 
 Any modification to an existing subcommand's output shape (field rename, type change, enum value addition/removal, field removal) requires:
