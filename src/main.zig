@@ -86,6 +86,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  state-merge <file1> <file2>\n", .{});
         try err.print("  tui [<foreman-root>]\n", .{});
         try err.print("  knowledge-audit <project-path> [<foreman-root>]\n", .{});
+        try err.print("  export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]\n", .{});
+        try err.print("  import <source-path> [<foreman-root>]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2398,6 +2400,51 @@ pub fn main(init: std.process.Init) !void {
             try out.print("    {{\"label\": \"{s}\", \"source\": \"{s}\"}}{s}\n", .{ item.label, item.source, comma });
         }
         try out.print("  ]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "export")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const project_path = args[2];
+        var format_str: []const u8 = "fmz";
+        var out_dir: []const u8 = ".";
+        var i: usize = 3;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--format") and i + 1 < args.len) {
+                format_str = args[i + 1];
+                i += 1;
+            } else if (std.mem.eql(u8, args[i], "--out") and i + 1 < args.len) {
+                out_dir = args[i + 1];
+                i += 1;
+            }
+        }
+        const home = std.mem.sliceTo(std.c.getenv("HOME") orelse ".", 0);
+        const foreman_root = try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
+        defer gpa.free(foreman_root);
+        const result = try root.computeExport(gpa, io, project_path, foreman_root, format_str, out_dir);
+        const success_str: []const u8 = if (result.success) "true" else "false";
+        try out.print("{{\n  \"name\": \"{s}\",\n  \"version\": \"{s}\",\n  \"format\": \"{s}\",\n  \"output_path\": \"{s}\",\n  \"success\": {s},\n  \"note\": \"{s}\"\n}}\n", .{
+            result.name, result.version, result.format, result.output_path, success_str, result.note,
+        });
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "import")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools import <source-path> [<foreman-root>]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const source_path = args[2];
+        const foreman_root = if (args.len >= 4) args[3] else blk: {
+            const home = std.mem.sliceTo(std.c.getenv("HOME") orelse ".", 0);
+            break :blk try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
+        };
+        const result = try root.computeImport(gpa, io, source_path, foreman_root);
+        const success_str: []const u8 = if (result.success) "true" else "false";
+        try out.print("{{\n  \"name\": \"{s}\",\n  \"dest_path\": \"{s}\",\n  \"source_format\": \"{s}\",\n  \"deps_note\": \"{s}\",\n  \"success\": {s},\n  \"note\": \"{s}\"\n}}\n", .{
+            result.name, result.dest_path, result.source_format, result.deps_note, success_str, result.note,
+        });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "registry")) {
         const result = root.computeRegistry();

@@ -2,6 +2,27 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.60.0] — 2026-07-01
+
+### New
+- `export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]` — package a project for distribution or archival; fmz format is a tar.gz containing `foreman.manifest.json` + git-archive of project source + `knowledge/`; brew/mac/linux/windows formats emit installer scripts; backup format snapshots the entire foreman workspace (all project .fmz files + ledger + framework files)
+- `import <source-path> [<foreman-root>]` — absorb a `.fmz` or raw project directory into the foreman workspace; detects workspace backup vs single project from manifest `kind` field; carries over `knowledge/` directory; aborts if destination already exists
+
+## [0.59.0] — 2026-07-01
+
+### New
+- `knowledge-audit <project-path> [<foreman-root>]` — pre-export/archive gate; scans a project across 7 checks: spec.md present, CLAUDE.md decision log entries, knowledge/ files exist, _knowledgebase/ mirror entry, git repo clean, HEAD pushed to remote, ledger references; returns `{ ready, captured[], unextracted[], warnings[] }`; `ready: true` only when both `unextracted` and `warnings` are empty
+
+## [0.58.0] — 2026-07-01
+
+### New
+- `tui [<foreman-root>]` — interactive split-panel project dashboard; left panel lists all Foreman projects (j/k/arrow navigate), right panel shows project detail with release state and MVP readiness checklist; q to quit, r to reload; powered by embedded Python curses renderer (`@embedFile("tui.py")`); SIGWINCH resize support
+
+## [0.57.0] — 2026-07-01
+
+### New
+- `ledger [show|record <winner> <question> <reasoning>|check-stale|validate <id>|score <question> <sources-json>]` — decision ledger implementing the Rigged Rock-Paper-Scissors protocol; stores Claude-vs-Zig contested decisions at `~/.foreman/ledger.json`; score computes composite from ≥10 cited live sources (10pt each, -10 if contradicted); Zig stored entry beats Claude reasoning at tiebreak; 365-day staleness tracking; append-only
+
 ## [0.56.0] — 2026-07-01
 
 ### New

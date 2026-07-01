@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.59.0";
+pub const VERSION = "0.60.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7019,6 +7019,8 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "state-merge", .description = "merge two JSON objects — array fields concatenated, non-array fields v2 wins; use to combine multi-agent partial results", .args = "<file1> <file2>" },
         .{ .name = "tui", .description = "interactive project dashboard — j/k navigate, q quit, r reload", .args = "[<foreman-root>]" },
         .{ .name = "knowledge-audit", .description = "audit project knowledge extraction — safe-to-delete gate before export/archive", .args = "<project-path> [<foreman-root>]" },
+        .{ .name = "export", .description = "package a project as .fmz or generate a platform installer script", .args = "<project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]" },
+        .{ .name = "import", .description = "absorb a .fmz or raw project directory into ~/foreman", .args = "<source-path> [<foreman-root>]" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -9397,6 +9399,554 @@ pub fn computeKnowledgeAudit(
         .captured = try captured.toOwnedSlice(gpa),
         .unextracted = try unextracted.toOwnedSlice(gpa),
         .warnings = try warnings.toOwnedSlice(gpa),
+    };
+}
+
+// --- export / import subcommands ---
+
+pub const ExportResult = struct {
+    output_path: []const u8, // owned — absolute path to generated file
+    name: []const u8,        // owned
+    version: []const u8,     // owned
+    format: []const u8,      // owned — "fmz"|"brew"|"mac"|"linux"|"windows"|"backup"
+    success: bool,
+    note: []const u8,        // owned — next-steps / install hint
+};
+
+pub const ImportResult = struct {
+    name: []const u8,          // owned
+    dest_path: []const u8,     // owned
+    source_format: []const u8, // owned — "fmz" | "directory"
+    deps_note: []const u8,     // owned
+    success: bool,
+    note: []const u8,          // owned
+};
+
+fn exportRunIgnore(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) void {
+    const r = std.process.run(gpa, io, .{ .argv = argv }) catch return;
+    gpa.free(r.stdout);
+    gpa.free(r.stderr);
+}
+
+fn exportWriteFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, content: []const u8) bool {
+    const tmp = std.fmt.allocPrint(gpa, "{s}.tmp", .{path}) catch return false;
+    defer gpa.free(tmp);
+    const cf = std.Io.Dir.createFileAbsolute(io, tmp, .{}) catch return false;
+    var wbuf: [8192]u8 = undefined;
+    var w = cf.writerStreaming(io, &wbuf);
+    const ok = blk: {
+        w.interface.writeAll(content) catch break :blk false;
+        w.interface.flush() catch break :blk false;
+        break :blk true;
+    };
+    cf.close(io);
+    if (!ok) return false;
+    atomicRenameAbsolute(tmp, path);
+    return true;
+}
+
+fn exportWriteManifest(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    name: []const u8,
+    version: []const u8,
+    description: []const u8,
+    github_url: []const u8,
+    kind: []const u8,
+) bool {
+    const json = std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "name": "{s}",
+        \\  "version": "{s}",
+        \\  "foreman_min": "{s}",
+        \\  "description": "{s}",
+        \\  "kind": "{s}",
+        \\  "github_url": "{s}",
+        \\  "deps": {{"brew": [], "apt": [], "winget": []}},
+        \\  "knowledge_files": []
+        \\}}
+        \\
+    , .{ name, version, VERSION, description, kind, github_url }) catch return false;
+    defer gpa.free(json);
+    return exportWriteFile(gpa, io, path, json);
+}
+
+fn exportGetVersion(gpa: std.mem.Allocator, io: std.Io, project_path: []const u8) []const u8 {
+    const raw = runGit(gpa, io, project_path, &.{ "describe", "--tags", "--abbrev=0" }) catch
+        return gpa.dupe(u8, "0.0.0") catch "0.0.0";
+    defer gpa.free(raw);
+    return gpa.dupe(u8, std.mem.trim(u8, raw, " \n\r")) catch "0.0.0";
+}
+
+fn exportGetGithubUrl(gpa: std.mem.Allocator, io: std.Io, project_path: []const u8) []const u8 {
+    const raw = runGit(gpa, io, project_path, &.{ "remote", "get-url", "origin" }) catch
+        return gpa.dupe(u8, "") catch "";
+    defer gpa.free(raw);
+    const trimmed = std.mem.trim(u8, raw, " \n\r");
+    if (std.mem.startsWith(u8, trimmed, "git@github.com:")) {
+        const rest = trimmed["git@github.com:".len..];
+        const repo_name = if (std.mem.endsWith(u8, rest, ".git")) rest[0 .. rest.len - 4] else rest;
+        return std.fmt.allocPrint(gpa, "https://github.com/{s}", .{repo_name}) catch "";
+    }
+    return gpa.dupe(u8, trimmed) catch "";
+}
+
+fn exportFmz(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    project_path: []const u8,
+    out_dir: []const u8,
+    github_url: []const u8,
+    version: []const u8,
+    name: []const u8,
+    staging_root: []const u8,
+) ExportResult {
+    const pkg_name = std.fmt.allocPrint(gpa, "{s}-{s}", .{ name, version }) catch
+        return .{ .output_path = gpa.dupe(u8, "") catch "", .name = gpa.dupe(u8, name) catch "", .version = gpa.dupe(u8, version) catch "", .format = gpa.dupe(u8, "fmz") catch "", .success = false, .note = gpa.dupe(u8, "out of memory") catch "" };
+    defer gpa.free(pkg_name);
+
+    const staging = std.fmt.allocPrint(gpa, "{s}/{s}", .{ staging_root, pkg_name }) catch return .{ .output_path = gpa.dupe(u8, "") catch "", .name = gpa.dupe(u8, name) catch "", .version = gpa.dupe(u8, version) catch "", .format = gpa.dupe(u8, "fmz") catch "", .success = false, .note = gpa.dupe(u8, "out of memory") catch "" };
+    defer gpa.free(staging);
+    std.Io.Dir.createDirAbsolute(io, staging, .default_dir) catch {};
+
+    // Manifest
+    const manifest_path = std.fmt.allocPrint(gpa, "{s}/foreman.manifest.json", .{staging}) catch "";
+    defer gpa.free(manifest_path);
+    _ = exportWriteManifest(gpa, io, manifest_path, name, version, "", github_url, "project");
+
+    // git archive → project/
+    const project_staging = std.fmt.allocPrint(gpa, "{s}/project", .{staging}) catch "";
+    defer gpa.free(project_staging);
+    std.Io.Dir.createDirAbsolute(io, project_staging, .default_dir) catch {};
+
+    const archive_tmp = std.fmt.allocPrint(gpa, "{s}/source.tar.gz", .{staging_root}) catch "";
+    defer gpa.free(archive_tmp);
+
+    var git_argv: std.ArrayList([]const u8) = .empty;
+    defer git_argv.deinit(gpa);
+    git_argv.append(gpa, "archive") catch {};
+    git_argv.append(gpa, "--format=tar.gz") catch {};
+    const output_arg = std.fmt.allocPrint(gpa, "--output={s}", .{archive_tmp}) catch "";
+    defer gpa.free(output_arg);
+    git_argv.append(gpa, output_arg) catch {};
+    git_argv.append(gpa, "HEAD") catch {};
+
+    const git_out = runGit(gpa, io, project_path, git_argv.items) catch null;
+    if (git_out) |o| gpa.free(o);
+
+    if (fileExists(io, archive_tmp)) {
+        exportRunIgnore(gpa, io, &.{ "tar", "-xzf", archive_tmp, "-C", project_staging });
+    }
+
+    // knowledge/ if present
+    const knowledge_src = std.fmt.allocPrint(gpa, "{s}/knowledge", .{project_path}) catch "";
+    defer gpa.free(knowledge_src);
+    if (fileExists(io, knowledge_src)) {
+        const knowledge_dst = std.fmt.allocPrint(gpa, "{s}/knowledge", .{staging}) catch "";
+        defer gpa.free(knowledge_dst);
+        exportRunIgnore(gpa, io, &.{ "cp", "-r", knowledge_src, knowledge_dst });
+    }
+
+    // Create .fmz
+    const fmz_filename = std.fmt.allocPrint(gpa, "{s}-{s}.fmz", .{ name, version }) catch "";
+    defer gpa.free(fmz_filename);
+    const out_path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ out_dir, fmz_filename }) catch
+        return .{ .output_path = gpa.dupe(u8, "") catch "", .name = gpa.dupe(u8, name) catch "", .version = gpa.dupe(u8, version) catch "", .format = gpa.dupe(u8, "fmz") catch "", .success = false, .note = gpa.dupe(u8, "out of memory") catch "" };
+
+    const tar_result = std.process.run(gpa, io, .{
+        .argv = &.{ "tar", "-czf", out_path, "-C", staging_root, pkg_name },
+    }) catch null;
+    const success = blk: {
+        if (tar_result) |tr| {
+            defer gpa.free(tr.stdout);
+            defer gpa.free(tr.stderr);
+            break :blk switch (tr.term) {
+                .exited => |c| c == 0,
+                else => false,
+            };
+        }
+        break :blk false;
+    };
+
+    return ExportResult{
+        .output_path = out_path,
+        .name = gpa.dupe(u8, name) catch "",
+        .version = gpa.dupe(u8, version) catch "",
+        .format = gpa.dupe(u8, "fmz") catch "",
+        .success = success,
+        .note = if (success)
+            std.fmt.allocPrint(gpa, "import on any machine: foreman-tools import {s}", .{fmz_filename}) catch ""
+        else
+            gpa.dupe(u8, "export failed — ensure git repo has at least one commit") catch "",
+    };
+}
+
+pub fn computeExport(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    project_path: []const u8,
+    foreman_root: []const u8,
+    format_str: []const u8,
+    out_dir: []const u8,
+) !ExportResult {
+    const name = std.fs.path.basename(project_path);
+    const pid: c_int = std.c.getpid();
+    const version = exportGetVersion(gpa, io, project_path);
+    errdefer gpa.free(version);
+    const github_url = exportGetGithubUrl(gpa, io, project_path);
+    errdefer gpa.free(github_url);
+
+    // Text-only formats — write a script file, no staging dir needed
+    if (std.mem.eql(u8, format_str, "brew") or
+        std.mem.eql(u8, format_str, "mac") or
+        std.mem.eql(u8, format_str, "linux") or
+        std.mem.eql(u8, format_str, "windows"))
+    {
+        const content = blk: {
+            if (std.mem.eql(u8, format_str, "brew")) {
+                break :blk try std.fmt.allocPrint(gpa,
+                    \\# Install {s} via Homebrew / gh
+                    \\brew install git gh foreman-tools
+                    \\gh auth login
+                    \\git clone {s} ~/foreman/{s}
+                    \\foreman-tools tui
+                    \\
+                , .{ name, github_url, name });
+            } else if (std.mem.eql(u8, format_str, "mac")) {
+                break :blk try std.fmt.allocPrint(gpa,
+                    \\#!/bin/bash
+                    \\# {s} — macOS installer
+                    \\set -e
+                    \\command -v brew >/dev/null || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+                    \\brew install git gh
+                    \\brew tap michaelvgonzaga/foreman && brew install foreman-tools
+                    \\gh auth login
+                    \\mkdir -p ~/foreman && git clone {s} ~/foreman/{s}
+                    \\echo "Done. Run: foreman-tools tui"
+                    \\
+                , .{ name, github_url, name });
+            } else if (std.mem.eql(u8, format_str, "linux")) {
+                break :blk try std.fmt.allocPrint(gpa,
+                    \\#!/bin/bash
+                    \\# {s} — Linux installer
+                    \\set -e
+                    \\if command -v apt-get >/dev/null; then sudo apt-get install -y git gh
+                    \\elif command -v dnf >/dev/null; then sudo dnf install -y git gh; fi
+                    \\gh auth login
+                    \\mkdir -p ~/foreman && git clone {s} ~/foreman/{s}
+                    \\# Install foreman-tools binary for Linux — see releases:
+                    \\# https://github.com/michaelvgonzaga/foreman-tools/releases/latest
+                    \\echo "Done. Run: foreman-tools tui"
+                    \\
+                , .{ name, github_url, name });
+            } else { // windows
+                break :blk try std.fmt.allocPrint(gpa,
+                    \\# {s} — Windows installer (PowerShell)
+                    \\Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+                    \\winget install Git.Git GitHub.cli
+                    \\gh auth login
+                    \\New-Item -ItemType Directory -Force ~/foreman | Out-Null
+                    \\git clone {s} ~/foreman/{s}
+                    \\Write-Host "Done. Run: foreman-tools tui"
+                    \\
+                , .{ name, github_url, name });
+            }
+        };
+        defer gpa.free(content);
+
+        const ext: []const u8 = if (std.mem.eql(u8, format_str, "windows")) "ps1" else "sh";
+        const out_path = try std.fmt.allocPrint(gpa, "{s}/{s}-install-{s}.{s}", .{ out_dir, name, format_str, ext });
+        errdefer gpa.free(out_path);
+        const wrote = exportWriteFile(gpa, io, out_path, content);
+        return ExportResult{
+            .output_path = out_path,
+            .name = try gpa.dupe(u8, name),
+            .version = version,
+            .format = try gpa.dupe(u8, format_str),
+            .success = wrote,
+            .note = if (wrote) try gpa.dupe(u8, "installer script ready to distribute") else try gpa.dupe(u8, "could not write output file"),
+        };
+    }
+
+    // fmz and backup — need staging dir
+    const staging_root = try std.fmt.allocPrint(gpa, "/tmp/foreman-export-{d}", .{pid});
+    defer gpa.free(staging_root);
+    std.Io.Dir.createDirAbsolute(io, staging_root, .default_dir) catch {};
+
+    if (std.mem.eql(u8, format_str, "backup")) {
+        const staging = try std.fmt.allocPrint(gpa, "{s}/foreman-backup", .{staging_root});
+        defer gpa.free(staging);
+        std.Io.Dir.createDirAbsolute(io, staging, .default_dir) catch {};
+
+        // Manifest
+        const manifest_path = try std.fmt.allocPrint(gpa, "{s}/foreman.manifest.json", .{staging});
+        defer gpa.free(manifest_path);
+        _ = exportWriteManifest(gpa, io, manifest_path, "foreman-workspace", VERSION, "Foreman workspace backup", "", "workspace");
+
+        // Framework files
+        for ([_][]const u8{ "CLAUDE.md", "ROADMAP.md", "plugins.public.yml", "_templates", "_knowledgebase", "_skills" }) |item| {
+            const src = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, item });
+            defer gpa.free(src);
+            if (!fileExists(io, src)) continue;
+            const dst = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ staging, item });
+            defer gpa.free(dst);
+            exportRunIgnore(gpa, io, &.{ "cp", "-r", src, dst });
+        }
+
+        // Ledger
+        const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+        const home = std.mem.sliceTo(home_ptr, 0);
+        const ledger_src = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+        defer gpa.free(ledger_src);
+        if (fileExists(io, ledger_src)) {
+            const ledger_dst = try std.fmt.allocPrint(gpa, "{s}/ledger.json", .{staging});
+            defer gpa.free(ledger_dst);
+            exportRunIgnore(gpa, io, &.{ "cp", ledger_src, ledger_dst });
+        }
+
+        // Each local project as a .fmz inside projects/
+        const projects_dir = try std.fmt.allocPrint(gpa, "{s}/projects", .{staging});
+        defer gpa.free(projects_dir);
+        std.Io.Dir.createDirAbsolute(io, projects_dir, .default_dir) catch {};
+
+        const entries = computeListProjects(gpa, io, foreman_root) catch &[_]ProjectEntry{};
+        for (entries) |entry| {
+            defer gpa.free(entry.name);
+            defer gpa.free(entry.url);
+            if (!entry.isLocal) continue;
+            const proj_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, entry.name });
+            defer gpa.free(proj_path);
+            const sub_version = exportGetVersion(gpa, io, proj_path);
+            defer gpa.free(sub_version);
+            const sub_url = exportGetGithubUrl(gpa, io, proj_path);
+            defer gpa.free(sub_url);
+            const sub = exportFmz(gpa, io, proj_path, projects_dir, sub_url, sub_version, entry.name, staging_root);
+            gpa.free(sub.output_path);
+            gpa.free(sub.name);
+            gpa.free(sub.version);
+            gpa.free(sub.format);
+            gpa.free(sub.note);
+        }
+
+        // Archive
+        const out_path = try std.fmt.allocPrint(gpa, "{s}/foreman-backup.fmz", .{out_dir});
+        errdefer gpa.free(out_path);
+        const tar_result = std.process.run(gpa, io, .{
+            .argv = &.{ "tar", "-czf", out_path, "-C", staging_root, "foreman-backup" },
+        }) catch null;
+        const success = blk: {
+            if (tar_result) |tr| {
+                defer gpa.free(tr.stdout);
+                defer gpa.free(tr.stderr);
+                break :blk switch (tr.term) { .exited => |c| c == 0, else => false };
+            }
+            break :blk false;
+        };
+        return ExportResult{
+            .output_path = out_path,
+            .name = try gpa.dupe(u8, "foreman-workspace"),
+            .version = try gpa.dupe(u8, VERSION),
+            .format = try gpa.dupe(u8, "backup"),
+            .success = success,
+            .note = if (success)
+                try gpa.dupe(u8, "restore on any machine: foreman-tools import foreman-backup.fmz")
+            else
+                try gpa.dupe(u8, "backup failed — check disk space"),
+        };
+    }
+
+    // default: fmz
+    gpa.free(version);
+    gpa.free(github_url);
+    const ver2 = exportGetVersion(gpa, io, project_path);
+    const url2 = exportGetGithubUrl(gpa, io, project_path);
+    return exportFmz(gpa, io, project_path, out_dir, url2, ver2, name, staging_root);
+}
+
+pub fn computeImport(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    source_path: []const u8,
+    foreman_root: []const u8,
+) !ImportResult {
+    const pid: c_int = std.c.getpid();
+
+    if (std.mem.endsWith(u8, source_path, ".fmz")) {
+        // Extract
+        const extract_dir = try std.fmt.allocPrint(gpa, "/tmp/foreman-import-{d}", .{pid});
+        defer gpa.free(extract_dir);
+        std.Io.Dir.createDirAbsolute(io, extract_dir, .default_dir) catch {};
+
+        const tar_result = std.process.run(gpa, io, .{
+            .argv = &.{ "tar", "-xzf", source_path, "-C", extract_dir },
+        }) catch {
+            return .{
+                .name = try gpa.dupe(u8, "unknown"), .dest_path = try gpa.dupe(u8, ""),
+                .source_format = try gpa.dupe(u8, "fmz"), .deps_note = try gpa.dupe(u8, ""),
+                .success = false, .note = try gpa.dupe(u8, "failed to extract .fmz — is it a valid archive?"),
+            };
+        };
+        gpa.free(tar_result.stdout);
+        gpa.free(tar_result.stderr);
+
+        // Find extracted top-level directory
+        const find_result = std.process.run(gpa, io, .{
+            .argv = &.{ "find", extract_dir, "-maxdepth", "1", "-mindepth", "1", "-type", "d" },
+        }) catch return error.ImportFailed;
+        defer gpa.free(find_result.stderr);
+        const extracted_dir_raw = std.mem.trim(u8, find_result.stdout, " \n\r");
+        const extracted_dir = try gpa.dupe(u8, extracted_dir_raw);
+        defer gpa.free(extracted_dir);
+        defer gpa.free(find_result.stdout);
+
+        if (extracted_dir.len == 0) {
+            return .{
+                .name = try gpa.dupe(u8, "unknown"), .dest_path = try gpa.dupe(u8, ""),
+                .source_format = try gpa.dupe(u8, "fmz"), .deps_note = try gpa.dupe(u8, ""),
+                .success = false, .note = try gpa.dupe(u8, "empty .fmz archive"),
+            };
+        }
+
+        // Derive project name (strip version suffix: name-v1.0.0 → name)
+        const raw_name = std.fs.path.basename(extracted_dir);
+        var proj_name: []const u8 = try gpa.dupe(u8, raw_name);
+        if (std.mem.lastIndexOfScalar(u8, proj_name, '-')) |dash| {
+            const suffix = proj_name[dash + 1 ..];
+            if (suffix.len > 0 and (suffix[0] == 'v' or std.ascii.isDigit(suffix[0]))) {
+                const trimmed_name = try gpa.dupe(u8, proj_name[0..dash]);
+                gpa.free(proj_name);
+                proj_name = trimmed_name;
+            }
+        }
+        errdefer gpa.free(proj_name);
+
+        // Check for workspace backup
+        const manifest_path = try std.fmt.allocPrint(gpa, "{s}/foreman.manifest.json", .{extracted_dir});
+        defer gpa.free(manifest_path);
+        if (kaReadFile(gpa, io, manifest_path)) |manifest_raw| {
+            defer gpa.free(manifest_raw);
+            if (std.mem.indexOf(u8, manifest_raw, "\"workspace\"") != null) {
+                // Restore framework files
+                for ([_][]const u8{ "CLAUDE.md", "ROADMAP.md", "plugins.public.yml", "_templates", "_knowledgebase", "_skills" }) |item| {
+                    const src = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ extracted_dir, item });
+                    defer gpa.free(src);
+                    if (!fileExists(io, src)) continue;
+                    const dst = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, item });
+                    defer gpa.free(dst);
+                    exportRunIgnore(gpa, io, &.{ "cp", "-r", src, dst });
+                }
+                // Restore ledger
+                const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+                const home = std.mem.sliceTo(home_ptr, 0);
+                const ledger_src = try std.fmt.allocPrint(gpa, "{s}/ledger.json", .{extracted_dir});
+                defer gpa.free(ledger_src);
+                if (fileExists(io, ledger_src)) {
+                    const foreman_state = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+                    defer gpa.free(foreman_state);
+                    std.Io.Dir.createDirAbsolute(io, foreman_state, .default_dir) catch {};
+                    const ledger_dst = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+                    defer gpa.free(ledger_dst);
+                    exportRunIgnore(gpa, io, &.{ "cp", ledger_src, ledger_dst });
+                }
+                // Import each project .fmz inside projects/
+                const projects_src = try std.fmt.allocPrint(gpa, "{s}/projects", .{extracted_dir});
+                defer gpa.free(projects_src);
+                if (fileExists(io, projects_src)) {
+                    const fmz_find = std.process.run(gpa, io, .{
+                        .argv = &.{ "find", projects_src, "-name", "*.fmz", "-maxdepth", "1" },
+                    }) catch null;
+                    if (fmz_find) |ff| {
+                        defer gpa.free(ff.stdout);
+                        defer gpa.free(ff.stderr);
+                        var lines = std.mem.tokenizeScalar(u8, ff.stdout, '\n');
+                        while (lines.next()) |line| {
+                            if (line.len == 0) continue;
+                            const sub = computeImport(gpa, io, line, foreman_root) catch continue;
+                            gpa.free(sub.name); gpa.free(sub.dest_path); gpa.free(sub.source_format);
+                            gpa.free(sub.deps_note); gpa.free(sub.note);
+                        }
+                    }
+                }
+                gpa.free(proj_name);
+                return .{
+                    .name = try gpa.dupe(u8, "foreman-workspace"),
+                    .dest_path = try gpa.dupe(u8, foreman_root),
+                    .source_format = try gpa.dupe(u8, "fmz"),
+                    .deps_note = try gpa.dupe(u8, ""),
+                    .success = true,
+                    .note = try gpa.dupe(u8, "workspace restored — run: foreman-tools tui"),
+                };
+            }
+        }
+
+        // Project import: project/ → foreman_root/<name>/
+        const project_src = try std.fmt.allocPrint(gpa, "{s}/project", .{extracted_dir});
+        defer gpa.free(project_src);
+        const dest_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, proj_name });
+        errdefer gpa.free(dest_path);
+
+        if (fileExists(io, dest_path)) {
+            return .{
+                .name = proj_name, .dest_path = dest_path,
+                .source_format = try gpa.dupe(u8, "fmz"), .deps_note = try gpa.dupe(u8, ""),
+                .success = false,
+                .note = try std.fmt.allocPrint(gpa, "destination already exists: {s} — move it first", .{dest_path}),
+            };
+        }
+
+        exportRunIgnore(gpa, io, &.{ "cp", "-r", project_src, dest_path });
+
+        // Carry over knowledge/ if present in the .fmz
+        const knowledge_src_fmz = try std.fmt.allocPrint(gpa, "{s}/knowledge", .{extracted_dir});
+        defer gpa.free(knowledge_src_fmz);
+        if (fileExists(io, knowledge_src_fmz)) {
+            const knowledge_dst = try std.fmt.allocPrint(gpa, "{s}/knowledge", .{dest_path});
+            defer gpa.free(knowledge_dst);
+            exportRunIgnore(gpa, io, &.{ "cp", "-r", knowledge_src_fmz, knowledge_dst });
+        }
+
+        return .{
+            .name = proj_name,
+            .dest_path = dest_path,
+            .source_format = try gpa.dupe(u8, "fmz"),
+            .deps_note = try gpa.dupe(u8, "run `foreman-tools knowledge-audit` to verify knowledge extraction"),
+            .success = true,
+            .note = try std.fmt.allocPrint(gpa, "imported → {s}", .{dest_path}),
+        };
+    }
+
+    // Raw directory import
+    if (!fileExists(io, source_path)) {
+        return .{
+            .name = try gpa.dupe(u8, "unknown"), .dest_path = try gpa.dupe(u8, ""),
+            .source_format = try gpa.dupe(u8, "directory"), .deps_note = try gpa.dupe(u8, ""),
+            .success = false, .note = try gpa.dupe(u8, "source path does not exist"),
+        };
+    }
+
+    const dir_name = std.fs.path.basename(source_path);
+    const dest_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, dir_name });
+    errdefer gpa.free(dest_path);
+
+    if (fileExists(io, dest_path)) {
+        return .{
+            .name = try gpa.dupe(u8, dir_name), .dest_path = dest_path,
+            .source_format = try gpa.dupe(u8, "directory"), .deps_note = try gpa.dupe(u8, ""),
+            .success = false,
+            .note = try std.fmt.allocPrint(gpa, "destination already exists: {s} — move it first", .{dest_path}),
+        };
+    }
+
+    exportRunIgnore(gpa, io, &.{ "cp", "-r", source_path, dest_path });
+
+    return .{
+        .name = try gpa.dupe(u8, dir_name),
+        .dest_path = dest_path,
+        .source_format = try gpa.dupe(u8, "directory"),
+        .deps_note = try gpa.dupe(u8, "run `foreman-tools knowledge-audit` to verify knowledge extraction"),
+        .success = true,
+        .note = try std.fmt.allocPrint(gpa, "imported → {s}", .{dest_path}),
     };
 }
 
