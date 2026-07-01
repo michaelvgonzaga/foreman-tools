@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  git-cache <repo-path>\n", .{});
         try err.print("  project-state <path> [record-decision <what> [<why>]]\n", .{});
         try err.print("  project-state <path> [record-pattern <pattern>]\n", .{});
-        try err.print("  ledger [show | record <winner> <question> <reasoning> | record-jungian <question> <chosen> <shadow> <synthesis> | check-stale | validate <id> | score <question> <sources-json>]\n", .{});
+        try err.print("  ledger [show | record <winner> <question> <reasoning> | record-jungian <question> <chosen> <shadow> <synthesis> | record-outcome <id> <outcome> <matched|diverged> | check-stale | validate <id> | score <question> <sources-json>]\n", .{});
         try err.print("  shell-run [--timeout <ms>] <shell-command>\n", .{});
         try err.print("  quality-gate <path>\n", .{});
         try err.print("  validate-schema <file> <schema>\n", .{});
@@ -2019,6 +2019,18 @@ pub fn main(init: std.process.Init) !void {
                         std.process.exit(1);
                     }
                     ledger_mode = .{ .record_jungian = .{ .question = args[3], .chosen = args[4], .shadow = args[5], .synthesis = args[6] } };
+                } else if (std.mem.eql(u8, args[2], "record-outcome")) {
+                    if (args.len < 6) {
+                        try err.print("usage: 4orman-tools ledger record-outcome <id> <outcome> <matched|diverged>\n", .{});
+                        try err.flush();
+                        std.process.exit(1);
+                    }
+                    if (!std.mem.eql(u8, args[5], "matched") and !std.mem.eql(u8, args[5], "diverged")) {
+                        try err.print("error: <matched|diverged> must be exactly one of those two words, got: {s}\n", .{args[5]});
+                        try err.flush();
+                        std.process.exit(1);
+                    }
+                    ledger_mode = .{ .record_outcome = .{ .id = args[3], .outcome = args[4], .matched = args[5] } };
                 }
             }
             const lresult = root.computeLedger(gpa, io, ledger_mode) catch |e| switch (e) {
@@ -2048,8 +2060,12 @@ pub fn main(init: std.process.Init) !void {
                 defer gpa.free(shadow_esc);
                 const synth_esc = try root.allocJsonEscape(gpa, e.synthesis);
                 defer gpa.free(synth_esc);
-                try out.print("\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"recorded_ts\": {d}, \"revalidation_due_ts\": {d}, \"category\": \"{s}\", \"winner\": \"{s}\", \"question\": \"{s}\", \"reasoning\": \"{s}\", \"shadow\": \"{s}\", \"synthesis\": \"{s}\", \"is_stale\": {s}}}", .{
-                    id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, cat_esc, win_esc, q_esc, r_esc, shadow_esc, synth_esc,
+                const outcome_esc = try root.allocJsonEscape(gpa, e.outcome);
+                defer gpa.free(outcome_esc);
+                const matched_esc = try root.allocJsonEscape(gpa, e.outcome_matched);
+                defer gpa.free(matched_esc);
+                try out.print("\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"recorded_ts\": {d}, \"revalidation_due_ts\": {d}, \"category\": \"{s}\", \"winner\": \"{s}\", \"question\": \"{s}\", \"reasoning\": \"{s}\", \"shadow\": \"{s}\", \"synthesis\": \"{s}\", \"outcome\": \"{s}\", \"outcomeMatched\": \"{s}\", \"outcomeRecordedTs\": {d}, \"is_stale\": {s}}}", .{
+                    id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, cat_esc, win_esc, q_esc, r_esc, shadow_esc, synth_esc, outcome_esc, matched_esc, e.outcome_recorded_ts,
                     if (e.is_stale) "true" else "false",
                 });
             }
