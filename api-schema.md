@@ -1037,6 +1037,177 @@ Executes a plugin and returns its JSON stdout verbatim.
 
 ---
 
+## `ledger`
+
+`foreman-tools ledger [show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]`
+
+**`ledger show`**
+```json
+{
+  "entries": [
+    {
+      "id": "a1b2c3d4e5f6a7b8",
+      "winner": "zig",
+      "question": "Is the cache keyed by SHA256 of file path?",
+      "reasoning": "Verified from source: computeCacheStore uses sha256Hex(path)",
+      "recorded_at": "2026-07-01",
+      "revalidation_due_ts": 1783699200,
+      "is_stale": false
+    }
+  ],
+  "count": 1
+}
+```
+
+**`ledger check-stale`**
+```json
+{
+  "stale": [
+    { "id": "a1b2c3d4e5f6a7b8", "question": "...", "recorded_at": "2025-06-01", "is_stale": true }
+  ],
+  "count": 1
+}
+```
+
+**`ledger score <question> <sources-json>`**
+```json
+{
+  "composite": 100,
+  "sample_count": 10,
+  "winner": "claude",
+  "void": false,
+  "reason": "All 10 sources confirmed; no contradictions",
+  "zig_entry_found": false,
+  "zig_entry_stale": false
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `entries[].id` | string | first 16 hex chars of sha256(winner:question:date) |
+| `entries[].winner` | string | `"claude"` or `"zig"` |
+| `entries[].is_stale` | bool | true if recorded >365 days ago |
+| `composite` | int | 0–100; 100 required for a confirmed win |
+| `void` | bool | true when composite <100 or <10 sources |
+| `winner` | string | `"claude"`, `"zig"`, or `null` if void |
+
+**Errors:** exit 1 if `~/.foreman/ledger.json` cannot be read/written.
+
+---
+
+## `tui`
+
+`foreman-tools tui [<foreman-root>]`
+
+Spawns an interactive Python curses session — does not emit JSON. Exit code 0 on clean quit, 1 on error. Passes project data JSON to the embedded Python renderer via a temp file.
+
+**No JSON stdout** — this is the only subcommand that does not output JSON. It hands off to an interactive terminal session.
+
+**Errors:** exit 1 with message on stderr if Python3 is not in PATH, or if the terminal is too small (<20 rows or <40 cols).
+
+---
+
+## `knowledge-audit`
+
+`foreman-tools knowledge-audit <project-path> [<foreman-root>]`
+
+```json
+{
+  "project": "cse-cli",
+  "path": "/Users/user/foreman/cse-cli",
+  "ready": true,
+  "captured": [
+    { "label": "spec.md present", "source": "/Users/user/foreman/cse-cli/spec.md" },
+    { "label": "CLAUDE.md decision log: 8 rows", "source": "/Users/user/foreman/cse-cli/CLAUDE.md" }
+  ],
+  "unextracted": [],
+  "warnings": []
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `project` | string | basename of `project-path` |
+| `path` | string | absolute path passed in |
+| `ready` | bool | `true` only when both `unextracted` and `warnings` are empty |
+| `captured` | array | checks that passed |
+| `unextracted` | array | checks that failed — must be resolved before `ready` can be true |
+| `warnings` | array | checks with uncertain results — do not block `ready` but should be reviewed |
+| `[].label` | string | human-readable check description |
+| `[].source` | string | file path that was inspected |
+
+**Checks (in order):** spec.md present, CLAUDE.md has `| 20` decision log rows, `knowledge/` directory exists, `_knowledgebase/` has a mirror entry, git repo is clean (`git status --porcelain` empty), HEAD is pushed to remote, ledger references the project name.
+
+**Errors:** exit 1 if `project-path` does not exist.
+
+---
+
+## `export`
+
+`foreman-tools export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]`
+
+```json
+{
+  "name": "cse-cli",
+  "version": "v1.3.0",
+  "format": "fmz",
+  "output_path": "/Users/user/cse-cli-v1.3.0.fmz",
+  "success": true,
+  "note": "import on any machine: foreman-tools import cse-cli-v1.3.0.fmz"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | basename of `project-path` |
+| `version` | string | latest git tag or `"0.0.0"` if untagged |
+| `format` | string | one of: `fmz`, `brew`, `mac`, `linux`, `windows`, `backup` |
+| `output_path` | string | absolute path to generated file |
+| `success` | bool | false if git archive or tar failed |
+| `note` | string | next-step hint for the user |
+
+**Formats:**
+- `fmz` — tar.gz: `foreman.manifest.json` + `project/` (git archive of HEAD) + `knowledge/`
+- `brew` — shell script: `brew install` + `gh auth login` + `git clone` sequence
+- `mac` — bash installer script with Homebrew bootstrap
+- `linux` — bash installer script with apt/dnf detection
+- `windows` — PowerShell installer script with winget
+- `backup` — tar.gz of entire foreman workspace: framework files + ledger + all project .fmz files
+
+**Errors:** exit 1 if `project-path` does not exist. `success: false` (exit 0) if git archive or tar fails.
+
+---
+
+## `import`
+
+`foreman-tools import <source-path> [<foreman-root>]`
+
+```json
+{
+  "name": "cse-cli",
+  "dest_path": "/Users/user/foreman/cse-cli",
+  "source_format": "fmz",
+  "deps_note": "run `foreman-tools knowledge-audit` to verify knowledge extraction",
+  "success": true,
+  "note": "imported → /Users/user/foreman/cse-cli"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | project name derived from manifest or directory basename |
+| `dest_path` | string | absolute path where project was placed |
+| `source_format` | string | `"fmz"` or `"directory"` |
+| `deps_note` | string | follow-up action hint |
+| `success` | bool | false if extraction failed or destination already exists |
+| `note` | string | result description or error reason |
+
+**Workspace backup detection:** if the `.fmz` manifest contains `"kind": "workspace"`, all contained project `.fmz` files are imported recursively and framework files are restored.
+
+**Errors:** `success: false` (exit 0) if destination already exists or archive is corrupt. exit 1 only on unrecoverable I/O error.
+
+---
+
 ## Schema change policy
 
 Any modification to an existing subcommand's output shape (field rename, type change, enum value addition/removal, field removal) requires:
