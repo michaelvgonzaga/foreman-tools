@@ -450,6 +450,38 @@ pub fn main(init: std.process.Init) !void {
     ctx.bad("worker-run unknown lang → exit 1", &.{ "worker-run", "cobol", sh_script }, 1);
     ctx.bad("worker-run missing script arg → exit 1", &.{ "worker-run", "bash" }, 1);
 
+    // ----------------------------------------------------------------
+    // Module 20 M1: context-slice + state-merge
+    // ----------------------------------------------------------------
+    ctx.header("Module 20 M1: context-slice / state-merge");
+
+    // Tier 1: smoke
+    ctx.smoke("context-slice repo focus=worker", &.{ "context-slice", repo, "worker" });
+    ctx.smoke("context-slice repo focus=cache", &.{ "context-slice", repo, "cache" });
+
+    // Tier 2: field assertions
+    ctx.checkStr("context-slice focus field", &.{ "context-slice", repo, "plugin" }, "focus", "plugin");
+    ctx.checkStrContains("context-slice path field", &.{ "context-slice", repo, "plugin" }, "path", repo);
+    ctx.checkIntGt("context-slice fileCount>=0", &.{ "context-slice", repo, "zig" }, "fileCount", -1);
+    ctx.checkArrayLen("context-slice files array present", &.{ "context-slice", repo, "cache" }, "files", 0);
+
+    // state-merge: write two JSON files and merge them
+    const sm_file1 = "/tmp/ft-stress-sm1.json";
+    const sm_file2 = "/tmp/ft-stress-sm2.json";
+    writeStressScript(io, sm_file1, "{\"findings\": [\"bug1\"], \"score\": 5}\n") catch {};
+    writeStressScript(io, sm_file2, "{\"findings\": [\"bug2\"], \"extra\": \"yes\"}\n") catch {};
+
+    ctx.smoke("state-merge two valid files", &.{ "state-merge", sm_file1, sm_file2 });
+    ctx.checkStrContains("state-merge has extra key", &.{ "state-merge", sm_file1, sm_file2 }, "extra", "yes");
+    ctx.checkArrayLen("state-merge findings concatenated (>=2)", &.{ "state-merge", sm_file1, sm_file2 }, "findings", 2);
+
+    // Tier 3: adversarial
+    ctx.bad("context-slice no args → exit 1", &.{"context-slice"}, 1);
+    ctx.bad("context-slice nonexistent path → exit 1", &.{ "context-slice", "/nonexistent/stress-xyz", "query" }, 1);
+    ctx.bad("state-merge no args → exit 1", &.{"state-merge"}, 1);
+    ctx.bad("state-merge nonexistent file → exit 1", &.{ "state-merge", "/nonexistent/a.json", sm_file2 }, 1);
+    ctx.bad("state-merge bad JSON → exit 1", &.{ "state-merge", sh_script, sm_file2 }, 1);
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }

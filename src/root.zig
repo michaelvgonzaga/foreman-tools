@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.55.0";
+pub const VERSION = "0.56.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -409,11 +409,16 @@ pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     errdefer out.deinit(gpa);
     for (s) |c| {
         switch (c) {
-            '"' => try out.appendSlice(gpa, "\\\""),
+            '"'  => try out.appendSlice(gpa, "\\\""),
             '\\' => try out.appendSlice(gpa, "\\\\"),
             '\n' => try out.appendSlice(gpa, "\\n"),
             '\r' => try out.appendSlice(gpa, "\\r"),
             '\t' => try out.appendSlice(gpa, "\\t"),
+            0x00...0x08, 0x0b...0x0c, 0x0e...0x1f => {
+                const hex = "0123456789abcdef";
+                const esc = [_]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0xf] };
+                try out.appendSlice(gpa, &esc);
+            },
             else => try out.append(gpa, c),
         }
     }
@@ -473,7 +478,7 @@ const CONFIG_FILE_MAP = std.StaticStringMap(void).initComptime(&.{
 
 const SKIP_DIR_SET = std.StaticStringMap(void).initComptime(&.{
     .{ "node_modules", {} }, .{ ".git", {} },   .{ "vendor", {} },   .{ "__pycache__", {} },
-    .{ ".next", {} },        .{ "dist", {} },   .{ "target", {} },   .{ "zig-out", {} },
+    .{ ".next", {} },        .{ "dist", {} },   .{ "target", {} },   .{ "zig-out", {} },  .{ "zig-cache", {} },
     .{ ".zig-cache", {} },   .{ ".cache", {} }, .{ "coverage", {} }, .{ ".venv", {} },
     .{ "venv", {} },         .{ ".tox", {} },   .{ "tmp", {} },      .{ "temp", {} },
 });
@@ -6995,6 +7000,8 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "worker-list", .description = "list all supported language workers with binary name and file extension", .args = "" },
         .{ .name = "plugin-run", .description = "execute a plugin from ~/.foreman/plugins/<name>/ via its worker runtime — returns plugin JSON output verbatim", .args = "<name> [args...]" },
         .{ .name = "plugin-list", .description = "list all installed plugins with name, lang, description, args, and entry point", .args = "" },
+        .{ .name = "context-slice", .description = "focused project slice — top 8 files by relevance + excerpts; use before handing context to a subagent", .args = "<abs-path> <focus-query>" },
+        .{ .name = "state-merge", .description = "merge two JSON objects — array fields concatenated, non-array fields v2 wins; use to combine multi-agent partial results", .args = "<file1> <file2>" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -8345,6 +8352,250 @@ pub fn computePluginList(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
     return std.fmt.allocPrint(gpa,
         \\{{"plugins": [{s}], "count": {d}, "skipped": [{s}]}}
     , .{ plugins_buf.items, plugin_count, skipped_buf.items });
+}
+
+// --- context-slice + state-merge (Module 20 M1 — Multi-Agent Coordinator) ---
+
+fn hasBinaryMagic(_: std.mem.Allocator, io: std.Io, abs_path: []const u8) bool {
+    const f = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch return false;
+    defer f.close(io);
+    var rb: [8]u8 = undefined;
+    var r = f.reader(io, &rb);
+    var hdr: [4]u8 = undefined;
+    const n = r.interface.readSliceShort(&hdr) catch return false;
+    if (n < 4) return false;
+    return std.mem.eql(u8, hdr[0..4], "\xcf\xfa\xed\xfe") or
+        std.mem.eql(u8, hdr[0..4], "\xfe\xed\xfa\xcf") or
+        std.mem.eql(u8, hdr[0..4], "\xca\xfe\xba\xbe") or
+        std.mem.eql(u8, hdr[0..4], "\x7fELF");
+}
+
+const SLICE_FILE_CAP: usize = 8;
+const SLICE_CHUNK_CAP: usize = 3;
+
+fn serializeJsonValue(gpa: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    return switch (value) {
+        .null         => gpa.dupe(u8, "null"),
+        .bool         => |b| gpa.dupe(u8, if (b) "true" else "false"),
+        .integer      => |n| std.fmt.allocPrint(gpa, "{d}", .{n}),
+        .float        => |f| std.fmt.allocPrint(gpa, "{d}", .{f}),
+        .number_string => |s| gpa.dupe(u8, s),
+        .string       => |s| blk: {
+            const esc = try allocJsonEscape(gpa, s);
+            defer gpa.free(esc);
+            break :blk std.fmt.allocPrint(gpa, "\"{s}\"", .{esc});
+        },
+        .array        => |arr| blk: {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(gpa);
+            try buf.appendSlice(gpa, "[");
+            for (arr.items, 0..) |item, i| {
+                if (i > 0) try buf.appendSlice(gpa, ", ");
+                const s = try serializeJsonValue(gpa, item);
+                defer gpa.free(s);
+                try buf.appendSlice(gpa, s);
+            }
+            try buf.appendSlice(gpa, "]");
+            break :blk gpa.dupe(u8, buf.items);
+        },
+        .object       => |obj| blk: {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(gpa);
+            try buf.appendSlice(gpa, "{");
+            var it = obj.iterator();
+            var first_field = true;
+            while (it.next()) |kv| {
+                if (!first_field) try buf.appendSlice(gpa, ", ");
+                first_field = false;
+                const k_esc = try allocJsonEscape(gpa, kv.key_ptr.*);
+                defer gpa.free(k_esc);
+                const v_s = try serializeJsonValue(gpa, kv.value_ptr.*);
+                defer gpa.free(v_s);
+                const entry = try std.fmt.allocPrint(gpa, "\"{s}\": {s}", .{ k_esc, v_s });
+                defer gpa.free(entry);
+                try buf.appendSlice(gpa, entry);
+            }
+            try buf.appendSlice(gpa, "}");
+            break :blk gpa.dupe(u8, buf.items);
+        },
+    };
+}
+
+pub fn computeContextSlice(
+    gpa:   std.mem.Allocator,
+    io:    std.Io,
+    path:  []const u8,
+    focus: []const u8,
+) ![]u8 {
+    const ranked = computeContextRank(gpa, io, path, focus) catch |e| switch (e) {
+        error.FileNotFound => return error.PathNotFound,
+        else => return e,
+    };
+    defer {
+        gpa.free(ranked.root);
+        gpa.free(ranked.query);
+        for (ranked.ranked) |f| gpa.free(f.path);
+        gpa.free(ranked.ranked);
+    }
+
+    const cap = @min(ranked.ranked.len, SLICE_FILE_CAP);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+
+    const focus_esc = try allocJsonEscape(gpa, focus);
+    defer gpa.free(focus_esc);
+    const path_esc = try allocJsonEscape(gpa, path);
+    defer gpa.free(path_esc);
+
+    const header = try std.fmt.allocPrint(gpa,
+        "{{\n  \"focus\": \"{s}\",\n  \"path\": \"{s}\",\n  \"fileCount\": {d},\n  \"files\": [\n",
+        .{ focus_esc, path_esc, cap },
+    );
+    defer gpa.free(header);
+    try out.appendSlice(gpa, header);
+
+    for (ranked.ranked[0..cap], 0..) |rf, fi| {
+        const file_path = try std.fs.path.join(gpa, &.{ path, rf.path });
+        defer gpa.free(file_path);
+
+        const ev = if (hasBinaryMagic(undefined, io, file_path)) null
+            else computeContextEvidence(gpa, io, file_path, focus) catch null;
+        defer if (ev) |e| {
+            gpa.free(e.path);
+            gpa.free(e.pattern);
+            for (e.chunks) |c| gpa.free(c.content);
+            gpa.free(e.chunks);
+        };
+
+        const path2_esc = try allocJsonEscape(gpa, rf.path);
+        defer gpa.free(path2_esc);
+
+        const file_hdr = try std.fmt.allocPrint(gpa,
+            "    {{\"path\": \"{s}\", \"score\": {d}, \"excerpts\": [",
+            .{ path2_esc, rf.score },
+        );
+        defer gpa.free(file_hdr);
+        try out.appendSlice(gpa, file_hdr);
+
+        if (ev) |e| {
+            const chunk_cap = @min(e.chunks.len, SLICE_CHUNK_CAP);
+            for (e.chunks[0..chunk_cap], 0..) |chunk, ci| {
+                if (ci > 0) try out.appendSlice(gpa, ", ");
+                const c_esc = try allocJsonEscape(gpa, chunk.content);
+                defer gpa.free(c_esc);
+                const chunk_json = try std.fmt.allocPrint(gpa,
+                    "{{\"startLine\": {d}, \"endLine\": {d}, \"content\": \"{s}\"}}",
+                    .{ chunk.startLine, chunk.endLine, c_esc },
+                );
+                defer gpa.free(chunk_json);
+                try out.appendSlice(gpa, chunk_json);
+            }
+        }
+
+        const comma: []const u8 = if (fi + 1 < cap) "," else "";
+        const file_tail = try std.fmt.allocPrint(gpa, "]}}{s}\n", .{comma});
+        defer gpa.free(file_tail);
+        try out.appendSlice(gpa, file_tail);
+    }
+
+    try out.appendSlice(gpa, "  ]\n}");
+    return gpa.dupe(u8, out.items);
+}
+
+pub fn computeStateMerge(
+    gpa:   std.mem.Allocator,
+    io:    std.Io,
+    path1: []const u8,
+    path2: []const u8,
+) ![]u8 {
+    const read_limit = 4 * 1024 * 1024; // 4MB cap per file
+
+    const f1 = std.Io.Dir.openFileAbsolute(io, path1, .{}) catch return error.File1NotFound;
+    defer f1.close(io);
+    var rb1: [4096]u8 = undefined;
+    var r1 = f1.reader(io, &rb1);
+    const c1 = try r1.interface.allocRemaining(gpa, .limited(read_limit));
+    defer gpa.free(c1);
+
+    const f2 = std.Io.Dir.openFileAbsolute(io, path2, .{}) catch return error.File2NotFound;
+    defer f2.close(io);
+    var rb2: [4096]u8 = undefined;
+    var r2 = f2.reader(io, &rb2);
+    const c2 = try r2.interface.allocRemaining(gpa, .limited(read_limit));
+    defer gpa.free(c2);
+
+    const p1 = std.json.parseFromSlice(std.json.Value, gpa, std.mem.trim(u8, c1, " \t\n\r"), .{}) catch return error.File1InvalidJson;
+    defer p1.deinit();
+    const p2 = std.json.parseFromSlice(std.json.Value, gpa, std.mem.trim(u8, c2, " \t\n\r"), .{}) catch return error.File2InvalidJson;
+    defer p2.deinit();
+
+    if (p1.value != .object or p2.value != .object) return error.NotObjects;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, "{\n");
+    var first = true;
+
+    // Keys from p1 — with merge for shared keys
+    var it1 = p1.value.object.iterator();
+    while (it1.next()) |kv| {
+        if (!first) try out.appendSlice(gpa, ",\n");
+        first = false;
+        const k_esc = try allocJsonEscape(gpa, kv.key_ptr.*);
+        defer gpa.free(k_esc);
+
+        const merged_val: []u8 = if (p2.value.object.get(kv.key_ptr.*)) |v2| blk: {
+            // Both have key: concat arrays, v2 wins otherwise
+            if (kv.value_ptr.* == .array and v2 == .array) {
+                var arr_buf: std.ArrayList(u8) = .empty;
+                defer arr_buf.deinit(gpa);
+                try arr_buf.appendSlice(gpa, "[");
+                var af = true;
+                for (kv.value_ptr.*.array.items) |item| {
+                    if (!af) try arr_buf.appendSlice(gpa, ", ");
+                    af = false;
+                    const s = try serializeJsonValue(gpa, item);
+                    defer gpa.free(s);
+                    try arr_buf.appendSlice(gpa, s);
+                }
+                for (v2.array.items) |item| {
+                    if (!af) try arr_buf.appendSlice(gpa, ", ");
+                    af = false;
+                    const s = try serializeJsonValue(gpa, item);
+                    defer gpa.free(s);
+                    try arr_buf.appendSlice(gpa, s);
+                }
+                try arr_buf.appendSlice(gpa, "]");
+                break :blk try gpa.dupe(u8, arr_buf.items);
+            } else {
+                break :blk try serializeJsonValue(gpa, v2);
+            }
+        } else try serializeJsonValue(gpa, kv.value_ptr.*);
+        defer gpa.free(merged_val);
+
+        const line = try std.fmt.allocPrint(gpa, "  \"{s}\": {s}", .{ k_esc, merged_val });
+        defer gpa.free(line);
+        try out.appendSlice(gpa, line);
+    }
+
+    // Keys only in p2
+    var it2 = p2.value.object.iterator();
+    while (it2.next()) |kv| {
+        if (p1.value.object.get(kv.key_ptr.*) != null) continue;
+        if (!first) try out.appendSlice(gpa, ",\n");
+        first = false;
+        const k_esc = try allocJsonEscape(gpa, kv.key_ptr.*);
+        defer gpa.free(k_esc);
+        const v_s = try serializeJsonValue(gpa, kv.value_ptr.*);
+        defer gpa.free(v_s);
+        const line = try std.fmt.allocPrint(gpa, "  \"{s}\": {s}", .{ k_esc, v_s });
+        defer gpa.free(line);
+        try out.appendSlice(gpa, line);
+    }
+
+    try out.appendSlice(gpa, "\n}");
+    return gpa.dupe(u8, out.items);
 }
 
 // --- Tests ---

@@ -2,6 +2,16 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.56.0] — 2026-07-01
+
+### New
+- `context-slice <abs-path> <focus-query>` — Module 20 M1 Multi-Agent Coordinator; top 8 files ranked by relevance (via `context-rank`) + up to 3 evidence excerpts per file (via `context-evidence`); binary files detected via Mach-O/ELF magic bytes and silently excluded from evidence extraction; output: `{ focus, path, fileCount, files: [{path, score, excerpts: [{startLine, endLine, content}]}] }`; enables Claude to hand each subagent a focused project slice instead of the full context dump
+- `state-merge <file1> <file2>` — merge two JSON objects from disk; array fields are concatenated (both orders preserved), non-array fields default to `file2` value on conflict; output is the merged JSON object; enables multi-agent partial results to be combined into one coherent state file; both files must be valid JSON objects at root level
+
+### Fixed
+- `allocJsonEscape` now escapes all control characters (bytes 0x00–0x1f, excluding \t, \n, \r) as `\u00XX` — previously raw control bytes from binary file content could produce structurally invalid JSON in `context-evidence`, `context-slice`, and any future subcommand that reads arbitrary file content
+- `zig-cache/` directory (without leading dot) now excluded from all scan-based subcommands (`scan`, `context-scan`, `context-rank`, `context-slice`) — previously build artifacts in `zig-cache/z/` were scored as highly relevant source files, crowding out actual source
+
 ## [0.55.0] — 2026-07-01
 
 ### New

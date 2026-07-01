@@ -81,6 +81,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  worker-list\n", .{});
         try err.print("  plugin-run <name> [args...]            run a plugin from ~/.foreman/plugins/\n", .{});
         try err.print("  plugin-list\n", .{});
+        try err.print("  context-slice <abs-path> <focus-query>\n", .{});
+        try err.print("  state-merge <file1> <file2>\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2150,6 +2152,60 @@ pub fn main(init: std.process.Init) !void {
             },
             error.InterpreterNotFound => {
                 try err.print("error: no interpreter found for '{s}'. Install it and ensure it is in PATH.\n", .{lang});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-slice")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools context-slice <abs-path> <focus-query>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const json = root.computeContextSlice(gpa, io, args[2], args[3]) catch |e| switch (e) {
+            error.PathNotFound => {
+                try err.print("error: path not found: {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "state-merge")) {
+        if (args.len < 4) {
+            try err.print("usage: foreman-tools state-merge <file1> <file2>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const json = root.computeStateMerge(gpa, io, args[2], args[3]) catch |e| switch (e) {
+            error.File1NotFound => {
+                try err.print("error: file not found: {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.File2NotFound => {
+                try err.print("error: file not found: {s}\n", .{args[3]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.File1InvalidJson => {
+                try err.print("error: invalid JSON in {s}\n", .{args[2]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.File2InvalidJson => {
+                try err.print("error: invalid JSON in {s}\n", .{args[3]});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.NotObjects => {
+                try err.print("error: both files must be JSON objects\n", .{});
                 try err.flush();
                 std.process.exit(1);
             },
