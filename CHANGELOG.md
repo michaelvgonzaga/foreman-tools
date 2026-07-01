@@ -2,6 +2,12 @@
 
 All notable changes to foreman-tools are documented here.
 
+## [0.55.0] — 2026-07-01
+
+### New
+- `plugin-run <name> [args...]` — execute a plugin from `~/.foreman/plugins/<name>/`; loads `plugin.json` manifest, dispatches the entry script via the `worker-run` runtime for `lang`, passes args through, returns the script's JSON stdout verbatim; exits 1 with a descriptive message on missing plugin, malformed manifest, unknown lang, or interpreter not found
+- `plugin-list` — walk `~/.foreman/plugins/`, read each `plugin.json`, return `{ plugins: [{name, lang, description, args, entry}], count, skipped }`; manifests with missing/malformed fields are skipped gracefully and listed in `skipped`; `capability-check` and `route` now include installed plugins alongside native subcommands
+
 ## [0.54.1] — 2026-07-01
 
 ### Fixed

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.54.0";
+pub const VERSION = "0.55.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6993,6 +6993,8 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "ant", .description = "list files changed in a path since a timestamp (mtime-based, no git required)", .args = "<path> [--since <ms>]" },
         .{ .name = "worker-run", .description = "run a script in a language runtime (python/node/deno/bun/go/ruby/bash/swift/zig/lua/php) — returns structured JSON", .args = "<lang> <script> [args...]" },
         .{ .name = "worker-list", .description = "list all supported language workers with binary name and file extension", .args = "" },
+        .{ .name = "plugin-run", .description = "execute a plugin from ~/.foreman/plugins/<name>/ via its worker runtime — returns plugin JSON output verbatim", .args = "<name> [args...]" },
+        .{ .name = "plugin-list", .description = "list all installed plugins with name, lang, description, args, and entry point", .args = "" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -8183,6 +8185,166 @@ pub fn computeWorkerRun(
         res.exit,    out_esc,                                            err_esc,
         duration_ms, if (duration_ms >= timeout_ms) "true" else "false", if (truncated) "true" else "false",
     });
+}
+
+// --- plugin-run / plugin-list subcommands (Module 11 — Plugin System) ---
+
+const PluginManifest = struct {
+    name: []u8,
+    lang: []u8,
+    entry: []u8,
+    description: []u8,
+    args: []u8,
+};
+
+fn freePluginManifest(gpa: std.mem.Allocator, m: PluginManifest) void {
+    gpa.free(m.name);
+    gpa.free(m.lang);
+    gpa.free(m.entry);
+    gpa.free(m.description);
+    gpa.free(m.args);
+}
+
+fn readPluginManifest(gpa: std.mem.Allocator, io: std.Io, manifest_path: []const u8) !PluginManifest {
+    const file = std.Io.Dir.openFileAbsolute(io, manifest_path, .{}) catch return error.ManifestNotFound;
+    defer file.close(io);
+    var rbuf: [4096]u8 = undefined;
+    var r = file.reader(io, &rbuf);
+    const content = try r.interface.allocRemaining(gpa, .limited(64 * 1024));
+    defer gpa.free(content);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch return error.ManifestInvalid;
+    defer parsed.deinit();
+
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return error.ManifestInvalid,
+    };
+
+    const name_val = obj.get("name") orelse return error.ManifestMissingField;
+    const lang_val = obj.get("lang") orelse return error.ManifestMissingField;
+    const entry_val = obj.get("entry") orelse return error.ManifestMissingField;
+
+    const name_str = switch (name_val) {
+        .string => |s| s,
+        else => return error.ManifestInvalid,
+    };
+    const lang_str = switch (lang_val) {
+        .string => |s| s,
+        else => return error.ManifestInvalid,
+    };
+    const entry_str = switch (entry_val) {
+        .string => |s| s,
+        else => return error.ManifestInvalid,
+    };
+    const desc_str: []const u8 = if (obj.get("description")) |v| switch (v) {
+        .string => |s| s,
+        else => "",
+    } else "";
+    const args_str: []const u8 = if (obj.get("args")) |v| switch (v) {
+        .string => |s| s,
+        else => "",
+    } else "";
+
+    return .{
+        .name = try gpa.dupe(u8, name_str),
+        .lang = try gpa.dupe(u8, lang_str),
+        .entry = try gpa.dupe(u8, entry_str),
+        .description = try gpa.dupe(u8, desc_str),
+        .args = try gpa.dupe(u8, args_str),
+    };
+}
+
+pub fn computePluginRun(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    plugin_name: []const u8,
+    extra_args: []const []const u8,
+) ![]u8 {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home: []const u8 = std.mem.span(home_ptr);
+
+    const manifest_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/plugins/{s}/plugin.json", .{ home, plugin_name });
+    defer gpa.free(manifest_path);
+
+    const manifest = readPluginManifest(gpa, io, manifest_path) catch |e| switch (e) {
+        error.ManifestNotFound => return error.PluginNotFound,
+        else => return e,
+    };
+    defer freePluginManifest(gpa, manifest);
+
+    const script_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/plugins/{s}/{s}", .{ home, plugin_name, manifest.entry });
+    defer gpa.free(script_path);
+
+    return computeWorkerRun(gpa, io, manifest.lang, script_path, extra_args, WORKER_DEFAULT_TIMEOUT_MS) catch |e| switch (e) {
+        error.UnknownLang => return error.PluginUnknownLang,
+        error.InterpreterNotFound => return error.PluginInterpreterNotFound,
+        else => return e,
+    };
+}
+
+pub fn computePluginList(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home: []const u8 = std.mem.span(home_ptr);
+
+    const plugins_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/plugins", .{home});
+    defer gpa.free(plugins_path);
+
+    var plugins_buf: std.ArrayList(u8) = .empty;
+    defer plugins_buf.deinit(gpa);
+    var skipped_buf: std.ArrayList(u8) = .empty;
+    defer skipped_buf.deinit(gpa);
+    var plugin_count: u32 = 0;
+    var skipped_count: u32 = 0;
+
+    plugins_walk: {
+        var dir = std.Io.Dir.openDirAbsolute(io, plugins_path, .{ .iterate = true }) catch break :plugins_walk;
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch break :plugins_walk) |entry| {
+            if (entry.kind != .directory) continue;
+
+            const mpath = try std.fmt.allocPrint(gpa, "{s}/{s}/plugin.json", .{ plugins_path, entry.name });
+            defer gpa.free(mpath);
+
+            const manifest = readPluginManifest(gpa, io, mpath) catch {
+                if (skipped_count > 0) try skipped_buf.appendSlice(gpa, ", ");
+                const esc = try allocJsonEscape(gpa, mpath);
+                defer gpa.free(esc);
+                try skipped_buf.appendSlice(gpa, "\"");
+                try skipped_buf.appendSlice(gpa, esc);
+                try skipped_buf.appendSlice(gpa, "\"");
+                skipped_count += 1;
+                continue;
+            };
+            defer freePluginManifest(gpa, manifest);
+
+            if (plugin_count > 0) try plugins_buf.appendSlice(gpa, ", ");
+
+            const name_esc = try allocJsonEscape(gpa, manifest.name);
+            defer gpa.free(name_esc);
+            const lang_esc = try allocJsonEscape(gpa, manifest.lang);
+            defer gpa.free(lang_esc);
+            const desc_esc = try allocJsonEscape(gpa, manifest.description);
+            defer gpa.free(desc_esc);
+            const args_esc = try allocJsonEscape(gpa, manifest.args);
+            defer gpa.free(args_esc);
+            const entry_esc = try allocJsonEscape(gpa, manifest.entry);
+            defer gpa.free(entry_esc);
+
+            const plugin_json = try std.fmt.allocPrint(gpa,
+                \\{{"name": "{s}", "lang": "{s}", "description": "{s}", "args": "{s}", "entry": "{s}"}}
+            , .{ name_esc, lang_esc, desc_esc, args_esc, entry_esc });
+            defer gpa.free(plugin_json);
+
+            try plugins_buf.appendSlice(gpa, plugin_json);
+            plugin_count += 1;
+        }
+    }
+
+    return std.fmt.allocPrint(gpa,
+        \\{{"plugins": [{s}], "count": {d}, "skipped": [{s}]}}
+    , .{ plugins_buf.items, plugin_count, skipped_buf.items });
 }
 
 // --- Tests ---

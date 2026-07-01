@@ -79,6 +79,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  ant <path> [--since <ms>]\n", .{});
         try err.print("  worker-run <lang> <script> [args...]   langs: python,node,deno,bun,go,ruby,bash,swift,zig,lua,php\n", .{});
         try err.print("  worker-list\n", .{});
+        try err.print("  plugin-run <name> [args...]            run a plugin from ~/.foreman/plugins/\n", .{});
+        try err.print("  plugin-list\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2148,6 +2150,50 @@ pub fn main(init: std.process.Init) !void {
             },
             error.InterpreterNotFound => {
                 try err.print("error: no interpreter found for '{s}'. Install it and ensure it is in PATH.\n", .{lang});
+                try err.flush();
+                std.process.exit(1);
+            },
+            else => return e,
+        };
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "plugin-list")) {
+        const json = try root.computePluginList(gpa, io);
+        defer gpa.free(json);
+        try out.print("{s}\n", .{json});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "plugin-run")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools plugin-run <name> [args...]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const plugin_name = args[2];
+        const extra_args = if (args.len > 3) args[3..] else args[0..0];
+        const json = root.computePluginRun(gpa, io, plugin_name, extra_args) catch |e| switch (e) {
+            error.PluginNotFound => {
+                try err.print("error: plugin '{s}' not found in ~/.foreman/plugins/\n", .{plugin_name});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.ManifestInvalid => {
+                try err.print("error: invalid manifest for plugin '{s}' (bad JSON or wrong field type)\n", .{plugin_name});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.ManifestMissingField => {
+                try err.print("error: invalid manifest for plugin '{s}': missing required field (name, lang, or entry)\n", .{plugin_name});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.PluginUnknownLang => {
+                try err.print("error: plugin '{s}' specifies an unknown lang\n", .{plugin_name});
+                try err.flush();
+                std.process.exit(1);
+            },
+            error.PluginInterpreterNotFound => {
+                try err.print("error: interpreter not found for plugin '{s}'\n", .{plugin_name});
                 try err.flush();
                 std.process.exit(1);
             },
