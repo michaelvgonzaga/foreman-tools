@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.58.0";
+pub const VERSION = "0.59.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7018,6 +7018,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "context-slice", .description = "focused project slice — top 8 files by relevance + excerpts; use before handing context to a subagent", .args = "<abs-path> <focus-query>" },
         .{ .name = "state-merge", .description = "merge two JSON objects — array fields concatenated, non-array fields v2 wins; use to combine multi-agent partial results", .args = "<file1> <file2>" },
         .{ .name = "tui", .description = "interactive project dashboard — j/k navigate, q quit, r reload", .args = "[<foreman-root>]" },
+        .{ .name = "knowledge-audit", .description = "audit project knowledge extraction — safe-to-delete gate before export/archive", .args = "<project-path> [<foreman-root>]" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -9167,6 +9168,236 @@ pub fn computeTui(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) 
     try errw.interface.writeAll("error: python3 not found — install Python 3 to use `tui`\n");
     try errw.interface.flush();
     std.process.exit(1);
+}
+
+// --- knowledge-audit subcommand ---
+
+pub const KnowledgeAuditItem = struct {
+    label: []const u8, // owned
+    source: []const u8, // "local" | "ledger" | "knowledgebase" | "github" | "git"
+};
+
+pub const KnowledgeAuditResult = struct {
+    project: []const u8, // owned
+    path: []const u8, // owned
+    ready: bool,
+    captured: []KnowledgeAuditItem, // owned slice
+    unextracted: []KnowledgeAuditItem, // owned slice
+    warnings: []KnowledgeAuditItem, // owned slice
+};
+
+fn kaReadFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?[]u8 {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var r = file.reader(io, &buf);
+    return r.interface.allocRemaining(gpa, .limited(2 * 1024 * 1024)) catch null;
+}
+
+fn kaCountDecisionRows(content: []const u8) u32 {
+    // Count Markdown table rows starting with "| 20" (year prefix skips header).
+    var count: u32 = 0;
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimStart(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, "| 20")) count += 1;
+    }
+    return count;
+}
+
+fn kaProjectInLedger(ledger_json: []const u8, project_name: []const u8) u32 {
+    // Count occurrences of project_name in the ledger JSON (covers question + reasoning fields).
+    var count: u32 = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOf(u8, ledger_json[pos..], project_name)) |idx| {
+        count += 1;
+        pos += idx + project_name.len;
+        if (pos >= ledger_json.len) break;
+    }
+    return count;
+}
+
+pub fn computeKnowledgeAudit(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    project_path: []const u8,
+    foreman_root: []const u8,
+) !KnowledgeAuditResult {
+    const name = std.fs.path.basename(project_path);
+
+    var captured: std.ArrayList(KnowledgeAuditItem) = .empty;
+    errdefer {
+        for (captured.items) |it| { gpa.free(it.label); gpa.free(it.source); }
+        captured.deinit(gpa);
+    }
+    var unextracted: std.ArrayList(KnowledgeAuditItem) = .empty;
+    errdefer {
+        for (unextracted.items) |it| { gpa.free(it.label); gpa.free(it.source); }
+        unextracted.deinit(gpa);
+    }
+    var warnings: std.ArrayList(KnowledgeAuditItem) = .empty;
+    errdefer {
+        for (warnings.items) |it| { gpa.free(it.label); gpa.free(it.source); }
+        warnings.deinit(gpa);
+    }
+
+    // 1. spec.md
+    const spec_path = try std.fmt.allocPrint(gpa, "{s}/spec.md", .{project_path});
+    defer gpa.free(spec_path);
+    if (fileExists(io, spec_path)) {
+        try captured.append(gpa, .{
+            .label = try gpa.dupe(u8, "spec.md present"),
+            .source = try gpa.dupe(u8, "local"),
+        });
+    } else {
+        try unextracted.append(gpa, .{
+            .label = try gpa.dupe(u8, "spec.md missing — document what this project does before archiving"),
+            .source = try gpa.dupe(u8, "local"),
+        });
+    }
+
+    // 2. CLAUDE.md decision log
+    const claude_path = try std.fmt.allocPrint(gpa, "{s}/CLAUDE.md", .{project_path});
+    defer gpa.free(claude_path);
+    if (fileExists(io, claude_path)) {
+        if (kaReadFile(gpa, io, claude_path)) |raw| {
+            defer gpa.free(raw);
+            const decision_count = kaCountDecisionRows(raw);
+            if (decision_count > 0) {
+                const label = try std.fmt.allocPrint(gpa, "CLAUDE.md: {d} decision log entr{s}", .{
+                    decision_count, if (decision_count == 1) "y" else "ies",
+                });
+                try captured.append(gpa, .{ .label = label, .source = try gpa.dupe(u8, "local") });
+            } else {
+                try captured.append(gpa, .{
+                    .label = try gpa.dupe(u8, "CLAUDE.md present (no decision log entries)"),
+                    .source = try gpa.dupe(u8, "local"),
+                });
+            }
+        }
+    } else {
+        try unextracted.append(gpa, .{
+            .label = try gpa.dupe(u8, "CLAUDE.md missing — no decision log"),
+            .source = try gpa.dupe(u8, "local"),
+        });
+    }
+
+    // 3. knowledge/ directory — check each .md against _knowledgebase/
+    const knowledge_path = try std.fmt.allocPrint(gpa, "{s}/knowledge", .{project_path});
+    defer gpa.free(knowledge_path);
+    const kb_root = try std.fmt.allocPrint(gpa, "{s}/_knowledgebase", .{foreman_root});
+    defer gpa.free(kb_root);
+
+    if (fileExists(io, knowledge_path)) {
+        const find_result = std.process.run(gpa, io, .{
+            .argv = &.{ "find", knowledge_path, "-maxdepth", "1", "-name", "*.md", "-type", "f" },
+        }) catch null;
+        if (find_result) |fr| {
+            defer gpa.free(fr.stderr);
+            defer gpa.free(fr.stdout);
+            var lines = std.mem.tokenizeScalar(u8, fr.stdout, '\n');
+            while (lines.next()) |line| {
+                if (line.len == 0) continue;
+                const basename = std.fs.path.basename(line);
+                const kb_mirror = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ kb_root, basename });
+                defer gpa.free(kb_mirror);
+                if (fileExists(io, kb_mirror)) {
+                    const label = try std.fmt.allocPrint(gpa, "knowledge/{s} — mirrored in _knowledgebase/", .{basename});
+                    try captured.append(gpa, .{ .label = label, .source = try gpa.dupe(u8, "knowledgebase") });
+                } else {
+                    const label = try std.fmt.allocPrint(gpa, "knowledge/{s} — not in _knowledgebase/ (extract or mark project-only)", .{basename});
+                    try unextracted.append(gpa, .{ .label = label, .source = try gpa.dupe(u8, "local") });
+                }
+            }
+        }
+    }
+
+    // 4. Git: clean working tree
+    if (runGit(gpa, io, project_path, &.{ "status", "--porcelain" })) |sr| {
+        defer gpa.free(sr);
+        if (std.mem.trim(u8, sr, " \n\r").len > 0) {
+            try warnings.append(gpa, .{
+                .label = try gpa.dupe(u8, "uncommitted changes — commit and push before archiving"),
+                .source = try gpa.dupe(u8, "git"),
+            });
+        } else {
+            try captured.append(gpa, .{
+                .label = try gpa.dupe(u8, "git: clean working tree"),
+                .source = try gpa.dupe(u8, "git"),
+            });
+        }
+    } else |_| {}
+
+    // 5. Git: no unpushed commits
+    if (runGit(gpa, io, project_path, &.{ "log", "@{u}..HEAD", "--oneline" })) |ar| {
+        defer gpa.free(ar);
+        var unpushed: u32 = 0;
+        var iter = std.mem.tokenizeScalar(u8, ar, '\n');
+        while (iter.next()) |line| { if (line.len > 0) unpushed += 1; }
+        if (unpushed > 0) {
+            const label = try std.fmt.allocPrint(gpa, "{d} unpushed commit{s} — push to GitHub before archiving", .{
+                unpushed, if (unpushed == 1) "" else "s",
+            });
+            try warnings.append(gpa, .{ .label = label, .source = try gpa.dupe(u8, "git") });
+        } else {
+            try captured.append(gpa, .{
+                .label = try gpa.dupe(u8, "git: fully pushed to GitHub"),
+                .source = try gpa.dupe(u8, "github"),
+            });
+        }
+    } else |_| {}
+
+    // 6. Ledger: entries referencing this project
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+    defer gpa.free(ledger_path);
+    if (fileExists(io, ledger_path)) {
+        if (kaReadFile(gpa, io, ledger_path)) |lr| {
+            defer gpa.free(lr);
+            const hits = kaProjectInLedger(lr, name);
+            if (hits > 0) {
+                const label = try std.fmt.allocPrint(gpa, "ledger: {d} reference{s} to this project in decision history", .{
+                    hits, if (hits == 1) "" else "s",
+                });
+                try captured.append(gpa, .{ .label = label, .source = try gpa.dupe(u8, "ledger") });
+            }
+        }
+    }
+
+    // 7. _skills/: skill files referencing this project
+    const skills_root = try std.fmt.allocPrint(gpa, "{s}/_skills", .{foreman_root});
+    defer gpa.free(skills_root);
+    if (fileExists(io, skills_root)) {
+        const grep_result = std.process.run(gpa, io, .{
+            .argv = &.{ "grep", "-rl", name, skills_root },
+        }) catch null;
+        if (grep_result) |gr| {
+            defer gpa.free(gr.stderr);
+            defer gpa.free(gr.stdout);
+            const trimmed = std.mem.trim(u8, gr.stdout, " \n\r");
+            if (trimmed.len > 0) {
+                var skill_count: u32 = 0;
+                var iter = std.mem.tokenizeScalar(u8, trimmed, '\n');
+                while (iter.next()) |_| skill_count += 1;
+                const label = try std.fmt.allocPrint(gpa, "_skills/: {d} skill file{s} reference this project", .{
+                    skill_count, if (skill_count == 1) "" else "s",
+                });
+                try captured.append(gpa, .{ .label = label, .source = try gpa.dupe(u8, "local") });
+            }
+        }
+    }
+
+    const ready = unextracted.items.len == 0 and warnings.items.len == 0;
+
+    return KnowledgeAuditResult{
+        .project = try gpa.dupe(u8, name),
+        .path = try gpa.dupe(u8, project_path),
+        .ready = ready,
+        .captured = try captured.toOwnedSlice(gpa),
+        .unextracted = try unextracted.toOwnedSlice(gpa),
+        .warnings = try warnings.toOwnedSlice(gpa),
+    };
 }
 
 // --- Tests ---

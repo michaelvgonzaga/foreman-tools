@@ -85,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  context-slice <abs-path> <focus-query>\n", .{});
         try err.print("  state-merge <file1> <file2>\n", .{});
         try err.print("  tui [<foreman-root>]\n", .{});
+        try err.print("  knowledge-audit <project-path> [<foreman-root>]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2361,6 +2362,43 @@ pub fn main(init: std.process.Init) !void {
             break :blk try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
         };
         try root.computeTui(gpa, io, foreman_root);
+    } else if (std.mem.eql(u8, args[1], "knowledge-audit")) {
+        if (args.len < 3) {
+            try err.print("usage: foreman-tools knowledge-audit <project-path> [<foreman-root>]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const project_path = args[2];
+        const foreman_root = if (args.len >= 4) args[3] else blk: {
+            const home_ptr = std.c.getenv("HOME") orelse {
+                try err.print("error: HOME not set\n", .{});
+                try err.flush();
+                std.process.exit(1);
+            };
+            const home = std.mem.sliceTo(home_ptr, 0);
+            break :blk try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
+        };
+        const result = try root.computeKnowledgeAudit(gpa, io, project_path, foreman_root);
+        try out.print("{{\n  \"project\": \"{s}\",\n  \"path\": \"{s}\",\n  \"ready\": {s},\n", .{
+            result.project, result.path, if (result.ready) "true" else "false",
+        });
+        try out.print("  \"captured\": [\n", .{});
+        for (result.captured, 0..) |item, i| {
+            const comma: []const u8 = if (i + 1 < result.captured.len) "," else "";
+            try out.print("    {{\"label\": \"{s}\", \"source\": \"{s}\"}}{s}\n", .{ item.label, item.source, comma });
+        }
+        try out.print("  ],\n  \"unextracted\": [\n", .{});
+        for (result.unextracted, 0..) |item, i| {
+            const comma: []const u8 = if (i + 1 < result.unextracted.len) "," else "";
+            try out.print("    {{\"label\": \"{s}\", \"source\": \"{s}\"}}{s}\n", .{ item.label, item.source, comma });
+        }
+        try out.print("  ],\n  \"warnings\": [\n", .{});
+        for (result.warnings, 0..) |item, i| {
+            const comma: []const u8 = if (i + 1 < result.warnings.len) "," else "";
+            try out.print("    {{\"label\": \"{s}\", \"source\": \"{s}\"}}{s}\n", .{ item.label, item.source, comma });
+        }
+        try out.print("  ]\n}}\n", .{});
+        try out.flush();
     } else if (std.mem.eql(u8, args[1], "registry")) {
         const result = root.computeRegistry();
         try out.print("{{\n  \"version\": \"{s}\",\n  \"subcommands\": [\n", .{result.version});
