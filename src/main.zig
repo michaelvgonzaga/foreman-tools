@@ -88,6 +88,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  knowledge-audit <project-path> [<foreman-root>]\n", .{});
         try err.print("  export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]\n", .{});
         try err.print("  import <source-path> [<foreman-root>]\n", .{});
+        try err.print("  promotion-queue [list | add <name> <description> | clear]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2445,6 +2446,34 @@ pub fn main(init: std.process.Init) !void {
         try out.print("{{\n  \"name\": \"{s}\",\n  \"dest_path\": \"{s}\",\n  \"source_format\": \"{s}\",\n  \"deps_note\": \"{s}\",\n  \"success\": {s},\n  \"note\": \"{s}\"\n}}\n", .{
             result.name, result.dest_path, result.source_format, result.deps_note, success_str, result.note,
         });
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "promotion-queue")) {
+        const mode: root.PromotionQueueMode = blk: {
+            if (args.len < 3 or std.mem.eql(u8, args[2], "list")) break :blk .list;
+            if (std.mem.eql(u8, args[2], "clear")) break :blk .clear;
+            if (std.mem.eql(u8, args[2], "add")) {
+                if (args.len < 5) {
+                    try err.print("usage: foreman-tools promotion-queue add <name> <description>\n", .{});
+                    try err.flush();
+                    std.process.exit(1);
+                }
+                break :blk .{ .add = .{ .name = args[3], .description = args[4] } };
+            }
+            try err.print("usage: foreman-tools promotion-queue [list | add <name> <description> | clear]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        };
+        const result = try root.computePromotionQueue(gpa, io, mode);
+        if (std.mem.eql(u8, result.op, "list")) {
+            try out.print("{{\"op\":\"list\",\"count\":{d},\"entries\":[", .{result.count});
+            for (result.entries, 0..) |e, i| {
+                const comma: []const u8 = if (i + 1 < result.entries.len) "," else "";
+                try out.print("{{\"name\":\"{s}\",\"description\":\"{s}\",\"added_at\":\"{s}\"}}{s}", .{ e.name, e.description, e.added_at, comma });
+            }
+            try out.print("]}}\n", .{});
+        } else {
+            try out.print("{{\"op\":\"{s}\",\"count\":{d},\"success\":{},\"note\":\"{s}\"}}\n", .{ result.op, result.count, result.success, result.note });
+        }
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "registry")) {
         const result = root.computeRegistry();

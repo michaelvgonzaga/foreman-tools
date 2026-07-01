@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.60.0";
+pub const VERSION = "0.61.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7021,6 +7021,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "knowledge-audit", .description = "audit project knowledge extraction — safe-to-delete gate before export/archive", .args = "<project-path> [<foreman-root>]" },
         .{ .name = "export", .description = "package a project as .fmz or generate a platform installer script", .args = "<project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]" },
         .{ .name = "import", .description = "absorb a .fmz or raw project directory into ~/foreman", .args = "<source-path> [<foreman-root>]" },
+        .{ .name = "promotion-queue", .description = "track Zig subcommands built locally but not yet brew-released — list/add/clear pending-promotions.json", .args = "[list | add <name> <description> | clear]" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -9948,6 +9949,130 @@ pub fn computeImport(
         .success = true,
         .note = try std.fmt.allocPrint(gpa, "imported → {s}", .{dest_path}),
     };
+}
+
+// --- Promotion Queue ---
+
+pub const PromotionEntry = struct {
+    name: []const u8,
+    description: []const u8,
+    added_at: []const u8,
+};
+
+pub const PromotionQueueResult = struct {
+    op: []const u8,
+    entries: []PromotionEntry,
+    count: usize,
+    success: bool,
+    note: []const u8,
+};
+
+pub const PromotionQueueMode = union(enum) {
+    list,
+    add: struct { name: []const u8, description: []const u8 },
+    clear,
+};
+
+fn writePromotionQueue(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries: []PromotionEntry) void {
+    const tmp_path = std.fmt.allocPrint(gpa, "{s}.tmp", .{path}) catch return;
+    defer gpa.free(tmp_path);
+    const f = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch return;
+    var wbuf: [4096]u8 = undefined;
+    var w = f.writerStreaming(io, &wbuf);
+    const ok = blk: {
+        w.interface.writeAll("{\"entries\":[") catch break :blk false;
+        for (entries, 0..) |e, i| {
+            if (i > 0) w.interface.writeAll(",") catch break :blk false;
+            const n_esc = allocJsonEscape(gpa, e.name) catch break :blk false;
+            defer gpa.free(n_esc);
+            const d_esc = allocJsonEscape(gpa, e.description) catch break :blk false;
+            defer gpa.free(d_esc);
+            const a_esc = allocJsonEscape(gpa, e.added_at) catch break :blk false;
+            defer gpa.free(a_esc);
+            w.interface.print("{{\"name\":\"{s}\",\"description\":\"{s}\",\"added_at\":\"{s}\"}}", .{ n_esc, d_esc, a_esc }) catch break :blk false;
+        }
+        w.interface.writeAll("]}\n") catch break :blk false;
+        w.interface.flush() catch break :blk false;
+        break :blk true;
+    };
+    f.close(io);
+    if (ok) atomicRenameAbsolute(tmp_path, path);
+}
+
+pub fn computePromotionQueue(gpa: std.mem.Allocator, io: std.Io, mode: PromotionQueueMode) !PromotionQueueResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    defer gpa.free(foreman_dir);
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+    const queue_path = try std.fmt.allocPrint(gpa, "{s}/pending-promotions.json", .{foreman_dir});
+    defer gpa.free(queue_path);
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+    const date = tsToDateStr(gpa, @intCast(now_ts)) catch try gpa.dupe(u8, "unknown");
+    defer gpa.free(date);
+
+    var entries: std.ArrayList(PromotionEntry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            gpa.free(e.name);
+            gpa.free(e.description);
+            gpa.free(e.added_at);
+        }
+        entries.deinit(gpa);
+    }
+
+    if (fileExists(io, queue_path)) {
+        if (kaReadFile(gpa, io, queue_path)) |raw| {
+            defer gpa.free(raw);
+            var p = std.json.Scanner.initCompleteInput(gpa, raw);
+            defer p.deinit();
+            if (std.json.parseFromTokenSourceLeaky(std.json.Value, gpa, &p, .{})) |val| {
+                if (val.object.get("entries")) |arr| {
+                    for (arr.array.items) |item| {
+                        const name = if (item.object.get("name")) |v| v.string else continue;
+                        const desc = if (item.object.get("description")) |v| v.string else "";
+                        const at = if (item.object.get("added_at")) |v| v.string else "unknown";
+                        try entries.append(gpa, .{
+                            .name = try gpa.dupe(u8, name),
+                            .description = try gpa.dupe(u8, desc),
+                            .added_at = try gpa.dupe(u8, at),
+                        });
+                    }
+                }
+            } else |_| {}
+        }
+    }
+
+    switch (mode) {
+        .list => {
+            const result_entries = try gpa.alloc(PromotionEntry, entries.items.len);
+            for (entries.items, 0..) |e, i| {
+                result_entries[i] = .{
+                    .name = try gpa.dupe(u8, e.name),
+                    .description = try gpa.dupe(u8, e.description),
+                    .added_at = try gpa.dupe(u8, e.added_at),
+                };
+            }
+            return .{ .op = "list", .entries = result_entries, .count = result_entries.len, .success = true, .note = "" };
+        },
+        .add => |rec| {
+            try entries.append(gpa, .{
+                .name = try gpa.dupe(u8, rec.name),
+                .description = try gpa.dupe(u8, rec.description),
+                .added_at = try gpa.dupe(u8, date),
+            });
+            writePromotionQueue(gpa, io, queue_path, entries.items);
+            const note = try std.fmt.allocPrint(gpa, "queued {s} — {d} pending", .{ rec.name, entries.items.len });
+            return .{ .op = "add", .entries = &.{}, .count = entries.items.len, .success = true, .note = note };
+        },
+        .clear => {
+            writePromotionQueue(gpa, io, queue_path, &.{});
+            return .{ .op = "clear", .entries = &.{}, .count = 0, .success = true, .note = "promotion queue cleared" };
+        },
+    }
 }
 
 // --- Tests ---
