@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.67.0";
+pub const VERSION = "0.68.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7334,6 +7334,7 @@ fn findLedgerPrecedent(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !?
             .outcome = try gpa.dupe(u8, e.outcome),
             .outcome_matched = try gpa.dupe(u8, e.outcome_matched),
             .outcome_recorded_ts = e.outcome_recorded_ts,
+            .outcome_review_due = e.outcome_review_due,
         };
     }
     return null;
@@ -7407,6 +7408,7 @@ fn findExactLedgerEntry(gpa: std.mem.Allocator, io: std.Io, question: []const u8
                 .outcome = try gpa.dupe(u8, e.outcome),
                 .outcome_matched = try gpa.dupe(u8, e.outcome_matched),
                 .outcome_recorded_ts = e.outcome_recorded_ts,
+                .outcome_review_due = e.outcome_review_due,
             };
         }
     }
@@ -9110,6 +9112,19 @@ pub fn computeStateMerge(
 
 const LEDGER_MAX_ENTRIES: usize = 1000;
 const LEDGER_STALE_SECS: i64 = 365 * 86400;
+// Deliberately much shorter than staleness — staleness asks "might this
+// fact be outdated"; this asks "has enough time plausibly passed to
+// observe whether the decision panned out". A values trade-off like
+// "verbose vs terse by default" is worth checking in weeks, not a year.
+const OUTCOME_REVIEW_SECS: i64 = 30 * 86400;
+
+// True when the outcome hasn't been recorded yet AND enough time has
+// passed to plausibly observe one. Pure function of already-known data —
+// used both by parseLedgerFile (computed fresh on every read) and directly
+// testable without touching the filesystem.
+fn computeOutcomeReviewDue(outcome_matched: []const u8, recorded_ts: i64, now_ts: i64) bool {
+    return std.mem.eql(u8, outcome_matched, "unknown") and (now_ts - recorded_ts) >= OUTCOME_REVIEW_SECS;
+}
 
 pub const LedgerEntry = struct {
     id: []u8,
@@ -9126,6 +9141,7 @@ pub const LedgerEntry = struct {
     outcome: []u8, // "" until recorded — what actually happened, in hindsight
     outcome_matched: []u8, // "unknown" (default) | "matched" | "diverged" — did the original prediction hold up?
     outcome_recorded_ts: i64, // 0 until recorded
+    outcome_review_due: bool, // computed fresh on every read — never persisted to ledger.json
 };
 
 pub const LedgerResult = struct {
@@ -9225,6 +9241,7 @@ fn parseLedgerFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries
             .outcome = gpa.dupe(u8, outcome_str) catch continue,
             .outcome_matched = gpa.dupe(u8, outcome_matched_str) catch continue,
             .outcome_recorded_ts = outcome_recorded_ts,
+            .outcome_review_due = computeOutcomeReviewDue(outcome_matched_str, rec_ts, now_ts),
         };
         entries.append(gpa, entry) catch continue;
         if (entries.items.len >= LEDGER_MAX_ENTRIES) break;
@@ -9314,6 +9331,7 @@ pub fn computeLedger(gpa: std.mem.Allocator, io: std.Io, mode: LedgerMode) !Ledg
                 .outcome = try gpa.dupe(u8, ""),
                 .outcome_matched = try gpa.dupe(u8, "unknown"),
                 .outcome_recorded_ts = 0,
+                .outcome_review_due = false, // just recorded — review is never due immediately
             };
             try entries.append(gpa, entry);
             writeLedgerFile(gpa, io, ledger_path, entries.items);
@@ -9343,6 +9361,7 @@ pub fn computeLedger(gpa: std.mem.Allocator, io: std.Io, mode: LedgerMode) !Ledg
                 .outcome = try gpa.dupe(u8, ""),
                 .outcome_matched = try gpa.dupe(u8, "unknown"),
                 .outcome_recorded_ts = 0,
+                .outcome_review_due = false,
             };
             try entries.append(gpa, entry);
             writeLedgerFile(gpa, io, ledger_path, entries.items);
@@ -9356,6 +9375,7 @@ pub fn computeLedger(gpa: std.mem.Allocator, io: std.Io, mode: LedgerMode) !Ledg
                     gpa.free(e.outcome_matched);
                     e.outcome_matched = try gpa.dupe(u8, ro.matched);
                     e.outcome_recorded_ts = now_ts;
+                    e.outcome_review_due = false;
                     found = true;
                     break;
                 }
@@ -11268,4 +11288,19 @@ test "parseLedgerFile: entry with no outcome fields parses with defaults" {
     try std.testing.expectEqualStrings("", e.outcome);
     try std.testing.expectEqualStrings("unknown", e.outcome_matched);
     try std.testing.expectEqual(@as(i64, 0), e.outcome_recorded_ts);
+}
+
+test "computeOutcomeReviewDue: not due when outcome already recorded" {
+    try std.testing.expect(!computeOutcomeReviewDue("matched", 0, 100 * 86400));
+    try std.testing.expect(!computeOutcomeReviewDue("diverged", 0, 100 * 86400));
+}
+
+test "computeOutcomeReviewDue: not due when too little time has passed" {
+    try std.testing.expect(!computeOutcomeReviewDue("unknown", 1000, 1000 + 86400)); // 1 day
+    try std.testing.expect(!computeOutcomeReviewDue("unknown", 1000, 1000 + 29 * 86400)); // 29 days
+}
+
+test "computeOutcomeReviewDue: due once threshold is crossed" {
+    try std.testing.expect(computeOutcomeReviewDue("unknown", 1000, 1000 + 30 * 86400)); // exactly 30 days
+    try std.testing.expect(computeOutcomeReviewDue("unknown", 1000, 1000 + 90 * 86400)); // well past
 }

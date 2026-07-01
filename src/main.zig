@@ -2064,8 +2064,9 @@ pub fn main(init: std.process.Init) !void {
                 defer gpa.free(outcome_esc);
                 const matched_esc = try root.allocJsonEscape(gpa, e.outcome_matched);
                 defer gpa.free(matched_esc);
-                try out.print("\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"recorded_ts\": {d}, \"revalidation_due_ts\": {d}, \"category\": \"{s}\", \"winner\": \"{s}\", \"question\": \"{s}\", \"reasoning\": \"{s}\", \"shadow\": \"{s}\", \"synthesis\": \"{s}\", \"outcome\": \"{s}\", \"outcomeMatched\": \"{s}\", \"outcomeRecordedTs\": {d}, \"is_stale\": {s}}}", .{
+                try out.print("\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"recorded_ts\": {d}, \"revalidation_due_ts\": {d}, \"category\": \"{s}\", \"winner\": \"{s}\", \"question\": \"{s}\", \"reasoning\": \"{s}\", \"shadow\": \"{s}\", \"synthesis\": \"{s}\", \"outcome\": \"{s}\", \"outcomeMatched\": \"{s}\", \"outcomeRecordedTs\": {d}, \"outcomeReviewDue\": {s}, \"is_stale\": {s}}}", .{
                     id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, cat_esc, win_esc, q_esc, r_esc, shadow_esc, synth_esc, outcome_esc, matched_esc, e.outcome_recorded_ts,
+                    if (e.outcome_review_due) "true" else "false",
                     if (e.is_stale) "true" else "false",
                 });
             }
