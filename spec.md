@@ -270,3 +270,55 @@ You → Context Translator
 4. Phase 3 safeguards, in the priority order in the table above — secret redaction and evidence log first, conflict resolver / A/B testing / drift audit last — only after Phase 1+2 have live sessions to learn from.
 5. Phase 4 `model_profile.zig` / `profile_registry.zig` / `model_router.zig` once Phase 2 (task_type) and Phase 3 (success_rate) exist to feed them.
 6. Phase 5 — revisit trigger only, not scheduled work.
+
+---
+
+## 4ORMan Compile — Deterministic-YES Gap Analysis
+
+Every scenario where 4ORMan cannot currently produce a deterministic execution verdict ("YES"). Root-cause types: rule, capability, evidence, verification, metadata, terminal primitive, cache, registry, ledger, architecture, policy, dependency, other. Existing systems are extended, not duplicated — no new ledger/worker/registry/plugin unless it permanently reduces future reasoning.
+
+| # | Issue | Why 4ORMan Cannot Say YES | Root Cause | Existing Component to Extend | Smallest Permanent Fix | Priority | Dependencies |
+|---|---|---|---|---|---|---|---|
+| 1 | `build`/`deps`/`env-inspect`/`secret-scan`/`outline` panic (`unreachable`) on valid-but-uncommon input (confirmed: Zig 0.16 `.name = .identifier` zon syntax crashes all five, live on `zig-factory`) | A crash returns zero JSON — `quality-gate`/`prod-ready` can't compute even a deterministic NO, the pipeline just dies | capability | `computeBuild`, `computeDeps`, `computeEnvInspect`, `computeSecretScan`, `computeOutline` (root.zig) | Replace every parser-path `unreachable` with a typed error → `{"success": false, "error": ...}`, per the framework's own self-healing contract | Highest | none |
+| 2 | `sandbox-check` only classifies shell-command strings; `FOREMAN_MODE=gate` is advisory — nothing at the tool-call layer can refuse an action | Enforcement depends on Claude remembering the mode each session; a context reset silently reverts to autopilot with no hard stop | terminal primitive | `sandbox-check` | Extend `sandbox-check` to accept current `FOREMAN_MODE` and return `blocked: true` for caution/destructive ops when mode is `gate` | High | none |
+| 3 | `secret-scan` findings are binary; `SecretFinding.severity` is returned but unused for gating (confirmed false positive this session: a field named `excludeSecrets` flagged as `hardcoded-secret`) | `context-gate`'s `send_to_ai` gate blocks equally on a real key and a variable name — operators learn to ignore it, the worst failure mode for a safety gate | verification | `context-gate` (M34), `SecretFinding.severity` | Gate only on `high`/`critical` severity; surface `medium`/`low` as warnings. No new primitive, just use the field already returned | High | none |
+| 4 | `context-gate` never executes build/test — `include.errors` always `[]`, `--test-cmd` deferred | `send_to_ai: true` can be returned while actual compile/test state is unknown — "safe context" and "passing code" are conflated | capability | `context-gate` (M34) + already-shipped `run-tests` (M28) / `build` (M29) | Wire `--test-cmd` into `computeContextGate`, fold results into `errors`/`risk` | High | #1 (build/deps must stop panicking first) |
+| 5 | `ledger score` trusts Claude's self-reported source list; Zig checks count/format (≥10, cited) but not that a citation was actually fetched live | A fabricated-but-well-formatted citation set scores identically to a real one — the "Claude wins" path has no independent check | verification | `ledger score` | Require a fetch-timestamp/session tool-call hash per citation instead of a free-text URL array | High | session tool-call logging exposed to 4orman-tools (not yet available) |
+| 6 | No negative-memory store — failed approaches aren't recorded anywhere queryable | 4ORMan can re-propose a previously-failed approach; only decisions/outcomes are tracked, not failures as first-class entries | ledger | `ledger` (`~/.4orman/ledger.json`) | Add `ledger record-failure <question> <tried> <why-failed>` reusing existing storage/staleness/append-only machinery | Medium | none |
+| 7 | No conflict resolver for rule-vs-rule disagreement (Phase 3, not built) — only Claude-vs-Zig ties are resolved | Once Phase 3 produces multiple learned rules, two can disagree with zero deterministic tiebreaker | rule | `ledger score` composite formula | Extend `ledger score` to accept two rule IDs, return the one with higher stored verified success rate | Medium | #6 (need stored outcomes to compare) |
+| 8 | `compat-check` baseline is only verified at session start, not before later high-stakes calls | Mid-session drift (e.g. background `brew upgrade`) isn't caught before a later `YES`, even though spec.md's own risk register flags exactly this | cache | `compat-check` | Cheap mtime/version re-check before any `quality-gate`/`prod-ready`/`build`/`run-tests` call, not just at boot | Medium | none |
+| 9 | `context-dependency-graph` `importedBy` is a basename-substring heuristic, not a resolved import graph | A refactor "blast radius" built on this can miss aliased imports or flag prose/comment mentions — unreliable for the exact task type (architecture_refactor) it's meant to serve | capability | `context-dependency-graph` (M37) | Tighten `extractImportTarget` matchers to require import-statement context, not bare substring | Medium | none |
+| 10 | `plugin-run` executes user plugins from manifest declarations with no behavioral verification | A plugin can claim read-only behavior while actually writing/deleting — `sandbox-check` covers raw shell strings, not plugin scripts | policy | `plugin-run`, `sandbox-check` | Route plugin execution through `sandbox-check` before `worker-run` invokes it | Medium | #2 (same enforcement point) |
+| 11 | `ledger record-outcome` (matched/diverged) is self-reported with no independent check | A falsely-reported "matched" outcome silently corrupts the 365-day staleness/decay signal with no detection path | evidence | `ledger record-outcome` | Require a re-runnable evidence hash (e.g. `quality-gate` JSON) instead of free-text reasoning | Medium | #1 (crash-free build/test verdicts as evidence source) |
+| 12 | `context-classifier` confidence is relative (winner/total), not absolute — one weak match reports 1.0 same as ten strong matches | Downstream consumers can't threshold on confidence — "barely classified" and "clearly classified" are numerically identical | metadata | `computeContextClassifier` | Return absolute match-count alongside the existing relative ratio | Low | none |
+| 13 | No model router (Phase 4) — task→model assignment is implicit (whichever launcher was typed), not measured | Claude/Codex dual-surface already exists but nothing decides which one a task should run under based on fit | architecture | none yet (genuinely new) | Defer — do not build until #6's evidence log feeds `success_rate`, per already-agreed roadmap sequencing | Low | #6, M36 |
+| 14 | No prompt-pattern learning/reuse loop exists — only per-project `project-state record-pattern` and decision-level `ledger` entries exist; neither captures reusable *structural* prompt patterns with reuse/determinism scoring | Every request re-derives context/prompt structure from scratch; 4ORMan has no deterministic basis to choose "reuse this proven pattern" over "let Claude re-derive it," and no mechanism to reject a lower-quality variant of an already-known-good pattern | registry | `project-state record-pattern` (per-project storage) + `ledger` (dedup / staleness / append-only / reject-lower-quality mechanics) — merge into one, don't add a third store | Promote pattern storage to a global `~/.4orman/patterns.json` (same tier as `~/.4orman/ledger.json`), schema below. Rank by lifetime value, not a single token delta. New entries only when no existing pattern can be extended (reuse `ledger`'s dedup logic). Gate promotion through the same anti-drift law as Phase 3: Observe → Verify → Store → Promote slowly → Roll back fast — one successful run is not proof of a reusable pattern | High | M36 `context-classifier` (trigger matching), #6 (evidence log — pattern promotion needs verified outcomes, not self-certified ones) |
+
+### Prompt Pattern Registry — data matrix
+
+One unified schema per registry entry (`~/.4orman/patterns.json`). Extraction fields are Claude-authored at learning time; scoring fields are Zig-computed and read-only to Claude — Claude proposes a pattern, Zig owns its value.
+
+| Field | Type | Source | Description |
+|---|---|---|---|
+| `id` | string | Zig (hash) | `sha256(triggers + structuralPattern)`, truncated — stable dedup key |
+| `triggers` | `[]string` | Claude (extracted) | keyword/task-type signals that should match this pattern; reuses `context-classifier`'s signal vocabulary rather than inventing a second one |
+| `structuralPattern` | string | Claude (extracted) | the reusable prompt/context *structure* — never the literal prompt text |
+| `compressionRules` | `[]string` | Claude (extracted) | rules for shrinking context when this pattern applies |
+| `reasoningPrinciples` | `[]string` | Claude (extracted) | why the structure works — used for future dedup/merge judgment, not shown to the end user |
+| `avgTokensSaved` | f64 | Zig (running average) | mean token delta across all reuses; updated incrementally on each verified reuse, never overwritten |
+| `reuseCount` | u32 | Zig (increment) | increments only on *verified* successful reuse, not on every match attempt |
+| `determinismScore` | f64, 0–1 | Zig (measured) | fraction of reuses producing bit-identical structural output |
+| `confidence` | f64, 0–1 | Zig (ledger-style scoring) | same 10-source / 100%-composite discipline as `ledger score`, where citations apply |
+| `lifetimeValue` | f64 | Zig (derived, read-only) | `avgTokensSaved × reuseCount × determinismScore × confidence` — see formula below. This is the ranking key `context-gate`/pattern-matching sorts by, never `avgTokensSaved` alone |
+| `supersededBy` | `?string` | Zig | id of the replacing pattern, if any — append-only, same convention as the ledger |
+| `lastVerifiedAt` | timestamp | Zig | staleness clock — reuses the ledger's 365-day `check-stale` model rather than a new one |
+
+**Lifetime Value, not token delta:**
+
+```
+Pattern Value = Average Tokens Saved × Successful Reuse Count × Determinism Score × Confidence
+```
+
+A pattern saving 20 tokens reused 5,000 times outranks one saving 300 tokens used once — the optimization target is cumulative savings over the project's lifetime, not the single biggest one-time compression. `lifetimeValue` is what gets compared when Zig decides whether a new candidate pattern should supersede an existing registry entry, per the "reject lower-quality variants" rule.
+
+**Never store:** full prompts, conversations, responses, duplicate patterns — only the structural, reusable shape and its scoring metadata.
