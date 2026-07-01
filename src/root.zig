@@ -3197,6 +3197,330 @@ pub fn computeContextGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8, 
     };
 }
 
+// --- context-classifier subcommand (M36) ---
+// Keyword/pattern-based task-type detection — no ML. context-gate will use this
+// to decide which files/errors to include per task type once wired in.
+
+pub const ClassifierResult = struct {
+    taskType: []const u8, // static: "compile_error"|"architecture_refactor"|"bug_fix"|"feature"|"other"
+    confidence: f64,
+    signals: [][]const u8, // owned slice; each entry is a static string literal — free only the slice
+};
+
+const ClassifierSignal = struct { keyword: []const u8, task_type: []const u8 };
+
+// Multi-word / distinctive phrases first so specific signals aren't drowned out
+// by generic ones (e.g. "fix" alone matches almost any bug report).
+const CLASSIFIER_SIGNALS = [_]ClassifierSignal{
+    .{ .keyword = "compile error", .task_type = "compile_error" },
+    .{ .keyword = "compilation error", .task_type = "compile_error" },
+    .{ .keyword = "build error", .task_type = "compile_error" },
+    .{ .keyword = "syntax error", .task_type = "compile_error" },
+    .{ .keyword = "doesn't compile", .task_type = "compile_error" },
+    .{ .keyword = "won't build", .task_type = "compile_error" },
+    .{ .keyword = "undefined reference", .task_type = "compile_error" },
+    .{ .keyword = "undeclared", .task_type = "compile_error" },
+    .{ .keyword = "type error", .task_type = "compile_error" },
+    .{ .keyword = "linker error", .task_type = "compile_error" },
+    .{ .keyword = "unreachable code", .task_type = "compile_error" },
+    .{ .keyword = "extract module", .task_type = "architecture_refactor" },
+    .{ .keyword = "split into", .task_type = "architecture_refactor" },
+    .{ .keyword = "restructure", .task_type = "architecture_refactor" },
+    .{ .keyword = "redesign", .task_type = "architecture_refactor" },
+    .{ .keyword = "reorganize", .task_type = "architecture_refactor" },
+    .{ .keyword = "architecture", .task_type = "architecture_refactor" },
+    .{ .keyword = "decouple", .task_type = "architecture_refactor" },
+    .{ .keyword = "refactor", .task_type = "architecture_refactor" },
+    .{ .keyword = "wrong output", .task_type = "bug_fix" },
+    .{ .keyword = "doesn't work", .task_type = "bug_fix" },
+    .{ .keyword = "not working", .task_type = "bug_fix" },
+    .{ .keyword = "regression", .task_type = "bug_fix" },
+    .{ .keyword = "crash", .task_type = "bug_fix" },
+    .{ .keyword = "broken", .task_type = "bug_fix" },
+    .{ .keyword = "incorrect", .task_type = "bug_fix" },
+    .{ .keyword = "failing", .task_type = "bug_fix" },
+    .{ .keyword = "bug", .task_type = "bug_fix" },
+    .{ .keyword = "fix", .task_type = "bug_fix" },
+    .{ .keyword = "new feature", .task_type = "feature" },
+    .{ .keyword = "support for", .task_type = "feature" },
+    .{ .keyword = "build a", .task_type = "feature" },
+    .{ .keyword = "create a", .task_type = "feature" },
+    .{ .keyword = "implement", .task_type = "feature" },
+    .{ .keyword = "add", .task_type = "feature" },
+};
+
+const CLASSIFIER_TYPES = [_][]const u8{ "compile_error", "architecture_refactor", "bug_fix", "feature" };
+
+fn classifierTypeIndex(task_type: []const u8) usize {
+    for (CLASSIFIER_TYPES, 0..) |t, i| {
+        if (std.mem.eql(u8, t, task_type)) return i;
+    }
+    unreachable;
+}
+
+pub fn computeContextClassifier(gpa: std.mem.Allocator, task: []const u8) !ClassifierResult {
+    var counts = [_]u32{0} ** CLASSIFIER_TYPES.len;
+    var matched: std.ArrayList([]const u8) = .empty;
+    errdefer matched.deinit(gpa);
+
+    for (CLASSIFIER_SIGNALS) |sig| {
+        if (containsInsensitive(task, sig.keyword)) {
+            counts[classifierTypeIndex(sig.task_type)] += 1;
+            try matched.append(gpa, sig.keyword);
+        }
+    }
+
+    var best_idx: usize = 0;
+    var best_count: u32 = 0;
+    var total: u32 = 0;
+    for (counts, 0..) |c, i| {
+        total += c;
+        if (c > best_count) {
+            best_count = c;
+            best_idx = i;
+        }
+    }
+
+    const task_type: []const u8 = if (total == 0) "other" else CLASSIFIER_TYPES[best_idx];
+    const confidence: f64 = if (total == 0) 0.0 else @as(f64, @floatFromInt(best_count)) / @as(f64, @floatFromInt(total));
+
+    return .{
+        .taskType = task_type,
+        .confidence = confidence,
+        .signals = try matched.toOwnedSlice(gpa),
+    };
+}
+
+// --- context-dependency-graph subcommand (M37) ---
+// Line-based import extraction, reusing outlineDetectLang's per-language coverage.
+// Block-style imports (Go's `import (...)`) are only caught when a line is a bare
+// quoted string with no alias — aliased block imports are a known gap.
+
+pub const DependencyGraphResult = struct {
+    root: []u8, // owned — the analyzed file's path, relative to <root-path>
+    imports: [][]u8, // owned
+    importedBy: [][]u8, // owned
+};
+
+const DEPGRAPH_MAX_IMPORTED_BY: usize = 50;
+const DEPGRAPH_READ_CAP: usize = 32 * 1024;
+
+fn firstQuoted(line: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const q = line[i];
+        if (q == '"' or q == '\'') {
+            var j = i + 1;
+            while (j < line.len and line[j] != q) : (j += 1) {}
+            if (j < line.len and j > i + 1) return line[i + 1 .. j];
+            return null;
+        }
+    }
+    return null;
+}
+
+fn identOrDotted(s: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '.' or c == ':' or c == '/')) break;
+    }
+    return s[0..i];
+}
+
+fn extractImportTarget(gpa: std.mem.Allocator, lang: []const u8, raw_line: []const u8) !?[]u8 {
+    const t = std.mem.trim(u8, raw_line, " \t\r");
+    if (t.len == 0 or std.mem.startsWith(u8, t, "//") or std.mem.startsWith(u8, t, "#")) return null;
+
+    if (std.mem.eql(u8, lang, "zig")) {
+        if (std.mem.indexOf(u8, t, "@import(") == null) return null;
+        if (firstQuoted(t)) |q| return try gpa.dupe(u8, q);
+        return null;
+    }
+    if (std.mem.eql(u8, lang, "go")) {
+        const is_import_line = std.mem.startsWith(u8, t, "import ") or
+            (t.len > 0 and (t[0] == '"' or t[0] == '\''));
+        if (!is_import_line) return null;
+        if (firstQuoted(t)) |q| return try gpa.dupe(u8, q);
+        return null;
+    }
+    if (std.mem.eql(u8, lang, "javascript") or std.mem.eql(u8, lang, "typescript")) {
+        const looks_like_import = (std.mem.startsWith(u8, t, "import ") and std.mem.indexOf(u8, t, "from") != null) or
+            std.mem.indexOf(u8, t, "require(") != null;
+        if (!looks_like_import) return null;
+        if (firstQuoted(t)) |q| return try gpa.dupe(u8, q);
+        return null;
+    }
+    if (std.mem.eql(u8, lang, "python")) {
+        if (outlineKw(t, "import")) |rest| return try gpa.dupe(u8, identOrDotted(rest));
+        if (std.mem.startsWith(u8, t, "from ")) {
+            const after = t["from ".len..];
+            const end = std.mem.indexOf(u8, after, " import") orelse after.len;
+            return try gpa.dupe(u8, std.mem.trim(u8, after[0..end], " "));
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, lang, "rust")) {
+        if (!std.mem.startsWith(u8, t, "use ")) return null;
+        const after = t["use ".len..];
+        const end = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
+        return try gpa.dupe(u8, std.mem.trim(u8, after[0..end], " "));
+    }
+    return null;
+}
+
+pub fn computeContextDependencyGraph(gpa: std.mem.Allocator, io: std.Io, root_path: []const u8, rel_file_path: []const u8) !DependencyGraphResult {
+    const abs_path = try std.fs.path.join(gpa, &.{ root_path, rel_file_path });
+    defer gpa.free(abs_path);
+
+    const lang = outlineDetectLang(rel_file_path);
+
+    var imports: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (imports.items) |imp| gpa.free(imp);
+        imports.deinit(gpa);
+    }
+    {
+        const file = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch return error.FileNotFound;
+        defer file.close(io);
+        var read_buf: [4096]u8 = undefined;
+        var r = file.reader(io, &read_buf);
+        const dest = try gpa.alloc(u8, DEPGRAPH_READ_CAP);
+        defer gpa.free(dest);
+        const n = try r.interface.readSliceShort(dest);
+        const content = dest[0..n];
+
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            if (try extractImportTarget(gpa, lang, line)) |target| {
+                try imports.append(gpa, target);
+            }
+        }
+    }
+
+    // importedBy: walk the project, flag any file (other than this one) whose
+    // content mentions this file's basename — heuristic, not a resolved graph.
+    const base_no_ext = blk: {
+        const base = std.fs.path.basename(rel_file_path);
+        const dot = std.mem.lastIndexOfScalar(u8, base, '.');
+        break :blk if (dot) |d| base[0..d] else base;
+    };
+
+    var imported_by: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (imported_by.items) |p| gpa.free(p);
+        imported_by.deinit(gpa);
+    }
+
+    if (base_no_ext.len > 0) {
+        const scan = try computeScan(gpa, io, root_path);
+        defer {
+            for (scan.keyFiles) |f| gpa.free(f);
+            gpa.free(scan.keyFiles);
+            for (scan.dirMap) |d| gpa.free(d);
+            gpa.free(scan.dirMap);
+            if (scan.entryPoint) |ep| gpa.free(ep);
+            for (scan.files) |f| gpa.free(f.path);
+            gpa.free(scan.files);
+        }
+
+        for (scan.files) |f| {
+            if (imported_by.items.len >= DEPGRAPH_MAX_IMPORTED_BY) break;
+            if (std.mem.eql(u8, f.path, rel_file_path)) continue;
+
+            const candidate_abs = try std.fs.path.join(gpa, &.{ root_path, f.path });
+            defer gpa.free(candidate_abs);
+            const cfile = std.Io.Dir.openFileAbsolute(io, candidate_abs, .{}) catch continue;
+            defer cfile.close(io);
+            var cbuf: [4096]u8 = undefined;
+            var cr = cfile.reader(io, &cbuf);
+            const cdest = try gpa.alloc(u8, DEPGRAPH_READ_CAP);
+            defer gpa.free(cdest);
+            const cn = cr.interface.readSliceShort(cdest) catch continue;
+            const ccontent = cdest[0..cn];
+
+            if (std.mem.indexOf(u8, ccontent, base_no_ext) != null) {
+                try imported_by.append(gpa, try gpa.dupe(u8, f.path));
+            }
+        }
+    }
+
+    return .{
+        .root = try gpa.dupe(u8, rel_file_path),
+        .imports = try imports.toOwnedSlice(gpa),
+        .importedBy = try imported_by.toOwnedSlice(gpa),
+    };
+}
+
+// --- context-compressor subcommand (M38) ---
+
+pub const CompressorResult = struct {
+    path: []u8, // owned
+    originalLines: u32,
+    compressedLines: u32,
+    summary: []u8, // owned
+};
+
+const COMPRESSOR_DEFAULT_MAX_LINES: usize = 200;
+
+pub fn computeContextCompressor(gpa: std.mem.Allocator, io: std.Io, path: []const u8, max_lines: usize) !CompressorResult {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return error.FileNotFound;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(10 * 1024 * 1024));
+    defer gpa.free(content);
+
+    var line_count: usize = 0;
+    {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |_| line_count += 1;
+    }
+
+    if (line_count <= max_lines) {
+        return .{
+            .path = try gpa.dupe(u8, path),
+            .originalLines = @intCast(line_count),
+            .compressedLines = @intCast(line_count),
+            .summary = try gpa.dupe(u8, content),
+        };
+    }
+
+    const lines = try gpa.alloc([]const u8, line_count);
+    defer gpa.free(lines);
+    {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        var i: usize = 0;
+        while (it.next()) |line| : (i += 1) lines[i] = line;
+    }
+
+    const head = max_lines / 2;
+    const tail = max_lines - head;
+    const omitted = line_count - max_lines;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    for (lines[0..head]) |line| {
+        try out.appendSlice(gpa, line);
+        try out.append(gpa, '\n');
+    }
+    const marker = try std.fmt.allocPrint(gpa, "... {d} lines omitted ...\n", .{omitted});
+    defer gpa.free(marker);
+    try out.appendSlice(gpa, marker);
+    for (lines[line_count - tail ..]) |line| {
+        try out.appendSlice(gpa, line);
+        try out.append(gpa, '\n');
+    }
+
+    return .{
+        .path = try gpa.dupe(u8, path),
+        .originalLines = @intCast(line_count),
+        .compressedLines = @intCast(max_lines + 1), // +1 for the omitted-lines marker
+        .summary = try out.toOwnedSlice(gpa),
+    };
+}
+
 // --- outline subcommand ---
 
 pub const Symbol = struct {
