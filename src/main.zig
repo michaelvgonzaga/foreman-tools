@@ -51,6 +51,9 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  context-evidence <file-path> <pattern>\n", .{});
         try err.print("  context-budget <file-path> [<file-path>...]\n", .{});
         try err.print("  context-gate <path> --task \"<task description>\"\n", .{});
+        try err.print("  context-classifier \"<task description>\"\n", .{});
+        try err.print("  context-dependency-graph <root-path> <rel-file-path>\n", .{});
+        try err.print("  context-compressor <file-path> [--max-lines N]\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -1236,6 +1239,100 @@ pub fn main(init: std.process.Init) !void {
                 if (result.sendToAi) "true" else "false",
                 esc_reason,
             },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-classifier")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools context-classifier \"<task description>\"\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = try root.computeContextClassifier(gpa, args[2]);
+        defer gpa.free(result.signals);
+
+        try out.print("{{\n  \"task_type\": \"{s}\",\n  \"confidence\": {d:.2},\n  \"signals\": [", .{ result.taskType, result.confidence });
+        for (result.signals, 0..) |s, i| {
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{s});
+        }
+        try out.writeAll("]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-dependency-graph")) {
+        if (args.len < 4) {
+            try err.print("usage: 4orman-tools context-dependency-graph <root-path> <rel-file-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeContextDependencyGraph(gpa, io, args[2], args[3]) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[3]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            gpa.free(result.root);
+            for (result.imports) |imp| gpa.free(imp);
+            gpa.free(result.imports);
+            for (result.importedBy) |p| gpa.free(p);
+            gpa.free(result.importedBy);
+        }
+
+        const esc_root = try root.allocJsonEscape(gpa, result.root);
+        defer gpa.free(esc_root);
+
+        try out.print("{{\n  \"root\": \"{s}\",\n  \"imports\": [", .{esc_root});
+        for (result.imports, 0..) |imp, i| {
+            const esc = try root.allocJsonEscape(gpa, imp);
+            defer gpa.free(esc);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{esc});
+        }
+        try out.writeAll("],\n  \"importedBy\": [");
+        for (result.importedBy, 0..) |p, i| {
+            const esc = try root.allocJsonEscape(gpa, p);
+            defer gpa.free(esc);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("\"{s}\"", .{esc});
+        }
+        try out.writeAll("]\n}\n");
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "context-compressor")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools context-compressor <file-path> [--max-lines N]\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        var max_lines: usize = 200;
+        if (args.len >= 5 and std.mem.eql(u8, args[3], "--max-lines")) {
+            max_lines = std.fmt.parseInt(usize, args[4], 10) catch 200;
+        }
+
+        const result = root.computeContextCompressor(gpa, io, args[2], max_lines) catch |e| {
+            switch (e) {
+                error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
+                else => try err.print("error: {}\n", .{e}),
+            }
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            gpa.free(result.path);
+            gpa.free(result.summary);
+        }
+
+        const esc_path = try root.allocJsonEscape(gpa, result.path);
+        defer gpa.free(esc_path);
+        const esc_summary = try root.allocJsonEscape(gpa, result.summary);
+        defer gpa.free(esc_summary);
+
+        try out.print(
+            "{{\n  \"path\": \"{s}\",\n  \"originalLines\": {d},\n  \"compressedLines\": {d},\n  \"summary\": \"{s}\"\n}}\n",
+            .{ esc_path, result.originalLines, result.compressedLines, esc_summary },
         );
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
