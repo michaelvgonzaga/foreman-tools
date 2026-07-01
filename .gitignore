@@ -6,3 +6,4 @@ zig-out/
 foreman-tools
 foreman-tools-arm64
 foreman-tools-x86_64
+*.fmz
