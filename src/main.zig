@@ -63,6 +63,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  git-cache <repo-path>\n", .{});
         try err.print("  project-state <path> [record-decision <what> [<why>]]\n", .{});
         try err.print("  project-state <path> [record-pattern <pattern>]\n", .{});
+        try err.print("  ledger [show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]\n", .{});
         try err.print("  shell-run [--timeout <ms>] <shell-command>\n", .{});
         try err.print("  quality-gate <path>\n", .{});
         try err.print("  validate-schema <file> <schema>\n", .{});
@@ -1934,6 +1935,96 @@ pub fn main(init: std.process.Init) !void {
         if (result.known_patterns.len > 0) try out.print("\n  ", .{});
         try out.print("],\n  \"lastBuildResult\": null,\n  \"lastTestResult\": null\n}}\n", .{});
         try out.flush();
+    } else if (std.mem.eql(u8, args[1], "ledger")) {
+        // ledger score <question> <sources-json> — separate path, does not use LedgerMode
+        if (args.len >= 3 and std.mem.eql(u8, args[2], "score")) {
+            if (args.len < 5) {
+                try err.print("usage: foreman-tools ledger score <question> <sources-json>\n", .{});
+                try err.flush();
+                std.process.exit(1);
+            }
+            const sr = root.computeLedgerScore(gpa, io, args[3], args[4]) catch |e| switch (e) {
+                error.NoHome => {
+                    try err.print("error: HOME not set\n", .{});
+                    try err.flush();
+                    std.process.exit(1);
+                },
+                else => return e,
+            };
+            const reason_esc = try root.allocJsonEscape(gpa, sr.reason);
+            defer gpa.free(reason_esc);
+            const winner_str: []const u8 = if (sr.winner) |w| blk: {
+                const we = try root.allocJsonEscape(gpa, w);
+                break :blk we;
+            } else try gpa.dupe(u8, "null");
+            defer gpa.free(winner_str);
+            const winner_json: []const u8 = if (sr.winner != null) blk: {
+                const buf = try std.fmt.allocPrint(gpa, "\"{s}\"", .{winner_str});
+                break :blk buf;
+            } else try gpa.dupe(u8, "null");
+            defer gpa.free(winner_json);
+            try out.print("{{\n  \"composite\": {d:.1},\n  \"sample_count\": {d},\n  \"total_points\": {d},\n  \"max_points\": {d},\n  \"winner\": {s},\n  \"void\": {s},\n  \"reason\": \"{s}\",\n  \"zig_entry_found\": {s},\n  \"zig_entry_stale\": {s}\n}}\n", .{
+                sr.composite, sr.sample_count, sr.total_points, sr.max_points,
+                winner_json,
+                if (sr.void_round) "true" else "false",
+                reason_esc,
+                if (sr.zig_entry_found) "true" else "false",
+                if (sr.zig_entry_stale) "true" else "false",
+            });
+            try out.flush();
+        } else {
+            var ledger_mode: root.LedgerMode = .show;
+            if (args.len >= 3) {
+                if (std.mem.eql(u8, args[2], "show")) {
+                    ledger_mode = .show;
+                } else if (std.mem.eql(u8, args[2], "check-stale")) {
+                    ledger_mode = .check_stale;
+                } else if (std.mem.eql(u8, args[2], "record")) {
+                    if (args.len < 6) {
+                        try err.print("usage: foreman-tools ledger record <winner> <question> <reasoning>\n", .{});
+                        try err.flush();
+                        std.process.exit(1);
+                    }
+                    ledger_mode = .{ .record = .{ .winner = args[3], .question = args[4], .reasoning = args[5] } };
+                } else if (std.mem.eql(u8, args[2], "validate")) {
+                    if (args.len < 4) {
+                        try err.print("usage: foreman-tools ledger validate <id>\n", .{});
+                        try err.flush();
+                        std.process.exit(1);
+                    }
+                    ledger_mode = .{ .validate = args[3] };
+                }
+            }
+            const lresult = root.computeLedger(gpa, io, ledger_mode) catch |e| switch (e) {
+                error.NoHome => {
+                    try err.print("error: HOME not set\n", .{});
+                    try err.flush();
+                    std.process.exit(1);
+                },
+                else => return e,
+            };
+            try out.print("{{\n  \"total\": {d},\n  \"stale_count\": {d},\n  \"entries\": [", .{ lresult.total, lresult.stale_count });
+            for (lresult.entries, 0..) |e, i| {
+                if (i > 0) try out.print(",", .{});
+                const id_esc = try root.allocJsonEscape(gpa, e.id);
+                defer gpa.free(id_esc);
+                const date_esc = try root.allocJsonEscape(gpa, e.date);
+                defer gpa.free(date_esc);
+                const win_esc = try root.allocJsonEscape(gpa, e.winner);
+                defer gpa.free(win_esc);
+                const q_esc = try root.allocJsonEscape(gpa, e.question);
+                defer gpa.free(q_esc);
+                const r_esc = try root.allocJsonEscape(gpa, e.reasoning);
+                defer gpa.free(r_esc);
+                try out.print("\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"recorded_ts\": {d}, \"revalidation_due_ts\": {d}, \"winner\": \"{s}\", \"question\": \"{s}\", \"reasoning\": \"{s}\", \"is_stale\": {s}}}", .{
+                    id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, win_esc, q_esc, r_esc,
+                    if (e.is_stale) "true" else "false",
+                });
+            }
+            if (lresult.entries.len > 0) try out.print("\n  ", .{});
+            try out.print("]\n}}\n", .{});
+            try out.flush();
+        }
     } else if (std.mem.eql(u8, args[1], "metrics")) {
         const result = try root.computeMetrics(gpa, io);
         try out.print(

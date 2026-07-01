@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.56.0";
+pub const VERSION = "0.57.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -6996,6 +6996,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "delta-context", .description = "changed symbols since a ref + their callers", .args = "<repo> [ref]" },
         .{ .name = "git-cache", .description = "branch, HEAD, dirty state, ahead/behind, last 10 commits (cached)", .args = "<repo>" },
         .{ .name = "project-state", .description = "read/write project decisions and known patterns across sessions", .args = "<path> [record-decision <what> [<why>] | record-pattern <pattern>]" },
+        .{ .name = "ledger", .description = "decision ledger — track Claude-wins vs Zig-wins with 365-day staleness revalidation (stored at ~/.foreman/ledger.json)", .args = "[show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]" },
         .{ .name = "shell-run", .description = "run a shell command safely — blocks destructive patterns", .args = "[--timeout <ms>] <command>" },
         .{ .name = "quality-gate", .description = "aggregate build + test results into a severity-bucketed verdict", .args = "<root>" },
         .{ .name = "validate-schema", .description = "validate a JSON file against a JSON Schema subset", .args = "<file> <schema>" },
@@ -8615,6 +8616,308 @@ pub fn computeStateMerge(
 
     try out.appendSlice(gpa, "\n}");
     return gpa.dupe(u8, out.items);
+}
+
+// --- Ledger ---
+
+const LEDGER_MAX_ENTRIES: usize = 1000;
+const LEDGER_STALE_SECS: i64 = 365 * 86400;
+
+pub const LedgerEntry = struct {
+    id: []u8,
+    date: []u8,
+    recorded_ts: i64,
+    revalidation_due_ts: i64,
+    winner: []u8,
+    question: []u8,
+    reasoning: []u8,
+    is_stale: bool,
+};
+
+pub const LedgerResult = struct {
+    entries: []LedgerEntry,
+    stale_count: usize,
+    total: usize,
+};
+
+pub const LedgerMode = union(enum) {
+    show: void,
+    record: struct { winner: []const u8, question: []const u8, reasoning: []const u8 },
+    check_stale: void,
+    validate: []const u8,
+};
+
+fn parseLedgerFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries: *std.ArrayList(LedgerEntry), now_ts: i64) void {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(4 * 1024 * 1024)) catch return;
+    defer gpa.free(content);
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const arr_v = parsed.value.object.get("entries") orelse return;
+    if (arr_v != .array) return;
+    for (arr_v.array.items) |item| {
+        if (item != .object) continue;
+        const o = item.object;
+        const id_v = o.get("id") orelse continue;
+        const date_v = o.get("date") orelse continue;
+        const rec_v = o.get("recorded_ts") orelse continue;
+        const rev_v = o.get("revalidation_due_ts") orelse continue;
+        const win_v = o.get("winner") orelse continue;
+        const q_v = o.get("question") orelse continue;
+        const r_v = o.get("reasoning") orelse continue;
+        if (id_v != .string or date_v != .string or win_v != .string or
+            q_v != .string or r_v != .string) continue;
+        const rec_ts: i64 = switch (rec_v) {
+            .integer => |n| n,
+            else => continue,
+        };
+        const rev_ts: i64 = switch (rev_v) {
+            .integer => |n| n,
+            else => continue,
+        };
+        const entry = LedgerEntry{
+            .id = gpa.dupe(u8, id_v.string) catch continue,
+            .date = gpa.dupe(u8, date_v.string) catch continue,
+            .recorded_ts = rec_ts,
+            .revalidation_due_ts = rev_ts,
+            .winner = gpa.dupe(u8, win_v.string) catch continue,
+            .question = gpa.dupe(u8, q_v.string) catch continue,
+            .reasoning = gpa.dupe(u8, r_v.string) catch continue,
+            .is_stale = now_ts > rev_ts,
+        };
+        entries.append(gpa, entry) catch continue;
+        if (entries.items.len >= LEDGER_MAX_ENTRIES) break;
+    }
+}
+
+fn writeLedgerFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries: []const LedgerEntry) void {
+    const tmp_path = std.fmt.allocPrint(gpa, "{s}.tmp", .{path}) catch return;
+    defer gpa.free(tmp_path);
+    const f = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch return;
+    var wbuf: [8192]u8 = undefined;
+    var w = f.writerStreaming(io, &wbuf);
+    const ok = blk: {
+        w.interface.writeAll("{\"entries\":[") catch break :blk false;
+        for (entries, 0..) |e, i| {
+            if (i > 0) w.interface.writeAll(",") catch break :blk false;
+            const id_esc = allocJsonEscape(gpa, e.id) catch break :blk false;
+            defer gpa.free(id_esc);
+            const date_esc = allocJsonEscape(gpa, e.date) catch break :blk false;
+            defer gpa.free(date_esc);
+            const win_esc = allocJsonEscape(gpa, e.winner) catch break :blk false;
+            defer gpa.free(win_esc);
+            const q_esc = allocJsonEscape(gpa, e.question) catch break :blk false;
+            defer gpa.free(q_esc);
+            const r_esc = allocJsonEscape(gpa, e.reasoning) catch break :blk false;
+            defer gpa.free(r_esc);
+            w.interface.print("{{\"id\":\"{s}\",\"date\":\"{s}\",\"recorded_ts\":{d},\"revalidation_due_ts\":{d},\"winner\":\"{s}\",\"question\":\"{s}\",\"reasoning\":\"{s}\",\"is_stale\":{s}}}", .{
+                id_esc, date_esc, e.recorded_ts, e.revalidation_due_ts, win_esc, q_esc, r_esc,
+                if (e.is_stale) "true" else "false",
+            }) catch break :blk false;
+        }
+        w.interface.writeAll("]}\n") catch break :blk false;
+        w.interface.flush() catch break :blk false;
+        break :blk true;
+    };
+    f.close(io);
+    if (ok) atomicRenameAbsolute(tmp_path, path);
+}
+
+pub fn computeLedger(gpa: std.mem.Allocator, io: std.Io, mode: LedgerMode) !LedgerResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    defer gpa.free(foreman_dir);
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/ledger.json", .{foreman_dir});
+    defer gpa.free(ledger_path);
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+
+    var entries: std.ArrayList(LedgerEntry) = .empty;
+    parseLedgerFile(gpa, io, ledger_path, &entries, now_ts);
+
+    switch (mode) {
+        .show, .check_stale => {},
+        .record => |rec| {
+            const date = try tsToDateStr(gpa, @intCast(now_ts));
+            defer gpa.free(date);
+            const id_src = try std.fmt.allocPrint(gpa, "{s}:{s}:{s}", .{ rec.winner, rec.question, date });
+            defer gpa.free(id_src);
+            const hex = sha256Hex(id_src);
+            const entry = LedgerEntry{
+                .id = try gpa.dupe(u8, hex[0..16]),
+                .date = try gpa.dupe(u8, date),
+                .recorded_ts = now_ts,
+                .revalidation_due_ts = now_ts + LEDGER_STALE_SECS,
+                .winner = try gpa.dupe(u8, rec.winner),
+                .question = try gpa.dupe(u8, rec.question),
+                .reasoning = try gpa.dupe(u8, rec.reasoning),
+                .is_stale = false,
+            };
+            try entries.append(gpa, entry);
+            writeLedgerFile(gpa, io, ledger_path, entries.items);
+        },
+        .validate => |id| {
+            var found = false;
+            for (entries.items) |*e| {
+                if (std.mem.startsWith(u8, e.id, id) or std.mem.eql(u8, e.id, id)) {
+                    e.revalidation_due_ts = now_ts + LEDGER_STALE_SECS;
+                    e.is_stale = false;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) writeLedgerFile(gpa, io, ledger_path, entries.items);
+        },
+    }
+
+    const total = entries.items.len;
+    var stale_count: usize = 0;
+    for (entries.items) |e| {
+        if (e.is_stale) stale_count += 1;
+    }
+
+    const result_entries = switch (mode) {
+        .check_stale => blk: {
+            var stale_list: std.ArrayList(LedgerEntry) = .empty;
+            for (entries.items) |e| {
+                if (e.is_stale) try stale_list.append(gpa, e);
+            }
+            break :blk try stale_list.toOwnedSlice(gpa);
+        },
+        else => try entries.toOwnedSlice(gpa),
+    };
+
+    return LedgerResult{
+        .entries = result_entries,
+        .stale_count = stale_count,
+        .total = total,
+    };
+}
+
+pub const LedgerScoreResult = struct {
+    composite: f64,
+    sample_count: usize,
+    total_points: i64,
+    max_points: i64,
+    winner: ?[]const u8,
+    void_round: bool,
+    reason: []const u8,
+    zig_entry_found: bool,
+    zig_entry_stale: bool,
+};
+
+fn containsIgnoreAsciiCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i <= haystack.len - needle.len) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |nc, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(nc)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+pub fn computeLedgerScore(gpa: std.mem.Allocator, io: std.Io, question: []const u8, sources_json: []const u8) !LedgerScoreResult {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, sources_json, .{}) catch {
+        return LedgerScoreResult{
+            .composite = 0.0, .sample_count = 0, .total_points = 0, .max_points = 0,
+            .winner = null, .void_round = true,
+            .reason = "invalid sources JSON",
+            .zig_entry_found = false, .zig_entry_stale = false,
+        };
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .array) {
+        return LedgerScoreResult{
+            .composite = 0.0, .sample_count = 0, .total_points = 0, .max_points = 0,
+            .winner = null, .void_round = true,
+            .reason = "sources must be a JSON array",
+            .zig_entry_found = false, .zig_entry_stale = false,
+        };
+    }
+
+    const sources = parsed.value.array.items;
+    const sample_count = sources.len;
+    var total_points: i64 = 0;
+    for (sources) |s| {
+        if (s != .object) continue;
+        const o = s.object;
+        const cited = if (o.get("cited")) |v| (v == .bool and v.bool) else false;
+        const contradicted = if (o.get("contradicted")) |v| (v == .bool and v.bool) else false;
+        if (cited) total_points += 10;
+        if (contradicted) total_points -= 10;
+    }
+    if (total_points < 0) total_points = 0;
+    const max_points: i64 = @intCast(sample_count * 10);
+    const composite: f64 = if (max_points > 0)
+        @as(f64, @floatFromInt(total_points)) / @as(f64, @floatFromInt(max_points)) * 100.0
+    else 0.0;
+
+    if (sample_count < 10 or total_points < max_points) {
+        const reason: []const u8 = if (sample_count < 10)
+            "fewer than 10 sources — void round, gather more evidence"
+        else
+            "composite below 100% — void round, some sources uncited or contradicted";
+        return LedgerScoreResult{
+            .composite = composite, .sample_count = sample_count,
+            .total_points = total_points, .max_points = max_points,
+            .winner = null, .void_round = true, .reason = reason,
+            .zig_entry_found = false, .zig_entry_stale = false,
+        };
+    }
+
+    // Composite == 100%. Check ledger for a stored entry on this question.
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+    defer gpa.free(ledger_path);
+    var entries: std.ArrayList(LedgerEntry) = .empty;
+    parseLedgerFile(gpa, io, ledger_path, &entries, now_ts);
+
+    var zig_entry_found = false;
+    var zig_entry_stale = false;
+    for (entries.items) |e| {
+        if (containsIgnoreAsciiCase(e.question, question) or
+            containsIgnoreAsciiCase(question, e.question))
+        {
+            zig_entry_found = true;
+            zig_entry_stale = e.is_stale;
+            break;
+        }
+    }
+
+    const winner: []const u8 = if (zig_entry_found and !zig_entry_stale) "zig" else "claude";
+    const reason: []const u8 = if (zig_entry_found and !zig_entry_stale)
+        "zig wins — valid ledger entry exists; stored verified data beats fresh reasoning (tiebreaker)"
+    else if (zig_entry_found and zig_entry_stale)
+        "claude wins — zig entry stale (>365 days), claude scored 100%"
+    else
+        "claude wins — no zig ledger entry, claude scored 100% on 10+ live sources";
+
+    return LedgerScoreResult{
+        .composite = composite, .sample_count = sample_count,
+        .total_points = total_points, .max_points = max_points,
+        .winner = winner, .void_round = false, .reason = reason,
+        .zig_entry_found = zig_entry_found, .zig_entry_stale = zig_entry_stale,
+    };
 }
 
 // --- Tests ---
