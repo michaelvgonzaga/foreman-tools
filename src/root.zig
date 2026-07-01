@@ -405,24 +405,38 @@ pub fn computeRepoInfo(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8
 }
 
 pub fn allocJsonEscape(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
+    // Fast path: scan first — most strings need no escaping
+    var extra: usize = 0;
+    for (s) |c| {
+        extra += switch (c) {
+            '"', '\\' => 1,                        // \" or \\ → +1 extra char
+            '\n', '\r', '\t' => 1,                  // \n \r \t → +1 extra char
+            0x00...0x08, 0x0b...0x0c, 0x0e...0x1f => 5, // \u00XX → +5 extra chars
+            else => 0,
+        };
+    }
+    if (extra == 0) return gpa.dupe(u8, s);
+
+    // Slow path: exact pre-sized allocation — no ArrayList growth
+    const out = try gpa.alloc(u8, s.len + extra);
+    const hex = "0123456789abcdef";
+    var i: usize = 0;
     for (s) |c| {
         switch (c) {
-            '"'  => try out.appendSlice(gpa, "\\\""),
-            '\\' => try out.appendSlice(gpa, "\\\\"),
-            '\n' => try out.appendSlice(gpa, "\\n"),
-            '\r' => try out.appendSlice(gpa, "\\r"),
-            '\t' => try out.appendSlice(gpa, "\\t"),
+            '"'  => { out[i] = '\\'; out[i+1] = '"';  i += 2; },
+            '\\' => { out[i] = '\\'; out[i+1] = '\\'; i += 2; },
+            '\n' => { out[i] = '\\'; out[i+1] = 'n';  i += 2; },
+            '\r' => { out[i] = '\\'; out[i+1] = 'r';  i += 2; },
+            '\t' => { out[i] = '\\'; out[i+1] = 't';  i += 2; },
             0x00...0x08, 0x0b...0x0c, 0x0e...0x1f => {
-                const hex = "0123456789abcdef";
-                const esc = [_]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0xf] };
-                try out.appendSlice(gpa, &esc);
+                out[i] = '\\'; out[i+1] = 'u'; out[i+2] = '0'; out[i+3] = '0';
+                out[i+4] = hex[c >> 4]; out[i+5] = hex[c & 0xf];
+                i += 6;
             },
-            else => try out.append(gpa, c),
+            else => { out[i] = c; i += 1; },
         }
     }
-    return out.toOwnedSlice(gpa);
+    return out;
 }
 
 // --- scan subcommand ---
@@ -8386,8 +8400,10 @@ fn serializeJsonValue(gpa: std.mem.Allocator, value: std.json.Value) ![]u8 {
             break :blk std.fmt.allocPrint(gpa, "\"{s}\"", .{esc});
         },
         .array        => |arr| blk: {
+            // Pre-size: estimate 32 bytes/item to avoid growth reallocs
             var buf: std.ArrayList(u8) = .empty;
             defer buf.deinit(gpa);
+            try buf.ensureTotalCapacity(gpa, 2 + arr.items.len * 32);
             try buf.appendSlice(gpa, "[");
             for (arr.items, 0..) |item, i| {
                 if (i > 0) try buf.appendSlice(gpa, ", ");
@@ -8399,8 +8415,10 @@ fn serializeJsonValue(gpa: std.mem.Allocator, value: std.json.Value) ![]u8 {
             break :blk gpa.dupe(u8, buf.items);
         },
         .object       => |obj| blk: {
+            // Pre-size: estimate 48 bytes/entry to avoid growth reallocs
             var buf: std.ArrayList(u8) = .empty;
             defer buf.deinit(gpa);
+            try buf.ensureTotalCapacity(gpa, 2 + obj.count() * 48);
             try buf.appendSlice(gpa, "{");
             var it = obj.iterator();
             var first_field = true;
@@ -8484,19 +8502,20 @@ pub fn computeContextSlice(
                 if (ci > 0) try out.appendSlice(gpa, ", ");
                 const c_esc = try allocJsonEscape(gpa, chunk.content);
                 defer gpa.free(c_esc);
-                const chunk_json = try std.fmt.allocPrint(gpa,
-                    "{{\"startLine\": {d}, \"endLine\": {d}, \"content\": \"{s}\"}}",
-                    .{ chunk.startLine, chunk.endLine, c_esc },
-                );
-                defer gpa.free(chunk_json);
-                try out.appendSlice(gpa, chunk_json);
+                // Stack buffer for the chunk header (startLine/endLine fields)
+                var hdr_buf: [64]u8 = undefined;
+                const hdr = std.fmt.bufPrint(&hdr_buf,
+                    "{{\"startLine\": {d}, \"endLine\": {d}, \"content\": \"",
+                    .{ chunk.startLine, chunk.endLine },
+                ) catch hdr_buf[0..0];
+                try out.appendSlice(gpa, hdr);
+                try out.appendSlice(gpa, c_esc);
+                try out.appendSlice(gpa, "\"}");
             }
         }
 
-        const comma: []const u8 = if (fi + 1 < cap) "," else "";
-        const file_tail = try std.fmt.allocPrint(gpa, "]}}{s}\n", .{comma});
-        defer gpa.free(file_tail);
-        try out.appendSlice(gpa, file_tail);
+        try out.appendSlice(gpa, "]}");
+        try out.appendSlice(gpa, if (fi + 1 < cap) ",\n" else "\n");
     }
 
     try out.appendSlice(gpa, "  ]\n}");
