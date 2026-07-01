@@ -1,4 +1,4 @@
-# foreman-tools API Schema
+# 4orman-tools API Schema
 
 Canonical output contract for all subcommands. Every field listed here is locked — changing a field name, type, or enum value requires an explicit version bump and migration note in spec.md and CLAUDE.md.
 
@@ -8,7 +8,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## doctor
 
-`foreman-tools doctor`
+`4orman-tools doctor`
 
 ```json
 {
@@ -30,7 +30,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## status
 
-`foreman-tools status <workspace-path>`
+`4orman-tools status <workspace-path>`
 
 ```json
 {
@@ -54,7 +54,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## commits
 
-`foreman-tools commits <repo-path> [since-tag]`
+`4orman-tools commits <repo-path> [since-tag]`
 
 ```json
 [
@@ -74,7 +74,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## gh-user
 
-`foreman-tools gh-user`
+`4orman-tools gh-user`
 
 ```json
 {
@@ -94,7 +94,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## release-info
 
-`foreman-tools release-info <repo-path>`
+`4orman-tools release-info <repo-path>`
 
 ```json
 {
@@ -118,13 +118,13 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## repo-info
 
-`foreman-tools repo-info <repo-path>`
+`4orman-tools repo-info <repo-path>`
 
 ```json
 {
   "owner": "michaelvgonzaga",
-  "repo": "foreman",
-  "url": "https://github.com/michaelvgonzaga/foreman.git"
+  "repo": "4orman",
+  "url": "https://github.com/michaelvgonzaga/4orman.git"
 }
 ```
 
@@ -134,7 +134,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## tag-exists
 
-`foreman-tools tag-exists <repo-path> <tag>`
+`4orman-tools tag-exists <repo-path> <tag>`
 
 ```json
 {
@@ -148,7 +148,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## changes-preview
 
-`foreman-tools changes-preview <repo-path>`
+`4orman-tools changes-preview <repo-path>`
 
 ```json
 {
@@ -165,7 +165,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## scan
 
-`foreman-tools scan <path>`
+`4orman-tools scan <path>`
 
 ```json
 {
@@ -198,7 +198,7 @@ Canonical output contract for all subcommands. Every field listed here is locked
 
 ## diff-dirs
 
-`foreman-tools diff-dirs <path1> <path2>`
+`4orman-tools diff-dirs <path1> <path2>`
 
 ```json
 {
@@ -218,7 +218,7 @@ All paths are relative. `same` is derived from equal byte counts (not a content 
 
 ## grep
 
-`foreman-tools grep <root-path> <pattern> [ext-filter]`
+`4orman-tools grep <root-path> <pattern> [ext-filter]`
 
 ```json
 {
@@ -239,7 +239,7 @@ All paths are relative. `same` is derived from equal byte counts (not a content 
 
 ## parse-stack
 
-`foreman-tools parse-stack` (reads stdin)
+`4orman-tools parse-stack` (reads stdin)
 
 ```json
 [
@@ -253,7 +253,7 @@ All paths are relative. `same` is derived from equal byte counts (not a content 
 
 ## find-files
 
-`foreman-tools find-files <root-path> <glob>`
+`4orman-tools find-files <root-path> <glob>`
 
 ```json
 {
@@ -274,7 +274,7 @@ All paths are relative. `same` is derived from equal byte counts (not a content 
 
 ## json-query
 
-`foreman-tools json-query <file-path> <dot-path>`
+`4orman-tools json-query <file-path> <dot-path>`
 
 Found:
 ```json
@@ -299,7 +299,7 @@ Not found:
 
 ## git-diff
 
-`foreman-tools git-diff <repo-path> [ref]`
+`4orman-tools git-diff <repo-path> [ref]`
 
 ```json
 {
@@ -324,11 +324,11 @@ Not found:
 
 ## list-dir
 
-`foreman-tools list-dir <path>`
+`4orman-tools list-dir <path>`
 
 ```json
 {
-  "path": "/Users/me/foreman",
+  "path": "/Users/me/4orman",
   "count": 3,
   "entries": [
     {"name": "src", "kind": "dir"},
@@ -350,11 +350,11 @@ Not found:
 
 ## file-stats
 
-`foreman-tools file-stats <file-path>`
+`4orman-tools file-stats <file-path>`
 
 ```json
 {
-  "path": "/Users/me/foreman/src/main.zig",
+  "path": "/Users/me/4orman/src/main.zig",
   "lines": 840,
   "bytes": 28500
 }
@@ -366,7 +366,7 @@ Not found:
 
 ## env-scan
 
-`foreman-tools env-scan <root-path>`
+`4orman-tools env-scan <root-path>`
 
 ```json
 {
@@ -386,7 +386,7 @@ Not found:
 
 ## toml-query
 
-`foreman-tools toml-query <file-path> <dot-path>`
+`4orman-tools toml-query <file-path> <dot-path>`
 
 Same shape as `json-query`. `type` and `value` use the same enums and raw JSON encoding.
 
@@ -398,7 +398,7 @@ Same shape as `json-query`. `type` and `value` use the same enums and raw JSON e
 
 ## yaml-query
 
-`foreman-tools yaml-query <file-path> <dot-path>`
+`4orman-tools yaml-query <file-path> <dot-path>`
 
 Same shape as `json-query` and `toml-query`.
 
@@ -412,7 +412,7 @@ Same shape as `json-query` and `toml-query`.
 
 ## list-projects
 
-`foreman-tools list-projects <foreman-root>`
+`4orman-tools list-projects <4orman-root>`
 
 ```json
 [
@@ -423,18 +423,18 @@ Same shape as `json-query` and `toml-query`.
 | Field | Type | Notes |
 |---|---|---|
 | `isForeman` | bool | repo contains a `CLAUDE.md` |
-| `isLocal` | bool | repo is cloned locally inside `<foreman-root>` |
+| `isLocal` | bool | repo is cloned locally inside `<4orman-root>` |
 
 ---
 
 ## tarball-sha
 
-`foreman-tools tarball-sha <owner> <repo> <tag>`
+`4orman-tools tarball-sha <owner> <repo> <tag>`
 
 ```json
 {
   "sha256": "7cbe00c307c16d7b43a5f4826e08233d7d2401b50f3823083b1b57893a3f0090",
-  "url": "https://github.com/michaelvgonzaga/foreman-tools/archive/refs/tags/v0.19.0.tar.gz"
+  "url": "https://github.com/michaelvgonzaga/4orman-tools/archive/refs/tags/v0.19.0.tar.gz"
 }
 ```
 
@@ -446,12 +446,12 @@ Same shape as `json-query` and `toml-query`.
 
 ## formula-info
 
-`foreman-tools formula-info <tap-path> <formula-name>`
+`4orman-tools formula-info <tap-path> <formula-name>`
 
 ```json
 {
-  "formulaPath": "/opt/homebrew/.../Formula/foreman-tools.rb",
-  "url": "https://github.com/michaelvgonzaga/foreman-tools/archive/refs/tags/v0.19.0.tar.gz",
+  "formulaPath": "/opt/homebrew/.../Formula/4orman-tools.rb",
+  "url": "https://github.com/michaelvgonzaga/4orman-tools/archive/refs/tags/v0.19.0.tar.gz",
   "sha256": "7cbe00c307c16d7b43a5f4826e08233d7d2401b50f3823083b1b57893a3f0090",
   "version": "0.19.0"
 }
@@ -463,7 +463,7 @@ Same shape as `json-query` and `toml-query`.
 
 ## validate-hooks
 
-`foreman-tools validate-hooks`
+`4orman-tools validate-hooks`
 
 ```json
 {
@@ -485,11 +485,11 @@ Same shape as `json-query` and `toml-query`.
 
 ## gh-release
 
-`foreman-tools gh-release <owner> <repo> <tag> <title> <notes-file>`
+`4orman-tools gh-release <owner> <repo> <tag> <title> <notes-file>`
 
 ```json
 {
-  "url": "https://github.com/michaelvgonzaga/foreman/releases/tag/v1.15.0"
+  "url": "https://github.com/michaelvgonzaga/4orman/releases/tag/v1.15.0"
 }
 ```
 
@@ -501,11 +501,11 @@ Same shape as `json-query` and `toml-query`.
 
 ## cache-store
 
-`foreman-tools cache-store <file-path> <sub-key>` (reads JSON value from stdin)
+`4orman-tools cache-store <file-path> <sub-key>` (reads JSON value from stdin)
 
 ```json
 {
-  "path": "/Users/me/foreman/CLAUDE.md",
+  "path": "/Users/me/4orman/CLAUDE.md",
   "subKey": "guardrails",
   "stored": true
 }
@@ -513,7 +513,7 @@ Same shape as `json-query` and `toml-query`.
 
 Hashes the file, writes `<sha256>\n<value>` to the cache store. `stored: false` means the write failed (result is still correct — failure is silently ignored).
 
-**Usage:** `echo '{"rules":[...]}' | foreman-tools cache-store /abs/path sub-key`
+**Usage:** `echo '{"rules":[...]}' | 4orman-tools cache-store /abs/path sub-key`
 
 **Constraints:** Value capped at 512 KB from stdin.
 
@@ -523,7 +523,7 @@ Hashes the file, writes `<sha256>\n<value>` to the cache store. `stored: false` 
 
 ## cache-fetch
 
-`foreman-tools cache-fetch <file-path> <sub-key>`
+`4orman-tools cache-fetch <file-path> <sub-key>`
 
 Hit:
 ```json
@@ -548,11 +548,11 @@ Miss:
 
 ## cache-check
 
-`foreman-tools cache-check <file-path>`
+`4orman-tools cache-check <file-path>`
 
 ```json
 {
-  "path": "/Users/me/foreman/CLAUDE.md",
+  "path": "/Users/me/4orman/CLAUDE.md",
   "sha256": "9bc861eaf516f9406374d3672ea83e2f6f53f3dfabeedca5d2c635398d769ea4",
   "changed": false,
   "cached": true
@@ -566,7 +566,7 @@ Miss:
 | `changed` | bool | `true` if hash differs from last recorded value, or no prior record |
 | `cached` | bool | `true` if a prior hash was found in the cache store |
 
-**Cache store:** `~/.cache/foreman-tools/<sha256-of-path>` — one file per tracked path. Created automatically. Write failures are silently ignored; the result is still correct, just not persisted.
+**Cache store:** `~/.cache/4orman-tools/<sha256-of-path>` — one file per tracked path. Created automatically. Write failures are silently ignored; the result is still correct, just not persisted.
 
 **Typical use:** Call before re-reading a file. If `changed: false`, skip the read — file is identical to last check. If `changed: true`, read the file.
 
@@ -576,11 +576,11 @@ Miss:
 
 ## file-hash
 
-`foreman-tools file-hash <file-path>`
+`4orman-tools file-hash <file-path>`
 
 ```json
 {
-  "path": "/Users/me/foreman/CLAUDE.md",
+  "path": "/Users/me/4orman/CLAUDE.md",
   "sha256": "9bc861eaf516f9406374d3672ea83e2f6f53f3dfabeedca5d2c635398d769ea4",
   "bytes": 10538
 }
@@ -600,7 +600,7 @@ Miss:
 
 ## context-rank
 
-`foreman-tools context-rank <root-path> <query>`
+`4orman-tools context-rank <root-path> <query>`
 
 ```json
 {
@@ -633,7 +633,7 @@ Miss:
 
 ## context-changed
 
-`foreman-tools context-changed <repo-path> [ref]`
+`4orman-tools context-changed <repo-path> [ref]`
 
 ```json
 {
@@ -672,7 +672,7 @@ Miss:
 
 ## context-evidence
 
-`foreman-tools context-evidence <file-path> <pattern>`
+`4orman-tools context-evidence <file-path> <pattern>`
 
 ```json
 {
@@ -704,7 +704,7 @@ Miss:
 
 ## context-scan
 
-`foreman-tools context-scan <path>`
+`4orman-tools context-scan <path>`
 
 ```json
 {
@@ -741,7 +741,7 @@ Miss:
 
 ## outline
 
-`foreman-tools outline <file-path>`
+`4orman-tools outline <file-path>`
 
 ```json
 {
@@ -776,7 +776,7 @@ Miss:
 
 ## deps
 
-`foreman-tools deps <root-path>`
+`4orman-tools deps <root-path>`
 
 ```json
 {
@@ -809,7 +809,7 @@ Miss:
 
 ## run-tests
 
-`foreman-tools run-tests <path>`
+`4orman-tools run-tests <path>`
 
 ```json
 {
@@ -868,7 +868,7 @@ Miss:
 
 ## build
 
-`foreman-tools build <path>`
+`4orman-tools build <path>`
 
 ```json
 {
@@ -935,7 +935,7 @@ Miss:
 
 ## device-scan
 
-`foreman-tools device-scan`
+`4orman-tools device-scan`
 
 ```json
 {
@@ -956,7 +956,7 @@ Miss:
     "python3":       { "present": true,  "version": "3.12.0", "path": "/opt/homebrew/bin/python3" },
     "go":            { "present": false, "version": null,      "path": null },
     "cargo":         { "present": false, "version": null,      "path": null },
-    "foreman_tools": { "present": true,  "version": "1.26.0", "path": "/opt/homebrew/bin/foreman-tools" }
+    "foreman_tools": { "present": true,  "version": "1.26.0", "path": "/opt/homebrew/bin/4orman-tools" }
   },
   "optimal": {
     "zig_build_flags": "-Doptimize=ReleaseSafe -Dcpu=apple_m3",
@@ -978,12 +978,12 @@ Miss:
 | `hardware.arch` | string | `"arm64"` or `"x86_64"` |
 | `tools.*` | object | `present` bool; `version`/`path` null when not present |
 | `optimal.zig_build_flags` | string | derived from arch; `apple_m3` on M3, `apple_m4` on M4, generic arm64 otherwise |
-| `optimal.bottleneck` | string | always `"git_io"` for macOS foreman-tools; future: `"disk_io"` or `"cpu"` |
+| `optimal.bottleneck` | string | always `"git_io"` for macOS 4orman-tools; future: `"disk_io"` or `"cpu"` |
 | `optimal.git_spawn_ms_estimate` | int | estimated cost per git subprocess in ms |
 | `shell` | string | from `$SHELL` |
 | `scanned_at` | string | ISO 8601 UTC timestamp |
 
-**Community contribution:** The `profile_id` + `hardware` + `optimal` + `tools[*].{present, version}` fields (no paths) form the public-safe subset. Foreman shows a diff of what will be shared and asks for consent before pushing to the `foreman-env` repo. Paths are never included in the community profile — they often contain usernames.
+**Community contribution:** The `profile_id` + `hardware` + `optimal` + `tools[*].{present, version}` fields (no paths) form the public-safe subset. 4ORMan shows a diff of what will be shared and asks for consent before pushing to the `4orman-env` repo. Paths are never included in the community profile — they often contain usernames.
 
 **Errors:** exit 1 if `sysctl` is unavailable. All tool checks are best-effort — missing tool = `present: false`, no error.
 
@@ -1024,8 +1024,8 @@ Executes a plugin and returns its JSON stdout verbatim.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `plugins` | array | one entry per valid plugin in `~/.foreman/plugins/` |
-| `plugins[].name` | string | directory name under `~/.foreman/plugins/` |
+| `plugins` | array | one entry per valid plugin in `~/.4orman/plugins/` |
+| `plugins[].name` | string | directory name under `~/.4orman/plugins/` |
 | `plugins[].lang` | string | any `worker-run` runtime |
 | `plugins[].description` | string | from manifest |
 | `plugins[].args` | string | hint string for `route`/`capability-check` |
@@ -1033,13 +1033,13 @@ Executes a plugin and returns its JSON stdout verbatim.
 | `count` | int | number of valid plugins |
 | `skipped` | array | paths of directories with missing or malformed manifests |
 
-**Errors:** exit 1 only if `~/.foreman/plugins/` cannot be opened. Missing/malformed individual manifests are skipped and listed in `skipped`.
+**Errors:** exit 1 only if `~/.4orman/plugins/` cannot be opened. Missing/malformed individual manifests are skipped and listed in `skipped`.
 
 ---
 
 ## `ledger`
 
-`foreman-tools ledger [show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]`
+`4orman-tools ledger [show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]`
 
 **`ledger show`**
 ```json
@@ -1091,13 +1091,13 @@ Executes a plugin and returns its JSON stdout verbatim.
 | `void` | bool | true when composite <100 or <10 sources |
 | `winner` | string | `"claude"`, `"zig"`, or `null` if void |
 
-**Errors:** exit 1 if `~/.foreman/ledger.json` cannot be read/written.
+**Errors:** exit 1 if `~/.4orman/ledger.json` cannot be read/written.
 
 ---
 
 ## `tui`
 
-`foreman-tools tui [<foreman-root>]`
+`4orman-tools tui [<4orman-root>]`
 
 Spawns an interactive Python curses session — does not emit JSON. Exit code 0 on clean quit, 1 on error. Passes project data JSON to the embedded Python renderer via a temp file.
 
@@ -1109,16 +1109,16 @@ Spawns an interactive Python curses session — does not emit JSON. Exit code 0 
 
 ## `knowledge-audit`
 
-`foreman-tools knowledge-audit <project-path> [<foreman-root>]`
+`4orman-tools knowledge-audit <project-path> [<4orman-root>]`
 
 ```json
 {
   "project": "cse-cli",
-  "path": "/Users/user/foreman/cse-cli",
+  "path": "/Users/user/4orman/cse-cli",
   "ready": true,
   "captured": [
-    { "label": "spec.md present", "source": "/Users/user/foreman/cse-cli/spec.md" },
-    { "label": "CLAUDE.md decision log: 8 rows", "source": "/Users/user/foreman/cse-cli/CLAUDE.md" }
+    { "label": "spec.md present", "source": "/Users/user/4orman/cse-cli/spec.md" },
+    { "label": "CLAUDE.md decision log: 8 rows", "source": "/Users/user/4orman/cse-cli/CLAUDE.md" }
   ],
   "unextracted": [],
   "warnings": []
@@ -1144,7 +1144,7 @@ Spawns an interactive Python curses session — does not emit JSON. Exit code 0 
 
 ## `export`
 
-`foreman-tools export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]`
+`4orman-tools export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]`
 
 ```json
 {
@@ -1153,7 +1153,7 @@ Spawns an interactive Python curses session — does not emit JSON. Exit code 0 
   "format": "fmz",
   "output_path": "/Users/user/cse-cli-v1.3.0.fmz",
   "success": true,
-  "note": "import on any machine: foreman-tools import cse-cli-v1.3.0.fmz"
+  "note": "import on any machine: 4orman-tools import cse-cli-v1.3.0.fmz"
 }
 ```
 
@@ -1167,12 +1167,12 @@ Spawns an interactive Python curses session — does not emit JSON. Exit code 0 
 | `note` | string | next-step hint for the user |
 
 **Formats:**
-- `fmz` — tar.gz: `foreman.manifest.json` + `project/` (git archive of HEAD) + `knowledge/`
+- `fmz` — tar.gz: `4orman.manifest.json` + `project/` (git archive of HEAD) + `knowledge/`
 - `brew` — shell script: `brew install` + `gh auth login` + `git clone` sequence
 - `mac` — bash installer script with Homebrew bootstrap
 - `linux` — bash installer script with apt/dnf detection
 - `windows` — PowerShell installer script with winget
-- `backup` — tar.gz of entire foreman workspace: framework files + ledger + all project .fmz files
+- `backup` — tar.gz of entire 4orman workspace: framework files + ledger + all project .fmz files
 
 **Errors:** exit 1 if `project-path` does not exist. `success: false` (exit 0) if git archive or tar fails.
 
@@ -1180,16 +1180,16 @@ Spawns an interactive Python curses session — does not emit JSON. Exit code 0 
 
 ## `import`
 
-`foreman-tools import <source-path> [<foreman-root>]`
+`4orman-tools import <source-path> [<4orman-root>]`
 
 ```json
 {
   "name": "cse-cli",
-  "dest_path": "/Users/user/foreman/cse-cli",
+  "dest_path": "/Users/user/4orman/cse-cli",
   "source_format": "fmz",
-  "deps_note": "run `foreman-tools knowledge-audit` to verify knowledge extraction",
+  "deps_note": "run `4orman-tools knowledge-audit` to verify knowledge extraction",
   "success": true,
-  "note": "imported → /Users/user/foreman/cse-cli"
+  "note": "imported → /Users/user/4orman/cse-cli"
 }
 ```
 
@@ -1215,6 +1215,6 @@ Any modification to an existing subcommand's output shape (field rename, type ch
 1. Version bump in `build.zig.zon`
 2. New milestone row in `spec.md`
 3. Decision log entry in `CLAUDE.md`
-4. Update callers in `foreman/CLAUDE.md` subcommand table
+4. Update callers in `4orman/CLAUDE.md` subcommand table
 
 Additive changes (new optional fields) are non-breaking if existing callers ignore unknown fields — still document in spec.md but no version bump required.

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.61.0";
+pub const VERSION = "0.62.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -37,6 +37,35 @@ pub fn runGit(gpa: std.mem.Allocator, io: std.Io, workspace: []const u8, git_arg
 pub fn fileExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     return true;
+}
+
+// One-time, non-destructive migration from the pre-rename state/cache dirs
+// (~/.foreman, ~/.cache/foreman-tools) to their 4orman equivalents. Copies,
+// never moves or deletes — the old dirs are left intact so this is safe to
+// run on every invocation (skipped once the destination already exists).
+pub fn migrateStateDir(gpa: std.mem.Allocator, io: std.Io) void {
+    const home_ptr = std.c.getenv("HOME") orelse return;
+    const home: []const u8 = std.mem.span(home_ptr);
+
+    const old_state = std.fmt.allocPrint(gpa, "{s}/.foreman", .{home}) catch return;
+    defer gpa.free(old_state);
+    const new_state = std.fmt.allocPrint(gpa, "{s}/.4orman", .{home}) catch return;
+    defer gpa.free(new_state);
+    if (fileExists(io, old_state) and !fileExists(io, new_state)) {
+        const r = std.process.run(gpa, io, .{ .argv = &.{ "cp", "-R", old_state, new_state } }) catch return;
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+
+    const old_cache = std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home}) catch return;
+    defer gpa.free(old_cache);
+    const new_cache = std.fmt.allocPrint(gpa, "{s}/.cache/4orman-tools", .{home}) catch return;
+    defer gpa.free(new_cache);
+    if (fileExists(io, old_cache) and !fileExists(io, new_cache)) {
+        const r = std.process.run(gpa, io, .{ .argv = &.{ "cp", "-R", old_cache, new_cache } }) catch return;
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
 }
 
 pub fn computeStatus(gpa: std.mem.Allocator, io: std.Io, workspace: []const u8) !StatusResult {
@@ -1973,8 +2002,8 @@ pub const ProjectEntry = struct {
     isLocal: bool,
 };
 
-const FRAMEWORK_REPO_PREFIXES = [_][]const u8{ "homebrew-", "foreman-" };
-const FRAMEWORK_REPO_NAMES = [_][]const u8{ "foreman", "plowman" };
+const FRAMEWORK_REPO_PREFIXES = [_][]const u8{ "homebrew-", "foreman-", "4orman-" };
+const FRAMEWORK_REPO_NAMES = [_][]const u8{ "foreman", "4orman", "plowman" };
 
 fn isFrameworkRepo(name: []const u8) bool {
     for (FRAMEWORK_REPO_NAMES) |n| if (std.mem.eql(u8, name, n)) return true;
@@ -1994,7 +2023,7 @@ fn repoHasSpecMd(gpa: std.mem.Allocator, io: std.Io, nwo: []const u8) bool {
     };
 }
 
-pub fn computeListProjects(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) ![]ProjectEntry {
+pub fn computeListProjects(gpa: std.mem.Allocator, io: std.Io, workspace_root: []const u8) ![]ProjectEntry {
     const list_result = std.process.run(gpa, io, .{
         .argv = &.{ "gh", "repo", "list", "--json", "name,nameWithOwner,url", "--limit", "100" },
     }) catch return &.{};
@@ -2034,7 +2063,7 @@ pub fn computeListProjects(gpa: std.mem.Allocator, io: std.Io, foreman_root: []c
 
         const is_foreman = repoHasSpecMd(gpa, io, nwo);
 
-        const local_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, name });
+        const local_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ workspace_root, name });
         defer gpa.free(local_path);
         const is_local = fileExists(io, local_path);
 
@@ -2331,7 +2360,7 @@ pub const CacheCheckResult = struct {
 };
 
 // Cache store: one file per tracked path, keyed by SHA256(file_path).
-// Location: ~/.cache/foreman-tools/<sha256-of-path> contains the last known content sha256.
+// Location: ~/.cache/4orman-tools/<sha256-of-path> contains the last known content sha256.
 // Write failures are silently ignored — the result is still correct, just not cached.
 pub fn computeCacheCheck(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8) !CacheCheckResult {
     // Hash the file contents
@@ -2340,11 +2369,11 @@ pub fn computeCacheCheck(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
     const new_sha = fh.sha256; // caller takes ownership via result
     errdefer gpa.free(new_sha);
 
-    // Build cache entry path: ~/.cache/foreman-tools/<sha256-of-path>
+    // Build cache entry path: ~/.cache/4orman-tools/<sha256-of-path>
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
     const path_key = sha256Hex(file_path);
-    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/4orman-tools", .{home});
     defer gpa.free(cache_dir);
     const entry_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ cache_dir, &path_key });
     defer gpa.free(entry_path);
@@ -2486,14 +2515,14 @@ pub const CacheFetchResult = struct {
 };
 
 // Cache entry format: "<sha256-of-file-content>\n<value-json>"
-// Stored at: ~/.cache/foreman-tools/<sha256(file_path + ":" + sub_key)>
+// Stored at: ~/.cache/4orman-tools/<sha256(file_path + ":" + sub_key)>
 // When the file's content hash no longer matches the stored hash, fetch returns hit: false.
 
 fn cacheEntryPath(gpa: std.mem.Allocator, home: []const u8, file_path: []const u8, sub_key: []const u8) ![]u8 {
     const combined = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ file_path, sub_key });
     defer gpa.free(combined);
     const key_hex = sha256Hex(combined);
-    return std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools/{s}", .{ home, &key_hex });
+    return std.fmt.allocPrint(gpa, "{s}/.cache/4orman-tools/{s}", .{ home, &key_hex });
 }
 
 pub fn computeCacheStore(gpa: std.mem.Allocator, io: std.Io, file_path: []const u8, sub_key: []const u8, value_json: []const u8) !CacheStoreResult {
@@ -2503,7 +2532,7 @@ pub fn computeCacheStore(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
 
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/4orman-tools", .{home});
     defer gpa.free(cache_dir);
     const entry_path = try cacheEntryPath(gpa, home, file_path, sub_key);
     defer gpa.free(entry_path);
@@ -3680,7 +3709,7 @@ fn extractVersionFromLine(line: []const u8) []const u8 {
 }
 
 fn getToolVersionAlloc(gpa: std.mem.Allocator, io: std.Io, tool: []const u8) ![]u8 {
-    if (std.mem.eql(u8, tool, "foreman_tools")) return gpa.dupe(u8, VERSION);
+    if (std.mem.eql(u8, tool, "4orman_tools")) return gpa.dupe(u8, VERSION);
     const flag = if (std.mem.eql(u8, tool, "zig")) "version" else "--version";
     const r = std.process.run(gpa, io, .{ .argv = &.{ tool, flag } }) catch return gpa.dupe(u8, "");
     defer gpa.free(r.stderr);
@@ -3721,8 +3750,8 @@ fn buildRollbackCmd(gpa: std.mem.Allocator, tool: []const u8, was: []const u8) !
         const dot = std.mem.lastIndexOfScalar(u8, was, '.') orelse was.len;
         return std.fmt.allocPrint(gpa, "brew uninstall zig && brew install zig@{s}", .{was[0..dot]});
     }
-    if (std.mem.eql(u8, tool, "foreman_tools")) {
-        return gpa.dupe(u8, "brew uninstall foreman-tools && brew install michaelvgonzaga/foreman/foreman-tools");
+    if (std.mem.eql(u8, tool, "4orman_tools")) {
+        return gpa.dupe(u8, "brew uninstall 4orman-tools && brew install michaelvgonzaga/4orman/orman-tools");
     }
     if (std.mem.eql(u8, tool, "node")) {
         const dot = std.mem.indexOfScalar(u8, was, '.') orelse was.len;
@@ -3746,13 +3775,13 @@ fn buildRollbackCmd(gpa: std.mem.Allocator, tool: []const u8, was: []const u8) !
 
 fn toolRisk(tool: []const u8) []const u8 {
     if (std.mem.eql(u8, tool, "zig")) return "high";
-    if (std.mem.eql(u8, tool, "foreman_tools")) return "high";
+    if (std.mem.eql(u8, tool, "4orman_tools")) return "high";
     if (std.mem.eql(u8, tool, "node")) return "medium";
     if (std.mem.eql(u8, tool, "python3")) return "medium";
     return "low";
 }
 
-pub const COMPAT_TOOLS = [_][]const u8{ "foreman_tools", "zig", "git", "gh", "brew", "node", "python3" };
+pub const COMPAT_TOOLS = [_][]const u8{ "4orman_tools", "zig", "git", "gh", "brew", "node", "python3" };
 
 pub const DriftedTool = struct {
     tool: []u8,
@@ -3787,7 +3816,7 @@ fn currentIsoTimestamp(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
 pub fn computeCompatBaseline(gpa: std.mem.Allocator, io: std.Io) !CompatBaselineResult {
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const dir_path = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    const dir_path = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
     defer gpa.free(dir_path);
     std.Io.Dir.createDirAbsolute(io, dir_path, .default_dir) catch {};
 
@@ -3858,14 +3887,14 @@ pub fn computeCompatBaseline(gpa: std.mem.Allocator, io: std.Io) !CompatBaseline
 pub fn computeCompatCheck(gpa: std.mem.Allocator, io: std.Io) !CompatCheckResult {
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const baseline_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/compat-baseline.json", .{home});
+    const baseline_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/compat-baseline.json", .{home});
     defer gpa.free(baseline_path);
 
     const baseline_content: []u8 = blk: {
         const f = std.Io.Dir.openFileAbsolute(io, baseline_path, .{}) catch {
             const age = try gpa.dupe(u8, "none");
             errdefer gpa.free(age);
-            const advice = try gpa.dupe(u8, "No baseline recorded. Run: foreman-tools compat-check --baseline");
+            const advice = try gpa.dupe(u8, "No baseline recorded. Run: 4orman-tools compat-check --baseline");
             errdefer gpa.free(advice);
             const drifted = try gpa.alloc(DriftedTool, 0);
             return .{ .ok = false, .baseline_age = age, .drifted = drifted, .advice = advice };
@@ -4075,23 +4104,43 @@ fn parseZigOutput(
     var lines = std.mem.splitScalar(u8, output, '\n');
     var pending_name: [256]u8 = undefined;
     var pending_len: usize = 0;
+    var got_summary = false;
     while (lines.next()) |line| {
         const t = std.mem.trim(u8, line, " \t\r");
-        // "All N tests passed."
-        if (std.mem.startsWith(u8, t, "All ") and std.mem.indexOf(u8, t, " tests passed") != null) {
+        // "Build Summary: N/M steps succeeded (K failed); X/Y tests passed (K failed)"
+        if (std.mem.indexOf(u8, t, "tests passed") != null) {
+            const frac_end = std.mem.indexOf(u8, t, " tests passed") orelse t.len;
+            var frac_start = frac_end;
+            while (frac_start > 0 and (std.ascii.isDigit(t[frac_start - 1]) or t[frac_start - 1] == '/')) frac_start -= 1;
+            const frac = t[frac_start..frac_end];
+            if (std.mem.indexOfScalar(u8, frac, '/')) |slash| {
+                const total = std.fmt.parseInt(u32, frac[slash + 1 ..], 10) catch 0;
+                const p = std.fmt.parseInt(u32, frac[0..slash], 10) catch 0;
+                passed.* = p;
+                failed.* = if (total > p) total - p else 0;
+                got_summary = true;
+            }
+            continue;
+        }
+        // "All N tests passed." (plain `zig test` CLI, not `zig build test`)
+        if (!got_summary and std.mem.startsWith(u8, t, "All ") and std.mem.indexOf(u8, t, " tests passed") != null) {
             passed.* = firstUintIn(t[4..]);
             failed.* = 0;
+            got_summary = true;
             continue;
         }
-        // "N passed; M failed."
-        if (std.mem.indexOf(u8, t, " passed") != null and std.mem.indexOf(u8, t, " failed") != null and
-            std.mem.indexOf(u8, t, "Test [") == null)
-        {
-            passed.* = firstUintIn(t);
-            failed.* = uintBefore(t, " failed");
+        // "error: 'module.test.name' failed:"
+        if (std.mem.startsWith(u8, t, "error: '")) {
+            const rest = t[8..];
+            const q2 = std.mem.indexOfScalar(u8, rest, '\'') orelse continue;
+            var name = rest[0..q2];
+            if (std.mem.lastIndexOf(u8, name, ".test.")) |ti| name = name[ti + 6 ..];
+            const cl = @min(name.len, 255);
+            @memcpy(pending_name[0..cl], name[0..cl]);
+            pending_len = cl;
             continue;
         }
-        // "Test [n/total] name... PASS/ok/FAIL"
+        // "Test [n/total] name... PASS/ok/FAIL" (legacy `zig test` CLI format)
         if (std.mem.startsWith(u8, t, "Test [")) {
             const dots = std.mem.lastIndexOf(u8, t, "...") orelse continue;
             const status = std.mem.trim(u8, t[dots + 3 ..], " \t");
@@ -4106,15 +4155,19 @@ fn parseZigOutput(
             }
             continue;
         }
-        // File ref after a FAIL: "path/file.zig:line:col: ..."
+        // File ref after a failure: "path/file.zig:line:col: ..." — prefer the frame
+        // that names the test itself ("in test.<name>") over std-lib internal frames.
         if (pending_len > 0 and std.mem.indexOf(u8, t, ".zig:") != null) {
+            const is_test_frame = std.mem.indexOf(u8, t, "in test.") != null;
             const c1 = std.mem.indexOf(u8, t, ":") orelse t.len;
             const file = t[0..c1];
             const rest = if (c1 + 1 < t.len) t[c1 + 1 ..] else "";
             const c2 = std.mem.indexOf(u8, rest, ":") orelse rest.len;
             const ln = std.fmt.parseInt(u32, rest[0..c2], 10) catch 0;
-            appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], t);
-            pending_len = 0;
+            if (is_test_frame or std.mem.indexOf(u8, file, "/lib/zig/std/") == null) {
+                appendTestFailure(gpa, buf, n, truncated, file, ln, pending_name[0..pending_len], t);
+                pending_len = 0;
+            }
         }
     }
 }
@@ -4300,7 +4353,7 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
     else if (std.mem.eql(u8, fw, "cargo"))
         &.{ "env", "-C", path, "cargo", "test" }
     else // zig
-        &.{ "env", "-C", path, "zig", "build", "test" };
+        &.{ "env", "-C", path, "zig", "build", "test", "--summary", "all" };
 
     const command: []u8 = if (std.mem.eql(u8, fw, "jest"))
         try gpa.dupe(u8, "npx jest")
@@ -4313,7 +4366,7 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
     else if (std.mem.eql(u8, fw, "cargo"))
         try gpa.dupe(u8, "cargo test")
     else
-        try gpa.dupe(u8, "zig build test");
+        try gpa.dupe(u8, "zig build test --summary all");
     errdefer gpa.free(command);
 
     var ts_start: std.c.timespec = undefined;
@@ -5289,11 +5342,15 @@ fn secretScanCaseInsensitiveContains(haystack: []const u8, needle: []const u8) b
 }
 
 fn secretScanPrefixContinuationLen(line: []const u8, pos: usize, needle_len: usize) usize {
+    // Deliberately excludes '/' — none of the tracked prefix formats (Stripe,
+    // AWS, GitHub, GitLab, Slack, Google) use it in the token body, and
+    // allowing it let prose like "sk_live_/sk_test_" (naming two patterns,
+    // no real key) satisfy the length threshold.
     var count: usize = 0;
     var i = pos + needle_len;
     while (i < line.len) : (i += 1) {
         const c = line[i];
-        if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '/' or
+        if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or
             c == '+' or c == '.' or c == '@' or c == '=')
         {
             count += 1;
@@ -5344,6 +5401,11 @@ fn secretScanIsPlaceholder(val: []const u8) bool {
     if (val.len < 6) return true;
     if (val[0] == '{' or val[0] == '[' or val[0] == '(' or val[0] == '$' or
         val[0] == '.' or std.ascii.isDigit(val[0])) return true;
+    // Real hardcoded secrets are a single contiguous token — code (block
+    // labels, function calls, conditionals) contains spaces or these chars.
+    for (val) |c| {
+        if (c == ' ' or c == '\t' or c == '{' or c == '}' or c == '|' or c == '<' or c == '>') return true;
+    }
     const env_prefixes = [_][]const u8{ "os.", "ENV[", "env.", "process.", "config.", "settings.", "getenv", "std." };
     for (env_prefixes) |ep| {
         if (std.mem.startsWith(u8, val, ep)) return true;
@@ -5426,7 +5488,12 @@ fn scanFileForSecrets(
                             const key = line[0..sep_pos];
                             if (secretScanIsCleanKey(key) and secretScanCaseInsensitiveContains(key, pat.needle)) {
                                 const val = secretScanExtractValue(line, sep_pos);
-                                if (!secretScanIsPlaceholder(val)) matched = true;
+                                // A value that's just the key referencing itself (field
+                                // init reusing a same-named local, e.g. `.secrets_found =
+                                // secrets_found`) is a variable reference, never a real
+                                // hardcoded secret.
+                                const self_ref = val.len >= 3 and secretScanCaseInsensitiveContains(key, val);
+                                if (!secretScanIsPlaceholder(val) and !self_ref) matched = true;
                             }
                         }
                     },
@@ -5594,7 +5661,7 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
 
     // Tools
     const tool_specs = [_]struct { name: []const u8, flag: []const u8 }{
-        .{ .name = "foreman_tools", .flag = "doctor" },
+        .{ .name = "4orman_tools", .flag = "doctor" },
         .{ .name = "zig", .flag = "version" },
         .{ .name = "git", .flag = "--version" },
         .{ .name = "gh", .flag = "--version" },
@@ -5602,7 +5669,7 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
         .{ .name = "python3", .flag = "--version" },
         .{ .name = "brew", .flag = "--version" },
     };
-    const tool_bin_names = [_][]const u8{ "foreman-tools", "zig", "git", "gh", "node", "python3", "brew" };
+    const tool_bin_names = [_][]const u8{ "4orman-tools", "zig", "git", "gh", "node", "python3", "brew" };
 
     var tools_list = try gpa.alloc(DeviceScanTool, tool_specs.len);
     for (tool_specs, 0..) |spec, i| {
@@ -5623,10 +5690,10 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
     _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
     const scanned_at: u64 = @intCast(ts.sec);
 
-    // Write profile to ~/.foreman/profile.json
+    // Write profile to ~/.4orman/profile.json
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
     defer gpa.free(foreman_dir);
     const profile_path = try std.fmt.allocPrint(gpa, "{s}/profile.json", .{foreman_dir});
     defer gpa.free(profile_path);
@@ -5662,7 +5729,7 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
         f.close(io);
         if (ok) {
             atomicRenameAbsolute(tmp_path, profile_path);
-            // Pre-warm cache so `cache-fetch ~/.foreman/profile.json device` hits next session
+            // Pre-warm cache so `cache-fetch ~/.4orman/profile.json device` hits next session
             var tools_buf: [4096]u8 = undefined;
             var tools_len: usize = 0;
             var tools_ok = true;
@@ -5910,7 +5977,7 @@ fn parseAheadBehind(raw: []const u8) struct { ahead: u32, behind: u32 } {
 
 fn gitCachePath(gpa: std.mem.Allocator, home: []const u8, repo: []const u8) ![]u8 {
     const key = sha256Hex(repo);
-    return std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools/gc-{s}.json", .{ home, key });
+    return std.fmt.allocPrint(gpa, "{s}/.cache/4orman-tools/gc-{s}.json", .{ home, key });
 }
 
 pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !GitCacheResult {
@@ -6065,7 +6132,7 @@ pub fn computeGitCache(gpa: std.mem.Allocator, io: std.Io, repo: []const u8) !Gi
     }
 
     // Write cache — serialize to JSON first, then write atomically
-    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    const cache_dir = try std.fmt.allocPrint(gpa, "{s}/.cache/4orman-tools", .{home});
     defer gpa.free(cache_dir);
     std.Io.Dir.createDirAbsolute(io, cache_dir, .default_dir) catch {};
     const tmp_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{cache_path});
@@ -6772,7 +6839,7 @@ pub const ProjectStateMode = union(enum) {
 
 fn projectStatePath(gpa: std.mem.Allocator, home: []const u8, project_path: []const u8) ![]u8 {
     const key = sha256Hex(project_path);
-    return std.fmt.allocPrint(gpa, "{s}/.foreman/state/ps-{s}.json", .{ home, key });
+    return std.fmt.allocPrint(gpa, "{s}/.4orman/state/ps-{s}.json", .{ home, key });
 }
 
 fn tsToDateStr(gpa: std.mem.Allocator, ts_secs: u64) ![]u8 {
@@ -6883,9 +6950,9 @@ pub fn computeProjectState(gpa: std.mem.Allocator, io: std.Io, project_path: []c
     const home = std.mem.sliceTo(home_ptr, 0);
 
     // Ensure state directory exists
-    const state_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman/state", .{home});
+    const state_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman/state", .{home});
     defer gpa.free(state_dir);
-    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
     defer gpa.free(foreman_dir);
     std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
     std.Io.Dir.createDirAbsolute(io, state_dir, .default_dir) catch {};
@@ -6971,7 +7038,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "env-scan", .description = ".env* file keys (keys only, never values)", .args = "<root>" },
         .{ .name = "toml-query", .description = "extract a value from a TOML file", .args = "<file> <dot-path>" },
         .{ .name = "parse-stack", .description = "structured file:line:col:fn from a stack trace (stdin)", .args = "" },
-        .{ .name = "list-projects", .description = "GitHub repos with isForeman + isLocal flags", .args = "<foreman-root>" },
+        .{ .name = "list-projects", .description = "GitHub repos with isForeman + isLocal flags", .args = "<4orman-root>" },
         .{ .name = "tarball-sha", .description = "GitHub tarball SHA256 with retry", .args = "<owner> <repo> <tag>" },
         .{ .name = "formula-info", .description = "Homebrew formula fields (url, sha256, version)", .args = "<tap-path> <formula-name>" },
         .{ .name = "validate-hooks", .description = "Claude Code Stop hooks present check", .args = "" },
@@ -6996,31 +7063,31 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "delta-context", .description = "changed symbols since a ref + their callers", .args = "<repo> [ref]" },
         .{ .name = "git-cache", .description = "branch, HEAD, dirty state, ahead/behind, last 10 commits (cached)", .args = "<repo>" },
         .{ .name = "project-state", .description = "read/write project decisions and known patterns across sessions", .args = "<path> [record-decision <what> [<why>] | record-pattern <pattern>]" },
-        .{ .name = "ledger", .description = "decision ledger — track Claude-wins vs Zig-wins with 365-day staleness revalidation (stored at ~/.foreman/ledger.json)", .args = "[show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]" },
+        .{ .name = "ledger", .description = "decision ledger — track Claude-wins vs Zig-wins with 365-day staleness revalidation (stored at ~/.4orman/ledger.json)", .args = "[show | record <winner> <question> <reasoning> | check-stale | validate <id> | score <question> <sources-json>]" },
         .{ .name = "shell-run", .description = "run a shell command safely — blocks destructive patterns", .args = "[--timeout <ms>] <command>" },
         .{ .name = "quality-gate", .description = "aggregate build + test results into a severity-bucketed verdict", .args = "<root>" },
         .{ .name = "validate-schema", .description = "validate a JSON file against a JSON Schema subset", .args = "<file> <schema>" },
         .{ .name = "prod-ready", .description = "composite production readiness: quality-gate + secret-scan + env-inspect", .args = "<root>" },
         .{ .name = "registry", .description = "machine-readable catalog of all subcommands (this output)", .args = "" },
-        .{ .name = "capability-check", .description = "check if a capability is natively available in foreman-tools or needs Claude fallback", .args = "<query...>" },
+        .{ .name = "capability-check", .description = "check if a capability is natively available in 4orman-tools or needs Claude fallback", .args = "<query...>" },
         .{ .name = "route", .description = "task router — returns execution plan with subcommand, argHint, confidence, reason", .args = "<task...>" },
         .{ .name = "report", .description = "composite project status — git state + build + tests + secrets", .args = "<path>" },
         .{ .name = "metrics", .description = "telemetry snapshot — cache entries, project states, decisions, estimated token savings", .args = "" },
-        .{ .name = "session-snapshot", .description = "write ground-truth session state to ~/.foreman/session-snapshot.json before compaction", .args = "<foreman-root>" },
+        .{ .name = "session-snapshot", .description = "write ground-truth session state to ~/.4orman/session-snapshot.json before compaction", .args = "<4orman-root>" },
         .{ .name = "sandbox-check", .description = "classify a shell operation by severity (safe/caution/destructive/blocked) and return whether it is allowed", .args = "<command...>" },
         .{ .name = "rollback", .description = "snapshot/list/revert git state — capture current HEAD+branch, list stored snapshots, or get revert commands for a snapshot", .args = "<repo-path> [--list | --revert <id>]" },
-        .{ .name = "capability-promote", .description = "score a shell command for promotion eligibility as a foreman-tools subcommand (0-100 + recommendation)", .args = "<command...>" },
+        .{ .name = "capability-promote", .description = "score a shell command for promotion eligibility as a 4orman-tools subcommand (0-100 + recommendation)", .args = "<command...>" },
         .{ .name = "ant", .description = "list files changed in a path since a timestamp (mtime-based, no git required)", .args = "<path> [--since <ms>]" },
         .{ .name = "worker-run", .description = "run a script in a language runtime (python/node/deno/bun/go/ruby/bash/swift/zig/lua/php) — returns structured JSON", .args = "<lang> <script> [args...]" },
         .{ .name = "worker-list", .description = "list all supported language workers with binary name and file extension", .args = "" },
-        .{ .name = "plugin-run", .description = "execute a plugin from ~/.foreman/plugins/<name>/ via its worker runtime — returns plugin JSON output verbatim", .args = "<name> [args...]" },
+        .{ .name = "plugin-run", .description = "execute a plugin from ~/.4orman/plugins/<name>/ via its worker runtime — returns plugin JSON output verbatim", .args = "<name> [args...]" },
         .{ .name = "plugin-list", .description = "list all installed plugins with name, lang, description, args, and entry point", .args = "" },
         .{ .name = "context-slice", .description = "focused project slice — top 8 files by relevance + excerpts; use before handing context to a subagent", .args = "<abs-path> <focus-query>" },
         .{ .name = "state-merge", .description = "merge two JSON objects — array fields concatenated, non-array fields v2 wins; use to combine multi-agent partial results", .args = "<file1> <file2>" },
-        .{ .name = "tui", .description = "interactive project dashboard — j/k navigate, q quit, r reload", .args = "[<foreman-root>]" },
-        .{ .name = "knowledge-audit", .description = "audit project knowledge extraction — safe-to-delete gate before export/archive", .args = "<project-path> [<foreman-root>]" },
+        .{ .name = "tui", .description = "interactive project dashboard — j/k navigate, q quit, r reload", .args = "[<4orman-root>]" },
+        .{ .name = "knowledge-audit", .description = "audit project knowledge extraction — safe-to-delete gate before export/archive", .args = "<project-path> [<4orman-root>]" },
         .{ .name = "export", .description = "package a project as .fmz or generate a platform installer script", .args = "<project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]" },
-        .{ .name = "import", .description = "absorb a .fmz or raw project directory into ~/foreman", .args = "<source-path> [<foreman-root>]" },
+        .{ .name = "import", .description = "absorb a .fmz or raw project directory into ~/4orman", .args = "<source-path> [<4orman-root>]" },
         .{ .name = "promotion-queue", .description = "track Zig subcommands built locally but not yet brew-released — list/add/clear pending-promotions.json", .args = "[list | add <name> <description> | clear]" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
@@ -7170,7 +7237,7 @@ const ROUTE_ENRICHMENTS: []const RouteEnrichment = &[_]RouteEnrichment{
     .{ .subcommand = "symbol-find", .arg_hint = "<abs-root> <symbol>", .reason = "definition + all references in one call — replaces grep + read N files" },
     .{ .subcommand = "deps", .arg_hint = "<abs-root>", .reason = "declared dependencies from any manifest — replaces reading the full manifest file" },
     .{ .subcommand = "env-inspect", .arg_hint = "<abs-root>", .reason = "detects languages, runtimes, package managers, missing deps — replaces which + --version loops" },
-    .{ .subcommand = "project-state", .arg_hint = "<abs-path>", .reason = "persisted decisions and known patterns across sessions from ~/.foreman/state/" },
+    .{ .subcommand = "project-state", .arg_hint = "<abs-path>", .reason = "persisted decisions and known patterns across sessions from ~/.4orman/state/" },
     .{ .subcommand = "cache-fetch", .arg_hint = "<abs-file> <sub-key>", .reason = "hit:true → skip the read entirely and use value; hit:false → read file + cache-store" },
     .{ .subcommand = "delta-context", .arg_hint = "<repo-path> [ref]", .reason = "changed symbols + callers — targeted impact analysis without reading raw git diffs" },
     .{ .subcommand = "validate-schema", .arg_hint = "<abs-file> <abs-schema>", .reason = "JSON Schema compliance check — returns violations with $-rooted paths" },
@@ -7375,7 +7442,7 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     const home: []const u8 = std.mem.span(home_ptr);
 
     // --- Cache entries ---
-    const cache_dir_path = try std.fmt.allocPrint(gpa, "{s}/.cache/foreman-tools", .{home});
+    const cache_dir_path = try std.fmt.allocPrint(gpa, "{s}/.cache/4orman-tools", .{home});
     defer gpa.free(cache_dir_path);
     var cache_entries: u32 = 0;
     cache_walk: {
@@ -7389,7 +7456,7 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     }
 
     // --- Project states (decisions + patterns) ---
-    const state_dir_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/state", .{home});
+    const state_dir_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/state", .{home});
     defer gpa.free(state_dir_path);
     var project_states: u32 = 0;
     var total_decisions: u32 = 0;
@@ -7426,9 +7493,9 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     }
 
     // --- Profile and baseline ---
-    const profile_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/profile.json", .{home});
+    const profile_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/profile.json", .{home});
     defer gpa.free(profile_path);
-    const baseline_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/compat-baseline.json", .{home});
+    const baseline_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/compat-baseline.json", .{home});
     defer gpa.free(baseline_path);
     const device_profiled = fileExists(io, profile_path);
     const compat_baseline_set = fileExists(io, baseline_path);
@@ -7450,9 +7517,9 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
 
 // --- session-snapshot subcommand ---
 
-pub fn computeSnapshot(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) ![]u8 {
+pub fn computeSnapshot(gpa: std.mem.Allocator, io: std.Io, workspace_root: []const u8) ![]u8 {
     // Read ROADMAP.md and extract Active Work facts
-    const roadmap_path = try std.fmt.allocPrint(gpa, "{s}/ROADMAP.md", .{foreman_root});
+    const roadmap_path = try std.fmt.allocPrint(gpa, "{s}/ROADMAP.md", .{workspace_root});
     defer gpa.free(roadmap_path);
 
     var wave_line: []const u8 = "unknown";
@@ -7498,15 +7565,15 @@ pub fn computeSnapshot(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const
         \\}}
     , .{ VERSION, wave_esc, current_esc });
 
-    // Write to ~/.foreman/session-snapshot.json (atomic)
+    // Write to ~/.4orman/session-snapshot.json (atomic)
     write_blk: {
         const home_ptr = std.c.getenv("HOME") orelse break :write_blk;
         const home: []const u8 = std.mem.span(home_ptr);
-        const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+        const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
         defer gpa.free(foreman_dir);
         std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
         var tmp_buf: [512]u8 = undefined;
-        const snap_path = std.fmt.bufPrint(&tmp_buf, "{s}/.foreman/session-snapshot.json", .{home}) catch break :write_blk;
+        const snap_path = std.fmt.bufPrint(&tmp_buf, "{s}/.4orman/session-snapshot.json", .{home}) catch break :write_blk;
         var tmp_buf2: [520]u8 = undefined;
         const tmp_path = std.fmt.bufPrint(&tmp_buf2, "{s}.tmp", .{snap_path}) catch break :write_blk;
         const wf = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch break :write_blk;
@@ -7533,7 +7600,7 @@ fn rollbackSnapPath(gpa: std.mem.Allocator, home: []const u8, repo_path: []const
         name_buf[i] = if (std.ascii.isAlphanumeric(c) or c == '-') c else '_';
     }
     const name_slice = if (name_buf.len > 80) name_buf[name_buf.len - 80 ..] else name_buf;
-    return std.fmt.allocPrint(gpa, "{s}/.foreman/snapshots/{s}.json", .{ home, name_slice });
+    return std.fmt.allocPrint(gpa, "{s}/.4orman/snapshots/{s}.json", .{ home, name_slice });
 }
 
 pub fn computeRollbackSnapshot(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8) ![]u8 {
@@ -7548,9 +7615,9 @@ pub fn computeRollbackSnapshot(gpa: std.mem.Allocator, io: std.Io, repo_path: []
     var id_buf: [32]u8 = undefined;
     const id_str = try std.fmt.bufPrint(&id_buf, "{d}", .{ts_ms});
 
-    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
     defer gpa.free(foreman_dir);
-    const snap_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman/snapshots", .{home});
+    const snap_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman/snapshots", .{home});
     defer gpa.free(snap_dir);
     std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
     std.Io.Dir.createDirAbsolute(io, snap_dir, .default_dir) catch {};
@@ -7846,7 +7913,7 @@ pub fn computeCapabilityPromote(gpa: std.mem.Allocator, command: []const u8) ![]
             \\  "already_covered": true,
             \\  "similar_subcommand": "{s}",
             \\  "recommendation": "skip",
-            \\  "reasons": ["already covered by foreman-tools subcommand \"{s}\""]
+            \\  "reasons": ["already covered by 4orman-tools subcommand \"{s}\""]
             \\}}
         , .{ cmd_esc, sub_esc, sub_esc });
     }
@@ -8291,7 +8358,7 @@ pub fn computePluginRun(
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home: []const u8 = std.mem.span(home_ptr);
 
-    const manifest_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/plugins/{s}/plugin.json", .{ home, plugin_name });
+    const manifest_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/plugins/{s}/plugin.json", .{ home, plugin_name });
     defer gpa.free(manifest_path);
 
     const manifest = readPluginManifest(gpa, io, manifest_path) catch |e| switch (e) {
@@ -8300,7 +8367,7 @@ pub fn computePluginRun(
     };
     defer freePluginManifest(gpa, manifest);
 
-    const script_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/plugins/{s}/{s}", .{ home, plugin_name, manifest.entry });
+    const script_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/plugins/{s}/{s}", .{ home, plugin_name, manifest.entry });
     defer gpa.free(script_path);
 
     return computeWorkerRun(gpa, io, manifest.lang, script_path, extra_args, WORKER_DEFAULT_TIMEOUT_MS) catch |e| switch (e) {
@@ -8314,7 +8381,7 @@ pub fn computePluginList(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home: []const u8 = std.mem.span(home_ptr);
 
-    const plugins_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/plugins", .{home});
+    const plugins_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/plugins", .{home});
     defer gpa.free(plugins_path);
 
     var plugins_buf: std.ArrayList(u8) = .empty;
@@ -8735,7 +8802,7 @@ fn writeLedgerFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries
 pub fn computeLedger(gpa: std.mem.Allocator, io: std.Io, mode: LedgerMode) !LedgerResult {
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
     defer gpa.free(foreman_dir);
     std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
     const ledger_path = try std.fmt.allocPrint(gpa, "{s}/ledger.json", .{foreman_dir});
@@ -8892,7 +8959,7 @@ pub fn computeLedgerScore(gpa: std.mem.Allocator, io: std.Io, question: []const 
     const now_ts: i64 = @intCast(ts.sec);
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/ledger.json", .{home});
     defer gpa.free(ledger_path);
     var entries: std.ArrayList(LedgerEntry) = .empty;
     parseLedgerFile(gpa, io, ledger_path, &entries, now_ts);
@@ -8929,7 +8996,7 @@ pub fn computeLedgerScore(gpa: std.mem.Allocator, io: std.Io, question: []const 
 
 const TUI_SCRIPT = @embedFile("tui.py");
 
-pub fn computeTui(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) !void {
+pub fn computeTui(gpa: std.mem.Allocator, io: std.Io, workspace_root: []const u8) !void {
     // ── 1. Get GitHub username ──────────────────────────────────────────────
     const user: []const u8 = blk: {
         const r = std.process.run(gpa, io, .{
@@ -9005,7 +9072,7 @@ pub fn computeTui(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) 
                 const desc = if (repo.object.get("description")) |v| if (v == .string) v.string else "" else "";
 
                 // local path
-                const local_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, name });
+                const local_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ workspace_root, name });
                 defer gpa.free(local_path);
                 const is_local = fileExists(io, local_path);
 
@@ -9121,9 +9188,9 @@ pub fn computeTui(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) 
 
     // ── 5. Write data + script to temp files ──────────────────────────────
     const pid = std.c.getpid();
-    const data_path = try std.fmt.allocPrint(gpa, "/tmp/foreman-tui-{d}.json", .{pid});
+    const data_path = try std.fmt.allocPrint(gpa, "/tmp/4orman-tui-{d}.json", .{pid});
     defer gpa.free(data_path);
-    const script_path = try std.fmt.allocPrint(gpa, "/tmp/foreman-tui-{d}.py", .{pid});
+    const script_path = try std.fmt.allocPrint(gpa, "/tmp/4orman-tui-{d}.py", .{pid});
     defer gpa.free(script_path);
 
     {
@@ -9224,7 +9291,7 @@ pub fn computeKnowledgeAudit(
     gpa: std.mem.Allocator,
     io: std.Io,
     project_path: []const u8,
-    foreman_root: []const u8,
+    workspace_root: []const u8,
 ) !KnowledgeAuditResult {
     const name = std.fs.path.basename(project_path);
 
@@ -9288,7 +9355,7 @@ pub fn computeKnowledgeAudit(
     // 3. knowledge/ directory — check each .md against _knowledgebase/
     const knowledge_path = try std.fmt.allocPrint(gpa, "{s}/knowledge", .{project_path});
     defer gpa.free(knowledge_path);
-    const kb_root = try std.fmt.allocPrint(gpa, "{s}/_knowledgebase", .{foreman_root});
+    const kb_root = try std.fmt.allocPrint(gpa, "{s}/_knowledgebase", .{workspace_root});
     defer gpa.free(kb_root);
 
     if (fileExists(io, knowledge_path)) {
@@ -9353,7 +9420,7 @@ pub fn computeKnowledgeAudit(
     // 6. Ledger: entries referencing this project
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/ledger.json", .{home});
     defer gpa.free(ledger_path);
     if (fileExists(io, ledger_path)) {
         if (kaReadFile(gpa, io, ledger_path)) |lr| {
@@ -9369,7 +9436,7 @@ pub fn computeKnowledgeAudit(
     }
 
     // 7. _skills/: skill files referencing this project
-    const skills_root = try std.fmt.allocPrint(gpa, "{s}/_skills", .{foreman_root});
+    const skills_root = try std.fmt.allocPrint(gpa, "{s}/_skills", .{workspace_root});
     defer gpa.free(skills_root);
     if (fileExists(io, skills_root)) {
         const grep_result = std.process.run(gpa, io, .{
@@ -9512,7 +9579,7 @@ fn exportFmz(
     std.Io.Dir.createDirAbsolute(io, staging, .default_dir) catch {};
 
     // Manifest
-    const manifest_path = std.fmt.allocPrint(gpa, "{s}/foreman.manifest.json", .{staging}) catch "";
+    const manifest_path = std.fmt.allocPrint(gpa, "{s}/4orman.manifest.json", .{staging}) catch "";
     defer gpa.free(manifest_path);
     _ = exportWriteManifest(gpa, io, manifest_path, name, version, "", github_url, "project");
 
@@ -9577,7 +9644,7 @@ fn exportFmz(
         .format = gpa.dupe(u8, "fmz") catch "",
         .success = success,
         .note = if (success)
-            std.fmt.allocPrint(gpa, "import on any machine: foreman-tools import {s}", .{fmz_filename}) catch ""
+            std.fmt.allocPrint(gpa, "import on any machine: 4orman-tools import {s}", .{fmz_filename}) catch ""
         else
             gpa.dupe(u8, "export failed — ensure git repo has at least one commit") catch "",
     };
@@ -9587,7 +9654,7 @@ pub fn computeExport(
     gpa: std.mem.Allocator,
     io: std.Io,
     project_path: []const u8,
-    foreman_root: []const u8,
+    workspace_root: []const u8,
     format_str: []const u8,
     out_dir: []const u8,
 ) !ExportResult {
@@ -9608,10 +9675,10 @@ pub fn computeExport(
             if (std.mem.eql(u8, format_str, "brew")) {
                 break :blk try std.fmt.allocPrint(gpa,
                     \\# Install {s} via Homebrew / gh
-                    \\brew install git gh foreman-tools
+                    \\brew install git gh 4orman-tools
                     \\gh auth login
-                    \\git clone {s} ~/foreman/{s}
-                    \\foreman-tools tui
+                    \\git clone {s} ~/4orman/{s}
+                    \\4orman-tools tui
                     \\
                 , .{ name, github_url, name });
             } else if (std.mem.eql(u8, format_str, "mac")) {
@@ -9621,10 +9688,10 @@ pub fn computeExport(
                     \\set -e
                     \\command -v brew >/dev/null || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
                     \\brew install git gh
-                    \\brew tap michaelvgonzaga/foreman && brew install foreman-tools
+                    \\brew tap michaelvgonzaga/4orman && brew install 4orman-tools
                     \\gh auth login
-                    \\mkdir -p ~/foreman && git clone {s} ~/foreman/{s}
-                    \\echo "Done. Run: foreman-tools tui"
+                    \\mkdir -p ~/4orman && git clone {s} ~/4orman/{s}
+                    \\echo "Done. Run: 4orman-tools tui"
                     \\
                 , .{ name, github_url, name });
             } else if (std.mem.eql(u8, format_str, "linux")) {
@@ -9635,10 +9702,10 @@ pub fn computeExport(
                     \\if command -v apt-get >/dev/null; then sudo apt-get install -y git gh
                     \\elif command -v dnf >/dev/null; then sudo dnf install -y git gh; fi
                     \\gh auth login
-                    \\mkdir -p ~/foreman && git clone {s} ~/foreman/{s}
-                    \\# Install foreman-tools binary for Linux — see releases:
-                    \\# https://github.com/michaelvgonzaga/foreman-tools/releases/latest
-                    \\echo "Done. Run: foreman-tools tui"
+                    \\mkdir -p ~/4orman && git clone {s} ~/4orman/{s}
+                    \\# Install 4orman-tools binary for Linux — see releases:
+                    \\# https://github.com/michaelvgonzaga/4orman-tools/releases/latest
+                    \\echo "Done. Run: 4orman-tools tui"
                     \\
                 , .{ name, github_url, name });
             } else { // windows
@@ -9647,9 +9714,9 @@ pub fn computeExport(
                     \\Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
                     \\winget install Git.Git GitHub.cli
                     \\gh auth login
-                    \\New-Item -ItemType Directory -Force ~/foreman | Out-Null
-                    \\git clone {s} ~/foreman/{s}
-                    \\Write-Host "Done. Run: foreman-tools tui"
+                    \\New-Item -ItemType Directory -Force ~/4orman | Out-Null
+                    \\git clone {s} ~/4orman/{s}
+                    \\Write-Host "Done. Run: 4orman-tools tui"
                     \\
                 , .{ name, github_url, name });
             }
@@ -9671,23 +9738,23 @@ pub fn computeExport(
     }
 
     // fmz and backup — need staging dir
-    const staging_root = try std.fmt.allocPrint(gpa, "/tmp/foreman-export-{d}", .{pid});
+    const staging_root = try std.fmt.allocPrint(gpa, "/tmp/4orman-export-{d}", .{pid});
     defer gpa.free(staging_root);
     std.Io.Dir.createDirAbsolute(io, staging_root, .default_dir) catch {};
 
     if (std.mem.eql(u8, format_str, "backup")) {
-        const staging = try std.fmt.allocPrint(gpa, "{s}/foreman-backup", .{staging_root});
+        const staging = try std.fmt.allocPrint(gpa, "{s}/4orman-backup", .{staging_root});
         defer gpa.free(staging);
         std.Io.Dir.createDirAbsolute(io, staging, .default_dir) catch {};
 
         // Manifest
-        const manifest_path = try std.fmt.allocPrint(gpa, "{s}/foreman.manifest.json", .{staging});
+        const manifest_path = try std.fmt.allocPrint(gpa, "{s}/4orman.manifest.json", .{staging});
         defer gpa.free(manifest_path);
-        _ = exportWriteManifest(gpa, io, manifest_path, "foreman-workspace", VERSION, "Foreman workspace backup", "", "workspace");
+        _ = exportWriteManifest(gpa, io, manifest_path, "4orman-workspace", VERSION, "4ORMan workspace backup", "", "workspace");
 
         // Framework files
         for ([_][]const u8{ "CLAUDE.md", "ROADMAP.md", "plugins.public.yml", "_templates", "_knowledgebase", "_skills" }) |item| {
-            const src = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, item });
+            const src = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ workspace_root, item });
             defer gpa.free(src);
             if (!fileExists(io, src)) continue;
             const dst = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ staging, item });
@@ -9698,7 +9765,7 @@ pub fn computeExport(
         // Ledger
         const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
         const home = std.mem.sliceTo(home_ptr, 0);
-        const ledger_src = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+        const ledger_src = try std.fmt.allocPrint(gpa, "{s}/.4orman/ledger.json", .{home});
         defer gpa.free(ledger_src);
         if (fileExists(io, ledger_src)) {
             const ledger_dst = try std.fmt.allocPrint(gpa, "{s}/ledger.json", .{staging});
@@ -9711,12 +9778,12 @@ pub fn computeExport(
         defer gpa.free(projects_dir);
         std.Io.Dir.createDirAbsolute(io, projects_dir, .default_dir) catch {};
 
-        const entries = computeListProjects(gpa, io, foreman_root) catch &[_]ProjectEntry{};
+        const entries = computeListProjects(gpa, io, workspace_root) catch &[_]ProjectEntry{};
         for (entries) |entry| {
             defer gpa.free(entry.name);
             defer gpa.free(entry.url);
             if (!entry.isLocal) continue;
-            const proj_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, entry.name });
+            const proj_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ workspace_root, entry.name });
             defer gpa.free(proj_path);
             const sub_version = exportGetVersion(gpa, io, proj_path);
             defer gpa.free(sub_version);
@@ -9731,10 +9798,10 @@ pub fn computeExport(
         }
 
         // Archive
-        const out_path = try std.fmt.allocPrint(gpa, "{s}/foreman-backup.fmz", .{out_dir});
+        const out_path = try std.fmt.allocPrint(gpa, "{s}/4orman-backup.fmz", .{out_dir});
         errdefer gpa.free(out_path);
         const tar_result = std.process.run(gpa, io, .{
-            .argv = &.{ "tar", "-czf", out_path, "-C", staging_root, "foreman-backup" },
+            .argv = &.{ "tar", "-czf", out_path, "-C", staging_root, "4orman-backup" },
         }) catch null;
         const success = blk: {
             if (tar_result) |tr| {
@@ -9746,12 +9813,12 @@ pub fn computeExport(
         };
         return ExportResult{
             .output_path = out_path,
-            .name = try gpa.dupe(u8, "foreman-workspace"),
+            .name = try gpa.dupe(u8, "4orman-workspace"),
             .version = try gpa.dupe(u8, VERSION),
             .format = try gpa.dupe(u8, "backup"),
             .success = success,
             .note = if (success)
-                try gpa.dupe(u8, "restore on any machine: foreman-tools import foreman-backup.fmz")
+                try gpa.dupe(u8, "restore on any machine: 4orman-tools import 4orman-backup.fmz")
             else
                 try gpa.dupe(u8, "backup failed — check disk space"),
         };
@@ -9769,13 +9836,13 @@ pub fn computeImport(
     gpa: std.mem.Allocator,
     io: std.Io,
     source_path: []const u8,
-    foreman_root: []const u8,
+    workspace_root: []const u8,
 ) !ImportResult {
     const pid: c_int = std.c.getpid();
 
     if (std.mem.endsWith(u8, source_path, ".fmz")) {
         // Extract
-        const extract_dir = try std.fmt.allocPrint(gpa, "/tmp/foreman-import-{d}", .{pid});
+        const extract_dir = try std.fmt.allocPrint(gpa, "/tmp/4orman-import-{d}", .{pid});
         defer gpa.free(extract_dir);
         std.Io.Dir.createDirAbsolute(io, extract_dir, .default_dir) catch {};
 
@@ -9823,7 +9890,7 @@ pub fn computeImport(
         errdefer gpa.free(proj_name);
 
         // Check for workspace backup
-        const manifest_path = try std.fmt.allocPrint(gpa, "{s}/foreman.manifest.json", .{extracted_dir});
+        const manifest_path = try std.fmt.allocPrint(gpa, "{s}/4orman.manifest.json", .{extracted_dir});
         defer gpa.free(manifest_path);
         if (kaReadFile(gpa, io, manifest_path)) |manifest_raw| {
             defer gpa.free(manifest_raw);
@@ -9833,7 +9900,7 @@ pub fn computeImport(
                     const src = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ extracted_dir, item });
                     defer gpa.free(src);
                     if (!fileExists(io, src)) continue;
-                    const dst = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, item });
+                    const dst = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ workspace_root, item });
                     defer gpa.free(dst);
                     exportRunIgnore(gpa, io, &.{ "cp", "-r", src, dst });
                 }
@@ -9843,10 +9910,10 @@ pub fn computeImport(
                 const ledger_src = try std.fmt.allocPrint(gpa, "{s}/ledger.json", .{extracted_dir});
                 defer gpa.free(ledger_src);
                 if (fileExists(io, ledger_src)) {
-                    const foreman_state = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+                    const foreman_state = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
                     defer gpa.free(foreman_state);
                     std.Io.Dir.createDirAbsolute(io, foreman_state, .default_dir) catch {};
-                    const ledger_dst = try std.fmt.allocPrint(gpa, "{s}/.foreman/ledger.json", .{home});
+                    const ledger_dst = try std.fmt.allocPrint(gpa, "{s}/.4orman/ledger.json", .{home});
                     defer gpa.free(ledger_dst);
                     exportRunIgnore(gpa, io, &.{ "cp", ledger_src, ledger_dst });
                 }
@@ -9863,7 +9930,7 @@ pub fn computeImport(
                         var lines = std.mem.tokenizeScalar(u8, ff.stdout, '\n');
                         while (lines.next()) |line| {
                             if (line.len == 0) continue;
-                            const sub = computeImport(gpa, io, line, foreman_root) catch continue;
+                            const sub = computeImport(gpa, io, line, workspace_root) catch continue;
                             gpa.free(sub.name); gpa.free(sub.dest_path); gpa.free(sub.source_format);
                             gpa.free(sub.deps_note); gpa.free(sub.note);
                         }
@@ -9871,20 +9938,20 @@ pub fn computeImport(
                 }
                 gpa.free(proj_name);
                 return .{
-                    .name = try gpa.dupe(u8, "foreman-workspace"),
-                    .dest_path = try gpa.dupe(u8, foreman_root),
+                    .name = try gpa.dupe(u8, "4orman-workspace"),
+                    .dest_path = try gpa.dupe(u8, workspace_root),
                     .source_format = try gpa.dupe(u8, "fmz"),
                     .deps_note = try gpa.dupe(u8, ""),
                     .success = true,
-                    .note = try gpa.dupe(u8, "workspace restored — run: foreman-tools tui"),
+                    .note = try gpa.dupe(u8, "workspace restored — run: 4orman-tools tui"),
                 };
             }
         }
 
-        // Project import: project/ → foreman_root/<name>/
+        // Project import: project/ → workspace_root/<name>/
         const project_src = try std.fmt.allocPrint(gpa, "{s}/project", .{extracted_dir});
         defer gpa.free(project_src);
-        const dest_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, proj_name });
+        const dest_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ workspace_root, proj_name });
         errdefer gpa.free(dest_path);
 
         if (fileExists(io, dest_path)) {
@@ -9911,7 +9978,7 @@ pub fn computeImport(
             .name = proj_name,
             .dest_path = dest_path,
             .source_format = try gpa.dupe(u8, "fmz"),
-            .deps_note = try gpa.dupe(u8, "run `foreman-tools knowledge-audit` to verify knowledge extraction"),
+            .deps_note = try gpa.dupe(u8, "run `4orman-tools knowledge-audit` to verify knowledge extraction"),
             .success = true,
             .note = try std.fmt.allocPrint(gpa, "imported → {s}", .{dest_path}),
         };
@@ -9927,7 +9994,7 @@ pub fn computeImport(
     }
 
     const dir_name = std.fs.path.basename(source_path);
-    const dest_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, dir_name });
+    const dest_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ workspace_root, dir_name });
     errdefer gpa.free(dest_path);
 
     if (fileExists(io, dest_path)) {
@@ -9945,7 +10012,7 @@ pub fn computeImport(
         .name = try gpa.dupe(u8, dir_name),
         .dest_path = dest_path,
         .source_format = try gpa.dupe(u8, "directory"),
-        .deps_note = try gpa.dupe(u8, "run `foreman-tools knowledge-audit` to verify knowledge extraction"),
+        .deps_note = try gpa.dupe(u8, "run `4orman-tools knowledge-audit` to verify knowledge extraction"),
         .success = true,
         .note = try std.fmt.allocPrint(gpa, "imported → {s}", .{dest_path}),
     };
@@ -10002,7 +10069,7 @@ fn writePromotionQueue(gpa: std.mem.Allocator, io: std.Io, path: []const u8, ent
 pub fn computePromotionQueue(gpa: std.mem.Allocator, io: std.Io, mode: PromotionQueueMode) !PromotionQueueResult {
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
     const home = std.mem.sliceTo(home_ptr, 0);
-    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.foreman", .{home});
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
     defer gpa.free(foreman_dir);
     std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
     const queue_path = try std.fmt.allocPrint(gpa, "{s}/pending-promotions.json", .{foreman_dir});
@@ -10092,7 +10159,7 @@ test "fileExists: true for known path" {
 }
 
 test "fileExists: false for nonexistent path" {
-    try std.testing.expect(!fileExists(std.testing.io, "/nonexistent/foreman-tools-sentinel-xyz"));
+    try std.testing.expect(!fileExists(std.testing.io, "/nonexistent/4orman-tools-sentinel-xyz"));
 }
 
 test "StatusResult fields" {
@@ -10454,4 +10521,83 @@ test "extractTOMLValue: missing key returns null" {
     const toml = "[package]\nname = \"crate\"\n";
     const s = try extractTOMLValue(std.testing.allocator, toml, "package.missing");
     try std.testing.expect(s == null);
+}
+
+test "secretScanIsPlaceholder: rejects code, not just short/quoted values" {
+    // Regression: these are real lines from this file's own SecretScanResult
+    // plumbing that the assignment-key scanner used to flag as secrets.
+    try std.testing.expect(secretScanIsPlaceholder("blk: {"));
+    try std.testing.expect(secretScanIsPlaceholder("if (sec_opt) |s| s.findings.len > 0 else false"));
+}
+
+test "secret-scan: does not flag its own SecretScanResult plumbing" {
+    const gpa = std.testing.allocator;
+    var findings: std.ArrayList(SecretFinding) = .empty;
+    defer {
+        for (findings.items) |f| gpa.free(f.file);
+        findings.deinit(gpa);
+    }
+    const lines =
+        \\const sec_opt: ?SecretScanResult = blk: {
+        \\const secrets_found = if (sec_opt) |s| s.findings.len > 0 else false;
+        \\.secrets_found = secrets_found,
+    ;
+    var i: u32 = 1;
+    var start: usize = 0;
+    while (start < lines.len) : (i += 1) {
+        const end = std.mem.indexOfScalarPos(u8, lines, start, '\n') orelse lines.len;
+        const line = lines[start..end];
+        if (secretScanFindAssignmentSep(line)) |sep_pos| {
+            const key = line[0..sep_pos];
+            if (secretScanIsCleanKey(key) and secretScanCaseInsensitiveContains(key, "secret")) {
+                const val = secretScanExtractValue(line, sep_pos);
+                const self_ref = val.len >= 3 and secretScanCaseInsensitiveContains(key, val);
+                if (!secretScanIsPlaceholder(val) and !self_ref) {
+                    try findings.append(gpa, .{ .file = try gpa.dupe(u8, "test"), .line = i, .pattern = "hardcoded-secret", .severity = "medium" });
+                }
+            }
+        }
+        if (end >= lines.len) break;
+        start = end + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), findings.items.len);
+}
+
+test "secretScanPrefixContinuationLen: doesn't count '/' as part of the token" {
+    // Regression: "Stripe sk_live_/sk_test_" in prose (naming two patterns,
+    // no real key) used to satisfy the >=8-char continuation threshold.
+    const line = "supports Stripe sk_live_/sk_test_ and AWS AKIA prefixes";
+    const pos = std.mem.indexOf(u8, line, "sk_live_").?;
+    try std.testing.expect(secretScanPrefixContinuationLen(line, pos, "sk_live_".len) < 8);
+}
+
+test "parseZigOutput: parses 'Build Summary: X/Y tests passed'" {
+    const gpa = std.testing.allocator;
+    var passed: u32 = 0;
+    var failed: u32 = 0;
+    var skipped: u32 = 0;
+    var fbuf: [MAX_TEST_FAILURES]TestFailure = undefined;
+    var n: usize = 0;
+    var truncated = false;
+    parseZigOutput(gpa, "Build Summary: 5/5 steps succeeded; 48/48 tests passed", &passed, &failed, &skipped, &fbuf, &n, &truncated);
+    try std.testing.expectEqual(@as(u32, 48), passed);
+    try std.testing.expectEqual(@as(u32, 0), failed);
+}
+
+test "parseZigOutput: parses partial failure summary" {
+    const gpa = std.testing.allocator;
+    var passed: u32 = 0;
+    var failed: u32 = 0;
+    var skipped: u32 = 0;
+    var fbuf: [MAX_TEST_FAILURES]TestFailure = undefined;
+    var n: usize = 0;
+    var truncated = false;
+    defer for (fbuf[0..n]) |f| {
+        gpa.free(f.file);
+        gpa.free(f.@"test");
+        gpa.free(f.message);
+    };
+    parseZigOutput(gpa, "Build Summary: 1/3 steps succeeded (1 failed); 1/2 tests passed (1 failed)", &passed, &failed, &skipped, &fbuf, &n, &truncated);
+    try std.testing.expectEqual(@as(u32, 1), passed);
+    try std.testing.expectEqual(@as(u32, 1), failed);
 }

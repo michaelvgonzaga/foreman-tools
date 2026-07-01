@@ -1,13 +1,13 @@
-# foreman-tools
+# 4orman-tools
 
 A Zig-native CLI that replaces shell reasoning in Claude Code sessions with structured JSON — one binary call instead of a chain of bash commands.
 
-Used internally by [Foreman](https://github.com/michaelvgonzaga/foreman). Not designed for direct user invocation.
+Used internally by [4ORMan](https://github.com/michaelvgonzaga/4orman). Not designed for direct user invocation.
 
 ## Install
 
 ```bash
-brew install michaelvgonzaga/foreman/foreman-tools
+brew install michaelvgonzaga/4orman/4orman-tools
 ```
 
 ## Usage
@@ -15,7 +15,7 @@ brew install michaelvgonzaga/foreman/foreman-tools
 Every subcommand returns JSON to stdout. Errors go to stderr, exit 1 on failure.
 
 ```bash
-foreman-tools <subcommand> [args...]
+4orman-tools <subcommand> [args...]
 ```
 
 ### Key subcommands

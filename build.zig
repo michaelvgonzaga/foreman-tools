@@ -4,19 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mod = b.addModule("foreman_tools", .{
+    const mod = b.addModule("4orman_tools", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
 
     const exe = b.addExecutable(.{
-        .name = "foreman-tools",
+        .name = "4orman-tools",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "foreman_tools", .module = mod },
+                .{ .name = "4orman_tools", .module = mod },
             },
         }),
     });
@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |run_args| run_cmd.addArgs(run_args);
-    b.step("run", "Run foreman-tools").dependOn(&run_cmd.step);
+    b.step("run", "Run 4orman-tools").dependOn(&run_cmd.step);
 
     const mod_tests = b.addTest(.{ .root_module = mod });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
     const stress_exe = b.addExecutable(.{
-        .name = "foreman-stress",
+        .name = "4orman-stress",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/stress.zig"),
             .target = target,

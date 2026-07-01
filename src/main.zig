@@ -1,10 +1,12 @@
 const std = @import("std");
-const root = @import("foreman_tools");
+const root = @import("4orman_tools");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    root.migrateStateDir(gpa, io);
 
     var err_buf: [512]u8 = undefined;
     var err_writer = std.Io.File.stderr().writerStreaming(io, &err_buf);
@@ -15,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     const out = &out_writer.interface;
 
     if (args.len < 2) {
-        try err.print("usage: foreman-tools <subcommand> [args]\n", .{});
+        try err.print("usage: 4orman-tools <subcommand> [args]\n", .{});
         try err.print("subcommands:\n", .{});
         try err.print("  doctor\n", .{});
         try err.print("  status <workspace-path>\n", .{});
@@ -37,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  env-scan <root-path>\n", .{});
         try err.print("  toml-query <file-path> <dot-path>\n", .{});
         try err.print("  yaml-query <file-path> <dot-path>\n", .{});
-        try err.print("  list-projects <foreman-root>\n", .{});
+        try err.print("  list-projects <4orman-root>\n", .{});
         try err.print("  tarball-sha <owner> <repo> <tag>\n", .{});
         try err.print("  formula-info <tap-path> <formula-name>\n", .{});
         try err.print("  validate-hooks\n", .{});
@@ -73,21 +75,21 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  route <task...>\n", .{});
         try err.print("  report <path>\n", .{});
         try err.print("  metrics\n", .{});
-        try err.print("  session-snapshot <foreman-root>\n", .{});
+        try err.print("  session-snapshot <4orman-root>\n", .{});
         try err.print("  sandbox-check <command...>\n", .{});
         try err.print("  rollback <repo-path> [--list | --revert <id>]\n", .{});
         try err.print("  capability-promote <command...>\n", .{});
         try err.print("  ant <path> [--since <ms>]\n", .{});
         try err.print("  worker-run <lang> <script> [args...]   langs: python,node,deno,bun,go,ruby,bash,swift,zig,lua,php\n", .{});
         try err.print("  worker-list\n", .{});
-        try err.print("  plugin-run <name> [args...]            run a plugin from ~/.foreman/plugins/\n", .{});
+        try err.print("  plugin-run <name> [args...]            run a plugin from ~/.4orman/plugins/\n", .{});
         try err.print("  plugin-list\n", .{});
         try err.print("  context-slice <abs-path> <focus-query>\n", .{});
         try err.print("  state-merge <file1> <file2>\n", .{});
-        try err.print("  tui [<foreman-root>]\n", .{});
-        try err.print("  knowledge-audit <project-path> [<foreman-root>]\n", .{});
+        try err.print("  tui [<4orman-root>]\n", .{});
+        try err.print("  knowledge-audit <project-path> [<4orman-root>]\n", .{});
         try err.print("  export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]\n", .{});
-        try err.print("  import <source-path> [<foreman-root>]\n", .{});
+        try err.print("  import <source-path> [<4orman-root>]\n", .{});
         try err.print("  promotion-queue [list | add <name> <description> | clear]\n", .{});
         try err.flush();
         std.process.exit(1);
@@ -112,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "status")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools status <workspace-path>\n", .{});
+            try err.print("usage: 4orman-tools status <workspace-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -138,7 +140,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "commits")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools commits <repo-path> [since-tag]\n", .{});
+            try err.print("usage: 4orman-tools commits <repo-path> [since-tag]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -184,7 +186,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "release-info")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools release-info <repo-path>\n", .{});
+            try err.print("usage: 4orman-tools release-info <repo-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -220,7 +222,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "tag-exists")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools tag-exists <repo-path> <tag>\n", .{});
+            try err.print("usage: 4orman-tools tag-exists <repo-path> <tag>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -238,7 +240,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "repo-info")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools repo-info <repo-path>\n", .{});
+            try err.print("usage: 4orman-tools repo-info <repo-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -272,7 +274,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "changes-preview")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools changes-preview <repo-path>\n", .{});
+            try err.print("usage: 4orman-tools changes-preview <repo-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -304,7 +306,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "scan")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools scan <path>\n", .{});
+            try err.print("usage: 4orman-tools scan <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -365,7 +367,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "diff-dirs")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools diff-dirs <path1> <path2>\n", .{});
+            try err.print("usage: 4orman-tools diff-dirs <path1> <path2>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -417,7 +419,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "grep")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools grep <root-path> <pattern> [ext-filter]\n", .{});
+            try err.print("usage: 4orman-tools grep <root-path> <pattern> [ext-filter]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -501,7 +503,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "find-files")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools find-files <root-path> <glob>\n", .{});
+            try err.print("usage: 4orman-tools find-files <root-path> <glob>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -537,7 +539,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "json-query")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools json-query <file-path> <dot-path>\n", .{});
+            try err.print("usage: 4orman-tools json-query <file-path> <dot-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -570,7 +572,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "git-diff")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools git-diff <repo-path> [ref]\n", .{});
+            try err.print("usage: 4orman-tools git-diff <repo-path> [ref]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -610,7 +612,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "list-dir")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools list-dir <path>\n", .{});
+            try err.print("usage: 4orman-tools list-dir <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -656,7 +658,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "file-stats")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools file-stats <file-path>\n", .{});
+            try err.print("usage: 4orman-tools file-stats <file-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -676,7 +678,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "env-scan")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools env-scan <root-path>\n", .{});
+            try err.print("usage: 4orman-tools env-scan <root-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -726,7 +728,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "toml-query")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools toml-query <file-path> <dot-path>\n", .{});
+            try err.print("usage: 4orman-tools toml-query <file-path> <dot-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -758,7 +760,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "yaml-query")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools yaml-query <file-path> <dot-path>\n", .{});
+            try err.print("usage: 4orman-tools yaml-query <file-path> <dot-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -790,7 +792,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "list-projects")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools list-projects <foreman-root>\n", .{});
+            try err.print("usage: 4orman-tools list-projects <4orman-root>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -827,7 +829,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "tarball-sha")) {
         if (args.len < 5) {
-            try err.print("usage: foreman-tools tarball-sha <owner> <repo> <tag>\n", .{});
+            try err.print("usage: 4orman-tools tarball-sha <owner> <repo> <tag>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -855,7 +857,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "formula-info")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools formula-info <tap-path> <formula-name>\n", .{});
+            try err.print("usage: 4orman-tools formula-info <tap-path> <formula-name>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -908,7 +910,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "gh-release")) {
         if (args.len < 7) {
-            try err.print("usage: foreman-tools gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
+            try err.print("usage: 4orman-tools gh-release <owner> <repo> <tag> <title> <notes-file>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -931,7 +933,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "file-hash")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools file-hash <file-path>\n", .{});
+            try err.print("usage: 4orman-tools file-hash <file-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -959,7 +961,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "context-scan")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools context-scan <path>\n", .{});
+            try err.print("usage: 4orman-tools context-scan <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1026,7 +1028,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "context-rank")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools context-rank <root-path> <query>\n", .{});
+            try err.print("usage: 4orman-tools context-rank <root-path> <query>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1069,7 +1071,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "context-changed")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools context-changed <repo-path> [ref]\n", .{});
+            try err.print("usage: 4orman-tools context-changed <repo-path> [ref]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1114,7 +1116,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "context-evidence")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools context-evidence <file-path> <pattern>\n", .{});
+            try err.print("usage: 4orman-tools context-evidence <file-path> <pattern>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1157,7 +1159,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools cache-check <file-path>\n", .{});
+            try err.print("usage: 4orman-tools cache-check <file-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1191,7 +1193,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-store")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
+            try err.print("usage: 4orman-tools cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1229,7 +1231,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-fetch")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools cache-fetch <file-path> <sub-key>\n", .{});
+            try err.print("usage: 4orman-tools cache-fetch <file-path> <sub-key>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1266,7 +1268,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "outline")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools outline <file-path>\n", .{});
+            try err.print("usage: 4orman-tools outline <file-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1300,7 +1302,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "deps")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools deps <root-path>\n", .{});
+            try err.print("usage: 4orman-tools deps <root-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1428,7 +1430,7 @@ pub fn main(init: std.process.Init) !void {
         }
     } else if (std.mem.eql(u8, args[1], "run-tests")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools run-tests <path>\n", .{});
+            try err.print("usage: 4orman-tools run-tests <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1478,7 +1480,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "symbol-find")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools symbol-find <path> <symbol>\n", .{});
+            try err.print("usage: 4orman-tools symbol-find <path> <symbol>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1517,7 +1519,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "env-inspect")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools env-inspect <path>\n", .{});
+            try err.print("usage: 4orman-tools env-inspect <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1578,7 +1580,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "build")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools build <path>\n", .{});
+            try err.print("usage: 4orman-tools build <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1643,7 +1645,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "secret-scan")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools secret-scan <path>\n", .{});
+            try err.print("usage: 4orman-tools secret-scan <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1684,7 +1686,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "delta-context")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools delta-context <repo-path> [ref]\n", .{});
+            try err.print("usage: 4orman-tools delta-context <repo-path> [ref]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1715,7 +1717,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "git-cache")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools git-cache <repo-path>\n", .{});
+            try err.print("usage: 4orman-tools git-cache <repo-path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1742,7 +1744,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "prod-ready")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools prod-ready <path>\n", .{});
+            try err.print("usage: 4orman-tools prod-ready <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1767,7 +1769,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "validate-schema")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools validate-schema <file> <schema>\n", .{});
+            try err.print("usage: 4orman-tools validate-schema <file> <schema>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1816,7 +1818,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "quality-gate")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools quality-gate <path>\n", .{});
+            try err.print("usage: 4orman-tools quality-gate <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1858,7 +1860,7 @@ pub fn main(init: std.process.Init) !void {
             cmd_idx = 4;
         }
         if (args.len <= cmd_idx) {
-            try err.print("usage: foreman-tools shell-run [--timeout <ms>] <shell-command>\n", .{});
+            try err.print("usage: 4orman-tools shell-run [--timeout <ms>] <shell-command>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1893,7 +1895,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "project-state")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools project-state <path> [record-decision <what> [<why>]]\n", .{});
+            try err.print("usage: 4orman-tools project-state <path> [record-decision <what> [<why>]]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -1944,7 +1946,7 @@ pub fn main(init: std.process.Init) !void {
         // ledger score <question> <sources-json> — separate path, does not use LedgerMode
         if (args.len >= 3 and std.mem.eql(u8, args[2], "score")) {
             if (args.len < 5) {
-                try err.print("usage: foreman-tools ledger score <question> <sources-json>\n", .{});
+                try err.print("usage: 4orman-tools ledger score <question> <sources-json>\n", .{});
                 try err.flush();
                 std.process.exit(1);
             }
@@ -1986,14 +1988,14 @@ pub fn main(init: std.process.Init) !void {
                     ledger_mode = .check_stale;
                 } else if (std.mem.eql(u8, args[2], "record")) {
                     if (args.len < 6) {
-                        try err.print("usage: foreman-tools ledger record <winner> <question> <reasoning>\n", .{});
+                        try err.print("usage: 4orman-tools ledger record <winner> <question> <reasoning>\n", .{});
                         try err.flush();
                         std.process.exit(1);
                     }
                     ledger_mode = .{ .record = .{ .winner = args[3], .question = args[4], .reasoning = args[5] } };
                 } else if (std.mem.eql(u8, args[2], "validate")) {
                     if (args.len < 4) {
-                        try err.print("usage: foreman-tools ledger validate <id>\n", .{});
+                        try err.print("usage: 4orman-tools ledger validate <id>\n", .{});
                         try err.flush();
                         std.process.exit(1);
                     }
@@ -2039,7 +2041,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "rollback")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools rollback <repo-path> [--list | --revert <id>]\n", .{});
+            try err.print("usage: 4orman-tools rollback <repo-path> [--list | --revert <id>]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2067,7 +2069,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "sandbox-check")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools sandbox-check <command...>\n", .{});
+            try err.print("usage: 4orman-tools sandbox-check <command...>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2086,7 +2088,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "session-snapshot")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools session-snapshot <foreman-root>\n", .{});
+            try err.print("usage: 4orman-tools session-snapshot <4orman-root>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2096,7 +2098,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "report")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools report <path>\n", .{});
+            try err.print("usage: 4orman-tools report <path>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2124,7 +2126,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "route")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools route <task...>\n", .{});
+            try err.print("usage: 4orman-tools route <task...>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2156,7 +2158,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "capability-check")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools capability-check <query...>\n", .{});
+            try err.print("usage: 4orman-tools capability-check <query...>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2184,7 +2186,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "capability-promote")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools capability-promote <command...>\n", .{});
+            try err.print("usage: 4orman-tools capability-promote <command...>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2196,7 +2198,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "ant")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools ant <path> [--since <ms>]\n", .{});
+            try err.print("usage: 4orman-tools ant <path> [--since <ms>]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2232,7 +2234,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "worker-run")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools worker-run <lang> <script> [args...]\n", .{});
+            try err.print("usage: 4orman-tools worker-run <lang> <script> [args...]\n", .{});
             try err.print("langs: python py node js deno bun go golang ruby rb bash sh swift zig lua php\n", .{});
             try err.flush();
             std.process.exit(1);
@@ -2258,7 +2260,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "context-slice")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools context-slice <abs-path> <focus-query>\n", .{});
+            try err.print("usage: 4orman-tools context-slice <abs-path> <focus-query>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2275,7 +2277,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "state-merge")) {
         if (args.len < 4) {
-            try err.print("usage: foreman-tools state-merge <file1> <file2>\n", .{});
+            try err.print("usage: 4orman-tools state-merge <file1> <file2>\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2317,7 +2319,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "plugin-run")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools plugin-run <name> [args...]\n", .{});
+            try err.print("usage: 4orman-tools plugin-run <name> [args...]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2325,7 +2327,7 @@ pub fn main(init: std.process.Init) !void {
         const extra_args = if (args.len > 3) args[3..] else args[0..0];
         const json = root.computePluginRun(gpa, io, plugin_name, extra_args) catch |e| switch (e) {
             error.PluginNotFound => {
-                try err.print("error: plugin '{s}' not found in ~/.foreman/plugins/\n", .{plugin_name});
+                try err.print("error: plugin '{s}' not found in ~/.4orman/plugins/\n", .{plugin_name});
                 try err.flush();
                 std.process.exit(1);
             },
@@ -2355,33 +2357,33 @@ pub fn main(init: std.process.Init) !void {
         try out.print("{s}\n", .{json});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "tui")) {
-        const foreman_root = if (args.len >= 3) args[2] else blk: {
+        const workspace_root = if (args.len >= 3) args[2] else blk: {
             const home_ptr = std.c.getenv("HOME") orelse {
                 try err.print("error: HOME not set\n", .{});
                 try err.flush();
                 std.process.exit(1);
             };
             const home = std.mem.sliceTo(home_ptr, 0);
-            break :blk try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
+            break :blk try std.fmt.allocPrint(gpa, "{s}/4orman", .{home});
         };
-        try root.computeTui(gpa, io, foreman_root);
+        try root.computeTui(gpa, io, workspace_root);
     } else if (std.mem.eql(u8, args[1], "knowledge-audit")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools knowledge-audit <project-path> [<foreman-root>]\n", .{});
+            try err.print("usage: 4orman-tools knowledge-audit <project-path> [<4orman-root>]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
         const project_path = args[2];
-        const foreman_root = if (args.len >= 4) args[3] else blk: {
+        const workspace_root = if (args.len >= 4) args[3] else blk: {
             const home_ptr = std.c.getenv("HOME") orelse {
                 try err.print("error: HOME not set\n", .{});
                 try err.flush();
                 std.process.exit(1);
             };
             const home = std.mem.sliceTo(home_ptr, 0);
-            break :blk try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
+            break :blk try std.fmt.allocPrint(gpa, "{s}/4orman", .{home});
         };
-        const result = try root.computeKnowledgeAudit(gpa, io, project_path, foreman_root);
+        const result = try root.computeKnowledgeAudit(gpa, io, project_path, workspace_root);
         try out.print("{{\n  \"project\": \"{s}\",\n  \"path\": \"{s}\",\n  \"ready\": {s},\n", .{
             result.project, result.path, if (result.ready) "true" else "false",
         });
@@ -2404,7 +2406,7 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "export")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]\n", .{});
+            try err.print("usage: 4orman-tools export <project-path> [--format fmz|brew|mac|linux|windows|backup] [--out <dir>]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -2422,9 +2424,9 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         const home = std.mem.sliceTo(std.c.getenv("HOME") orelse ".", 0);
-        const foreman_root = try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
-        defer gpa.free(foreman_root);
-        const result = try root.computeExport(gpa, io, project_path, foreman_root, format_str, out_dir);
+        const workspace_root = try std.fmt.allocPrint(gpa, "{s}/4orman", .{home});
+        defer gpa.free(workspace_root);
+        const result = try root.computeExport(gpa, io, project_path, workspace_root, format_str, out_dir);
         const success_str: []const u8 = if (result.success) "true" else "false";
         try out.print("{{\n  \"name\": \"{s}\",\n  \"version\": \"{s}\",\n  \"format\": \"{s}\",\n  \"output_path\": \"{s}\",\n  \"success\": {s},\n  \"note\": \"{s}\"\n}}\n", .{
             result.name, result.version, result.format, result.output_path, success_str, result.note,
@@ -2432,16 +2434,16 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "import")) {
         if (args.len < 3) {
-            try err.print("usage: foreman-tools import <source-path> [<foreman-root>]\n", .{});
+            try err.print("usage: 4orman-tools import <source-path> [<4orman-root>]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
         const source_path = args[2];
-        const foreman_root = if (args.len >= 4) args[3] else blk: {
+        const workspace_root = if (args.len >= 4) args[3] else blk: {
             const home = std.mem.sliceTo(std.c.getenv("HOME") orelse ".", 0);
-            break :blk try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
+            break :blk try std.fmt.allocPrint(gpa, "{s}/4orman", .{home});
         };
-        const result = try root.computeImport(gpa, io, source_path, foreman_root);
+        const result = try root.computeImport(gpa, io, source_path, workspace_root);
         const success_str: []const u8 = if (result.success) "true" else "false";
         try out.print("{{\n  \"name\": \"{s}\",\n  \"dest_path\": \"{s}\",\n  \"source_format\": \"{s}\",\n  \"deps_note\": \"{s}\",\n  \"success\": {s},\n  \"note\": \"{s}\"\n}}\n", .{
             result.name, result.dest_path, result.source_format, result.deps_note, success_str, result.note,
@@ -2453,13 +2455,13 @@ pub fn main(init: std.process.Init) !void {
             if (std.mem.eql(u8, args[2], "clear")) break :blk .clear;
             if (std.mem.eql(u8, args[2], "add")) {
                 if (args.len < 5) {
-                    try err.print("usage: foreman-tools promotion-queue add <name> <description>\n", .{});
+                    try err.print("usage: 4orman-tools promotion-queue add <name> <description>\n", .{});
                     try err.flush();
                     std.process.exit(1);
                 }
                 break :blk .{ .add = .{ .name = args[3], .description = args[4] } };
             }
-            try err.print("usage: foreman-tools promotion-queue [list | add <name> <description> | clear]\n", .{});
+            try err.print("usage: 4orman-tools promotion-queue [list | add <name> <description> | clear]\n", .{});
             try err.flush();
             std.process.exit(1);
         };

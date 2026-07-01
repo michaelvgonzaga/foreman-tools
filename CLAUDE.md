@@ -1,6 +1,6 @@
-# foreman-tools
+# 4orman-tools
 
-A native Zig CLI binary that offloads mechanical data-gathering from Claude's token budget — outputs JSON blobs that Foreman commands read instead of reasoning through raw shell output.
+A native Zig CLI binary that offloads mechanical data-gathering from Claude's token budget — outputs JSON blobs that 4ORMan commands read instead of reasoning through raw shell output.
 
 ---
 
@@ -9,7 +9,7 @@ A native Zig CLI binary that offloads mechanical data-gathering from Claude's to
 See `spec.md` for milestones and decisions. See `api-schema.md` for the locked JSON output contract — any field change requires a version bump. Key facts:
 
 - **Goal:** Replace Claude's inline shell reasoning with a native binary; Claude reads one JSON blob instead of parsing git/gh output token-by-token
-- **User:** Foreman command files running inside Claude Code sessions — never invoked directly by the user
+- **User:** 4ORMan command files running inside Claude Code sessions — never invoked directly by the user
 - **Domain:** Developer tooling / CLI
 - **v1 scope:** `status` subcommand (session-start data) + `commits` subcommand (release workflow)
 - **Out of scope:** `repos` (GitHub scanning), `sha` (tarball hashing), Linux/Windows builds
@@ -26,7 +26,7 @@ See `spec.md` for milestones and decisions. See `api-schema.md` for the locked J
 
 ### Ask first
 - Any new subcommand or output field not in the spec
-- Any change to the JSON output schema — Foreman command files depend on it
+- Any change to the JSON output schema — 4ORMan command files depend on it
 - Cross-platform builds beyond macOS arm64 + amd64
 - Distribution changes (tap formula, install location)
 
@@ -42,7 +42,7 @@ See `spec.md` for milestones and decisions. See `api-schema.md` for the locked J
 
 ## Tools & Resources
 
-- **Repo:** https://github.com/michaelvgonzaga/foreman-tools
+- **Repo:** https://github.com/michaelvgonzaga/4orman-tools
 - **Platform / runtime:** Zig 0.16 — single binary, macOS arm64 + amd64 universal
 - **Key tools & services:** System `git` binary (subprocess), system `gh` binary (subprocess for repos subcommand — v2 only)
 - **Data & storage:** None — stateless, reads from git refs and filesystem
@@ -60,8 +60,8 @@ brew install zig   # or download from ziglang.org — pin to 0.16
 zig build -Doptimize=ReleaseSafe -Dcpu=apple_m3
 
 # run / work
-./zig-out/bin/foreman-tools status ~/foreman
-./zig-out/bin/foreman-tools commits ~/foreman/myproject v1.2.0
+./zig-out/bin/4orman-tools status ~/4orman
+./zig-out/bin/4orman-tools commits ~/4orman/myproject v1.2.0
 
 # validate / test
 zig build test
