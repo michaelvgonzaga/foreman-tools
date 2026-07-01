@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.62.0";
+pub const VERSION = "0.63.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7098,14 +7098,95 @@ pub fn computeRegistry() RegistryResult {
 pub const CapabilityCheckResult = struct {
     query: []const u8,
     available: bool,
-    source: []const u8, // "native" | "claude"
+    source: []const u8, // "native" | "ledger" | "claude"
     subcommand: []const u8, // "" when not found
     description: []const u8, // "" when not found
     args: []const u8, // "" when not found
     confidence: []const u8, // "exact" | "high" | "medium" | "low" | "none"
+    ledger_id: []const u8, // "" unless source == "ledger"
+    ledger_reasoning: []const u8, // "" unless source == "ledger"
+    needs_decision: bool, // true only when neither native nor ledger has an answer
 };
 
-pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !CapabilityCheckResult {
+// Fuzzy-matches `query` against non-stale ledger questions (same word-overlap
+// scoring spirit as the registry matcher below). Returns a duped, caller-owned
+// LedgerEntry on a >=50% word-overlap match, else null. Stale entries are
+// never matched — a stale precedent must not be reused silently.
+
+// Both inputs must already be lowercased. Returns percent of query words
+// (len >= 3) found as a substring of the ledger question.
+fn ledgerWordOverlapScore(query_lower: []const u8, question_lower: []const u8) u32 {
+    var word_count: u32 = 0;
+    var match_count: u32 = 0;
+    var it = std.mem.tokenizeScalar(u8, query_lower, ' ');
+    while (it.next()) |word| {
+        if (word.len < 3) continue;
+        word_count += 1;
+        if (std.mem.indexOf(u8, question_lower, word) != null) match_count += 1;
+    }
+    if (word_count == 0) return 0;
+    return (match_count * 100) / word_count;
+}
+
+fn findLedgerPrecedent(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !?LedgerEntry {
+    const home_ptr = std.c.getenv("HOME") orelse return null;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const ledger_path = try std.fmt.allocPrint(gpa, "{s}/.4orman/ledger.json", .{home});
+    defer gpa.free(ledger_path);
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+
+    var entries: std.ArrayList(LedgerEntry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            gpa.free(e.id);
+            gpa.free(e.date);
+            gpa.free(e.winner);
+            gpa.free(e.question);
+            gpa.free(e.reasoning);
+        }
+        entries.deinit(gpa);
+    }
+    parseLedgerFile(gpa, io, ledger_path, &entries, now_ts);
+
+    const q_lower = try gpa.alloc(u8, query.len);
+    defer gpa.free(q_lower);
+    for (query, 0..) |c, i| q_lower[i] = std.ascii.toLower(c);
+
+    var best_score: u32 = 0;
+    var best_idx: ?usize = null;
+    for (entries.items, 0..) |e, idx| {
+        if (e.is_stale) continue;
+        const qn_lower = try gpa.alloc(u8, e.question.len);
+        defer gpa.free(qn_lower);
+        for (e.question, 0..) |c, i| qn_lower[i] = std.ascii.toLower(c);
+
+        const score = ledgerWordOverlapScore(q_lower, qn_lower);
+        if (score > best_score and score >= 50) {
+            best_score = score;
+            best_idx = idx;
+        }
+    }
+
+    if (best_idx) |idx| {
+        const e = entries.items[idx];
+        return LedgerEntry{
+            .id = try gpa.dupe(u8, e.id),
+            .date = try gpa.dupe(u8, e.date),
+            .recorded_ts = e.recorded_ts,
+            .revalidation_due_ts = e.revalidation_due_ts,
+            .winner = try gpa.dupe(u8, e.winner),
+            .question = try gpa.dupe(u8, e.question),
+            .reasoning = try gpa.dupe(u8, e.reasoning),
+            .is_stale = e.is_stale,
+        };
+    }
+    return null;
+}
+
+pub fn computeCapabilityCheck(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !CapabilityCheckResult {
     const reg = computeRegistry();
 
     // Lowercase query once
@@ -7184,8 +7265,35 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
             .description = cmd.description,
             .args = cmd.args,
             .confidence = confidence,
+            .ledger_id = "",
+            .ledger_reasoning = "",
+            .needs_decision = false,
         };
     }
+
+    // No native match — a recorded, non-stale ledger precedent on this
+    // question counts as "available" too: it's a decision Claude already
+    // made, not fresh reasoning.
+    if (try findLedgerPrecedent(gpa, io, query)) |entry| {
+        defer {
+            gpa.free(entry.date);
+            gpa.free(entry.winner);
+            gpa.free(entry.question);
+        }
+        return .{
+            .query = try gpa.dupe(u8, query),
+            .available = true,
+            .source = "ledger",
+            .subcommand = "",
+            .description = "",
+            .args = "",
+            .confidence = "medium",
+            .ledger_id = entry.id,
+            .ledger_reasoning = entry.reasoning,
+            .needs_decision = false,
+        };
+    }
+
     return .{
         .query = try gpa.dupe(u8, query),
         .available = false,
@@ -7194,6 +7302,9 @@ pub fn computeCapabilityCheck(gpa: std.mem.Allocator, query: []const u8) !Capabi
         .description = "",
         .args = "",
         .confidence = "none",
+        .ledger_id = "",
+        .ledger_reasoning = "",
+        .needs_decision = true,
     };
 }
 
@@ -7250,17 +7361,40 @@ const ROUTE_ENRICHMENTS: []const RouteEnrichment = &[_]RouteEnrichment{
     .{ .subcommand = "capability-check", .arg_hint = "<query...>", .reason = "check if a task is natively handled before deciding whether to shell out" },
 };
 
-pub fn computeRoute(gpa: std.mem.Allocator, task: []const u8) !RouteResult {
-    const cap = try computeCapabilityCheck(gpa, task);
+pub fn computeRoute(gpa: std.mem.Allocator, io: std.Io, task: []const u8) !RouteResult {
+    const cap = try computeCapabilityCheck(gpa, io, task);
     defer gpa.free(cap.query);
 
+    if (cap.available and std.mem.eql(u8, cap.source, "ledger")) {
+        const steps = try gpa.alloc(RouteStep, 1);
+        steps[0] = .{
+            .step = 1,
+            .layer = "ledger",
+            .subcommand = "ledger validate",
+            .arg_hint = cap.ledger_id,
+            .reason = cap.ledger_reasoning,
+            .confidence = cap.confidence,
+        };
+        return .{
+            .task = try gpa.dupe(u8, task),
+            .routed = true,
+            .steps = steps,
+            .fallback = "",
+            .reason = "",
+        };
+    }
+
     if (!cap.available) {
+        const reason: []const u8 = if (cap.needs_decision)
+            "no native subcommand and no ledger precedent — priority decision: resolve now and record the verdict via `ledger record` so it isn't re-litigated next time"
+        else
+            "no native subcommand matches this task";
         return .{
             .task = try gpa.dupe(u8, task),
             .routed = false,
             .steps = try gpa.alloc(RouteStep, 0),
             .fallback = "claude",
-            .reason = "no native subcommand matches this task",
+            .reason = reason,
         };
     }
 
@@ -7888,14 +8022,14 @@ pub fn computeSandboxCheck(gpa: std.mem.Allocator, operation: []const u8) !Sandb
 
 // --- capability-promote (Module 21) ---
 
-pub fn computeCapabilityPromote(gpa: std.mem.Allocator, command: []const u8) ![]u8 {
+pub fn computeCapabilityPromote(gpa: std.mem.Allocator, io: std.Io, command: []const u8) ![]u8 {
     // Lowercase command for pattern matching
     const cmd_lower = try gpa.alloc(u8, command.len);
     defer gpa.free(cmd_lower);
     for (command, 0..) |c, i| cmd_lower[i] = std.ascii.toLower(c);
 
     // Check if already covered by an existing subcommand at exact/high confidence
-    const check = try computeCapabilityCheck(gpa, command);
+    const check = try computeCapabilityCheck(gpa, io, command);
     defer gpa.free(check.query);
     const already_covered = check.available and
         (std.mem.eql(u8, check.confidence, "exact") or std.mem.eql(u8, check.confidence, "high"));
@@ -10600,4 +10734,25 @@ test "parseZigOutput: parses partial failure summary" {
     parseZigOutput(gpa, "Build Summary: 1/3 steps succeeded (1 failed); 1/2 tests passed (1 failed)", &passed, &failed, &skipped, &fbuf, &n, &truncated);
     try std.testing.expectEqual(@as(u32, 1), passed);
     try std.testing.expectEqual(@as(u32, 1), failed);
+}
+
+test "ledgerWordOverlapScore: full match scores 100" {
+    const score = ledgerWordOverlapScore("caching strategy for sessions", "caching strategy for sessions");
+    try std.testing.expectEqual(@as(u32, 100), score);
+}
+
+test "ledgerWordOverlapScore: partial match scores proportionally" {
+    const score = ledgerWordOverlapScore("redis caching strategy", "caching strategy for zig");
+    // "redis" (5 chars, no match), "caching" (match), "strategy" (match) -> 2/3 * 100 = 66
+    try std.testing.expectEqual(@as(u32, 66), score);
+}
+
+test "ledgerWordOverlapScore: no overlap scores 0" {
+    const score = ledgerWordOverlapScore("xyzzy plugh frotz", "caching strategy for sessions");
+    try std.testing.expectEqual(@as(u32, 0), score);
+}
+
+test "ledgerWordOverlapScore: short words below length 3 are ignored" {
+    const score = ledgerWordOverlapScore("is it ok", "some unrelated question");
+    try std.testing.expectEqual(@as(u32, 0), score);
 }

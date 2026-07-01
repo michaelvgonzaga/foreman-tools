@@ -2132,7 +2132,7 @@ pub fn main(init: std.process.Init) !void {
         }
         const task = try std.mem.join(gpa, " ", args[2..]);
         defer gpa.free(task);
-        const result = try root.computeRoute(gpa, task);
+        const result = try root.computeRoute(gpa, io, task);
         defer gpa.free(result.task);
         defer gpa.free(result.steps);
         const task_esc = try root.allocJsonEscape(gpa, result.task);
@@ -2164,23 +2164,30 @@ pub fn main(init: std.process.Init) !void {
         }
         const query = try std.mem.join(gpa, " ", args[2..]);
         defer gpa.free(query);
-        const result = try root.computeCapabilityCheck(gpa, query);
+        const result = try root.computeCapabilityCheck(gpa, io, query);
         defer gpa.free(result.query);
         const query_esc = try root.allocJsonEscape(gpa, result.query);
         defer gpa.free(query_esc);
-        if (result.available) {
+        if (result.available and std.mem.eql(u8, result.source, "native")) {
             const desc_esc = try root.allocJsonEscape(gpa, result.description);
             defer gpa.free(desc_esc);
             const args_esc = try root.allocJsonEscape(gpa, result.args);
             defer gpa.free(args_esc);
             try out.print(
-                "{{\n  \"query\": \"{s}\",\n  \"available\": true,\n  \"source\": \"native\",\n  \"subcommand\": \"{s}\",\n  \"description\": \"{s}\",\n  \"args\": \"{s}\",\n  \"confidence\": \"{s}\"\n}}\n",
+                "{{\n  \"query\": \"{s}\",\n  \"available\": true,\n  \"source\": \"native\",\n  \"subcommand\": \"{s}\",\n  \"description\": \"{s}\",\n  \"args\": \"{s}\",\n  \"confidence\": \"{s}\",\n  \"ledgerId\": null,\n  \"ledgerReasoning\": null,\n  \"needsDecision\": false\n}}\n",
                 .{ query_esc, result.subcommand, desc_esc, args_esc, result.confidence },
+            );
+        } else if (result.available and std.mem.eql(u8, result.source, "ledger")) {
+            const reasoning_esc = try root.allocJsonEscape(gpa, result.ledger_reasoning);
+            defer gpa.free(reasoning_esc);
+            try out.print(
+                "{{\n  \"query\": \"{s}\",\n  \"available\": true,\n  \"source\": \"ledger\",\n  \"subcommand\": null,\n  \"description\": null,\n  \"args\": null,\n  \"confidence\": \"{s}\",\n  \"ledgerId\": \"{s}\",\n  \"ledgerReasoning\": \"{s}\",\n  \"needsDecision\": false\n}}\n",
+                .{ query_esc, result.confidence, result.ledger_id, reasoning_esc },
             );
         } else {
             try out.print(
-                "{{\n  \"query\": \"{s}\",\n  \"available\": false,\n  \"source\": \"claude\",\n  \"subcommand\": null,\n  \"description\": null,\n  \"args\": null,\n  \"confidence\": \"none\"\n}}\n",
-                .{query_esc},
+                "{{\n  \"query\": \"{s}\",\n  \"available\": false,\n  \"source\": \"claude\",\n  \"subcommand\": null,\n  \"description\": null,\n  \"args\": null,\n  \"confidence\": \"none\",\n  \"ledgerId\": null,\n  \"ledgerReasoning\": null,\n  \"needsDecision\": {s}\n}}\n",
+                .{ query_esc, if (result.needs_decision) "true" else "false" },
             );
         }
         try out.flush();
@@ -2192,7 +2199,7 @@ pub fn main(init: std.process.Init) !void {
         }
         const command = try std.mem.join(gpa, " ", args[2..]);
         defer gpa.free(command);
-        const json = try root.computeCapabilityPromote(gpa, command);
+        const json = try root.computeCapabilityPromote(gpa, io, command);
         defer gpa.free(json);
         try out.print("{s}\n", .{json});
         try out.flush();
