@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.63.0";
+pub const VERSION = "0.64.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -3988,62 +3988,89 @@ pub const RunTestsResult = struct {
     duration_ms: u64,
     failures: []TestFailure,
     truncated: bool,
+    role_confidence: []const u8, // "certain" | "uncertain"
+    uncertainty_reason: []const u8, // "" when certain
+    uncertainty_candidates: []const []const u8, // empty when certain
 };
 
-fn detectTestFramework(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]const u8 {
+// Collects every test framework whose marker is present, in priority order.
+// More than one candidate is a genuine boundary case — computeRunTests
+// surfaces it instead of silently picking the first match.
+fn detectTestFrameworkCandidates(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]const []const u8 {
+    var found: [6][]const u8 = undefined;
+    var n: usize = 0;
+
     // jest/vitest: package.json
     const pkg = try std.fmt.allocPrint(gpa, "{s}/package.json", .{path});
     defer gpa.free(pkg);
     if (std.Io.Dir.openFileAbsolute(io, pkg, .{})) |f| {
+        defer f.close(io);
         var rbuf: [4096]u8 = undefined;
         var r = f.reader(io, &rbuf);
-        const c = r.interface.allocRemaining(gpa, .limited(128 * 1024)) catch {
-            f.close(io);
-            return null;
-        };
-        f.close(io);
-        defer gpa.free(c);
-        if (std.mem.indexOf(u8, c, "\"vitest\"") != null) return "vitest";
-        if (std.mem.indexOf(u8, c, "\"jest\"") != null) return "jest";
+        if (r.interface.allocRemaining(gpa, .limited(128 * 1024))) |c| {
+            defer gpa.free(c);
+            if (std.mem.indexOf(u8, c, "\"vitest\"") != null) {
+                found[n] = "vitest";
+                n += 1;
+            }
+            if (std.mem.indexOf(u8, c, "\"jest\"") != null) {
+                found[n] = "jest";
+                n += 1;
+            }
+        } else |_| {}
     } else |_| {}
 
     // pytest: pytest.ini, conftest.py, or pyproject.toml with "pytest"
+    var found_pytest = false;
     const pytest_files = [_][]const u8{ "pytest.ini", "conftest.py" };
     for (pytest_files) |pf| {
         const p = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ path, pf });
         defer gpa.free(p);
-        if (fileExists(io, p)) return "pytest";
+        if (fileExists(io, p)) found_pytest = true;
     }
-    const ppt = try std.fmt.allocPrint(gpa, "{s}/pyproject.toml", .{path});
-    defer gpa.free(ppt);
-    if (std.Io.Dir.openFileAbsolute(io, ppt, .{})) |f| {
-        var rbuf: [4096]u8 = undefined;
-        var r = f.reader(io, &rbuf);
-        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch {
-            f.close(io);
-            return null;
-        };
-        f.close(io);
-        defer gpa.free(c);
-        if (std.mem.indexOf(u8, c, "pytest") != null) return "pytest";
-    } else |_| {}
+    if (!found_pytest) {
+        const ppt = try std.fmt.allocPrint(gpa, "{s}/pyproject.toml", .{path});
+        defer gpa.free(ppt);
+        if (std.Io.Dir.openFileAbsolute(io, ppt, .{})) |f| {
+            defer f.close(io);
+            var rbuf: [4096]u8 = undefined;
+            var r = f.reader(io, &rbuf);
+            if (r.interface.allocRemaining(gpa, .limited(64 * 1024))) |c| {
+                defer gpa.free(c);
+                if (std.mem.indexOf(u8, c, "pytest") != null) found_pytest = true;
+            } else |_| {}
+        } else |_| {}
+    }
+    if (found_pytest) {
+        found[n] = "pytest";
+        n += 1;
+    }
 
     // go test
     const gomod = try std.fmt.allocPrint(gpa, "{s}/go.mod", .{path});
     defer gpa.free(gomod);
-    if (fileExists(io, gomod)) return "go";
+    if (fileExists(io, gomod)) {
+        found[n] = "go";
+        n += 1;
+    }
 
     // cargo test
     const cargo_toml = try std.fmt.allocPrint(gpa, "{s}/Cargo.toml", .{path});
     defer gpa.free(cargo_toml);
-    if (fileExists(io, cargo_toml)) return "cargo";
+    if (fileExists(io, cargo_toml)) {
+        found[n] = "cargo";
+        n += 1;
+    }
 
     // zig build test
     const build_zig = try std.fmt.allocPrint(gpa, "{s}/build.zig", .{path});
     defer gpa.free(build_zig);
-    if (fileExists(io, build_zig)) return "zig";
+    if (fileExists(io, build_zig)) {
+        found[n] = "zig";
+        n += 1;
+    }
 
-    return null;
+    return gpa.dupe([]const u8, found[0..n]);
 }
 
 fn appendTestFailure(
@@ -4340,7 +4367,11 @@ fn parseJestOutput(
 }
 
 pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !RunTestsResult {
-    const fw = try detectTestFramework(gpa, io, path) orelse return error.NoTestFramework;
+    const fw_candidates = try detectTestFrameworkCandidates(gpa, io, path);
+    defer gpa.free(fw_candidates);
+    if (fw_candidates.len == 0) return error.NoTestFramework;
+    const fw = fw_candidates[0];
+    const fw_uncertain = fw_candidates.len > 1;
 
     const fw_argv: []const []const u8 = if (std.mem.eql(u8, fw, "jest"))
         &.{ "env", "-C", path, "npx", "jest" }
@@ -4384,6 +4415,9 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
             .duration_ms = 0,
             .failures = failures,
             .truncated = false,
+            .role_confidence = if (fw_uncertain) "uncertain" else "certain",
+            .uncertainty_reason = if (fw_uncertain) "multiple test frameworks detected; picked the first by priority order" else "",
+            .uncertainty_candidates = if (fw_uncertain) (gpa.dupe([]const u8, fw_candidates) catch &[_][]const u8{}) else &[_][]const u8{},
         };
     };
     defer gpa.free(r.stdout);
@@ -4439,6 +4473,9 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
         .duration_ms = duration_ms,
         .failures = failures,
         .truncated = truncated,
+        .role_confidence = if (fw_uncertain) "uncertain" else "certain",
+        .uncertainty_reason = if (fw_uncertain) "multiple test frameworks detected; picked the first by priority order" else "",
+        .uncertainty_candidates = if (fw_uncertain) try gpa.dupe([]const u8, fw_candidates) else &[_][]const u8{},
     };
 }
 
@@ -4739,6 +4776,9 @@ pub const BuildResult = struct {
     warnings: []BuildWarning,
     duration_ms: u64,
     truncated: bool,
+    role_confidence: []const u8, // "certain" | "uncertain"
+    uncertainty_reason: []const u8, // "" when certain
+    uncertainty_candidates: []const []const u8, // empty when certain
 };
 
 fn appendBuildError(
@@ -4789,39 +4829,60 @@ fn appendBuildWarning(
     n.* += 1;
 }
 
-fn detectBuildTool(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?[]const u8 {
+// Collects every build tool whose marker file is present, in priority order.
+// A single-tool result means detection is unambiguous ("role-certain"); more
+// than one is a genuine boundary case — computeBuild surfaces it instead of
+// silently picking the first match.
+fn detectBuildToolCandidates(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]const []const u8 {
+    var found: [5][]const u8 = undefined;
+    var n: usize = 0;
+
     const cargo_toml = try std.fmt.allocPrint(gpa, "{s}/Cargo.toml", .{path});
     defer gpa.free(cargo_toml);
-    if (fileExists(io, cargo_toml)) return "cargo";
+    if (fileExists(io, cargo_toml)) {
+        found[n] = "cargo";
+        n += 1;
+    }
 
     const build_zig = try std.fmt.allocPrint(gpa, "{s}/build.zig", .{path});
     defer gpa.free(build_zig);
-    if (fileExists(io, build_zig)) return "zig";
+    if (fileExists(io, build_zig)) {
+        found[n] = "zig";
+        n += 1;
+    }
 
     const gomod = try std.fmt.allocPrint(gpa, "{s}/go.mod", .{path});
     defer gpa.free(gomod);
-    if (fileExists(io, gomod)) return "go";
+    if (fileExists(io, gomod)) {
+        found[n] = "go";
+        n += 1;
+    }
 
     const pkg = try std.fmt.allocPrint(gpa, "{s}/package.json", .{path});
     defer gpa.free(pkg);
     if (std.Io.Dir.openFileAbsolute(io, pkg, .{})) |f| {
+        defer f.close(io);
         var rbuf: [4096]u8 = undefined;
         var r = f.reader(io, &rbuf);
-        const c = r.interface.allocRemaining(gpa, .limited(64 * 1024)) catch {
-            f.close(io);
-            return null;
-        };
-        f.close(io);
-        defer gpa.free(c);
-        if (std.mem.indexOf(u8, c, "\"scripts\"") != null and
-            std.mem.indexOf(u8, c, "\"build\"") != null) return "npm";
+        if (r.interface.allocRemaining(gpa, .limited(64 * 1024))) |c| {
+            defer gpa.free(c);
+            if (std.mem.indexOf(u8, c, "\"scripts\"") != null and
+                std.mem.indexOf(u8, c, "\"build\"") != null)
+            {
+                found[n] = "npm";
+                n += 1;
+            }
+        } else |_| {}
     } else |_| {}
 
     const makefile = try std.fmt.allocPrint(gpa, "{s}/Makefile", .{path});
     defer gpa.free(makefile);
-    if (fileExists(io, makefile)) return "make";
+    if (fileExists(io, makefile)) {
+        found[n] = "make";
+        n += 1;
+    }
 
-    return null;
+    return gpa.dupe([]const u8, found[0..n]);
 }
 
 // Cargo build output: state machine pairing "error[Exx]: msg" with " --> file:N:M".
@@ -4985,7 +5046,11 @@ fn parseTscOutput(
 }
 
 pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !BuildResult {
-    const tool = try detectBuildTool(gpa, io, path) orelse return error.NoBuildSystem;
+    const tool_candidates = try detectBuildToolCandidates(gpa, io, path);
+    defer gpa.free(tool_candidates);
+    if (tool_candidates.len == 0) return error.NoBuildSystem;
+    const tool = tool_candidates[0];
+    const tool_uncertain = tool_candidates.len > 1;
 
     const argv: []const []const u8 = if (std.mem.eql(u8, tool, "cargo"))
         &.{ "env", "-C", path, "cargo", "build" }
@@ -5024,6 +5089,9 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
             .warnings = warnings,
             .duration_ms = 0,
             .truncated = false,
+            .role_confidence = if (tool_uncertain) "uncertain" else "certain",
+            .uncertainty_reason = if (tool_uncertain) "multiple build systems detected; picked the first by priority order" else "",
+            .uncertainty_candidates = if (tool_uncertain) (gpa.dupe([]const u8, tool_candidates) catch &[_][]const u8{}) else &[_][]const u8{},
         };
     };
     defer gpa.free(r.stdout);
@@ -5074,6 +5142,9 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
         .warnings = warnings,
         .duration_ms = duration_ms,
         .truncated = truncated,
+        .role_confidence = if (tool_uncertain) "uncertain" else "certain",
+        .uncertainty_reason = if (tool_uncertain) "multiple build systems detected; picked the first by priority order" else "",
+        .uncertainty_candidates = if (tool_uncertain) try gpa.dupe([]const u8, tool_candidates) else &[_][]const u8{},
     };
 }
 
@@ -6640,6 +6711,33 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
     if (build_opt) |br| {
         build_ran = true;
         build_tool = br.tool;
+        if (std.mem.eql(u8, br.role_confidence, "uncertain")) {
+            const candidates_joined = std.mem.join(gpa, ", ", br.uncertainty_candidates) catch "";
+            const question = try std.fmt.allocPrint(gpa, "which build tool for {s}: candidates are {s}", .{ path, candidates_joined });
+            defer gpa.free(question);
+            if (try findLedgerPrecedent(gpa, io, question)) |entry| {
+                defer {
+                    gpa.free(entry.id);
+                    gpa.free(entry.date);
+                    gpa.free(entry.winner);
+                    gpa.free(entry.question);
+                    gpa.free(entry.reasoning);
+                }
+                try low.append(gpa, .{
+                    .source = "build",
+                    .file = "",
+                    .line = 0,
+                    .message = try std.fmt.allocPrint(gpa, "build tool ambiguous ({s}) but resolved by ledger precedent \"{s}\": {s}", .{ candidates_joined, entry.id, entry.reasoning }),
+                });
+            } else {
+                try medium.append(gpa, .{
+                    .source = "build",
+                    .file = "",
+                    .line = 0,
+                    .message = try std.fmt.allocPrint(gpa, "build tool detection uncertain: {s} — candidates: [{s}], picked \"{s}\" by priority order, no ledger precedent — resolve and `ledger record` the verdict", .{ br.uncertainty_reason, candidates_joined, br.tool }),
+                });
+            }
+        }
         if (!br.success) {
             if (br.errors.len > 0) {
                 for (br.errors) |berr| {
@@ -6684,6 +6782,33 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
         test_fw = tr.framework;
         tests_passed = tr.passed;
         tests_failed = tr.failed;
+        if (std.mem.eql(u8, tr.role_confidence, "uncertain")) {
+            const candidates_joined = std.mem.join(gpa, ", ", tr.uncertainty_candidates) catch "";
+            const question = try std.fmt.allocPrint(gpa, "which test framework for {s}: candidates are {s}", .{ path, candidates_joined });
+            defer gpa.free(question);
+            if (try findLedgerPrecedent(gpa, io, question)) |entry| {
+                defer {
+                    gpa.free(entry.id);
+                    gpa.free(entry.date);
+                    gpa.free(entry.winner);
+                    gpa.free(entry.question);
+                    gpa.free(entry.reasoning);
+                }
+                try low.append(gpa, .{
+                    .source = "tests",
+                    .file = "",
+                    .line = 0,
+                    .message = try std.fmt.allocPrint(gpa, "test framework ambiguous ({s}) but resolved by ledger precedent \"{s}\": {s}", .{ candidates_joined, entry.id, entry.reasoning }),
+                });
+            } else {
+                try medium.append(gpa, .{
+                    .source = "tests",
+                    .file = "",
+                    .line = 0,
+                    .message = try std.fmt.allocPrint(gpa, "test framework detection uncertain: {s} — candidates: [{s}], picked \"{s}\" by priority order, no ledger precedent — resolve and `ledger record` the verdict", .{ tr.uncertainty_reason, candidates_joined, tr.framework }),
+                });
+            }
+        }
         if (!tr.success and tr.failures.len == 0 and tr.failed == 0) {
             try critical.append(gpa, .{
                 .source = "tests",

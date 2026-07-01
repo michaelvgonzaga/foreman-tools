@@ -1451,6 +1451,7 @@ pub fn main(init: std.process.Init) !void {
             }
             gpa.free(result.failures);
             gpa.free(result.command);
+            if (result.uncertainty_candidates.len > 0) gpa.free(result.uncertainty_candidates);
         }
 
         const esc_fw = try root.allocJsonEscape(gpa, result.framework);
@@ -1476,7 +1477,12 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         if (result.failures.len > 0) try out.print("\n  ", .{});
-        try out.print("],\n  \"truncated\": {s}\n}}\n", .{if (result.truncated) "true" else "false"});
+        try out.print("],\n  \"truncated\": {s},\n  \"roleConfidence\": \"{s}\",\n  \"uncertaintyReason\": \"{s}\",\n  \"uncertaintyCandidates\": [", .{ if (result.truncated) "true" else "false", result.role_confidence, result.uncertainty_reason });
+        for (result.uncertainty_candidates, 0..) |c, i| {
+            if (i > 0) try out.print(", ", .{});
+            try out.print("\"{s}\"", .{c});
+        }
+        try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "symbol-find")) {
         if (args.len < 4) {
@@ -1605,6 +1611,7 @@ pub fn main(init: std.process.Init) !void {
             }
             gpa.free(result.warnings);
             gpa.free(result.command);
+            if (result.uncertainty_candidates.len > 0) gpa.free(result.uncertainty_candidates);
         }
 
         const esc_tool = try root.allocJsonEscape(gpa, result.tool);
@@ -1641,7 +1648,12 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         if (result.warnings.len > 0) try out.print("\n  ", .{});
-        try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s}\n}}\n", .{ result.duration_ms, if (result.truncated) "true" else "false" });
+        try out.print("],\n  \"duration_ms\": {d},\n  \"truncated\": {s},\n  \"roleConfidence\": \"{s}\",\n  \"uncertaintyReason\": \"{s}\",\n  \"uncertaintyCandidates\": [", .{ result.duration_ms, if (result.truncated) "true" else "false", result.role_confidence, result.uncertainty_reason });
+        for (result.uncertainty_candidates, 0..) |c, i| {
+            if (i > 0) try out.print(", ", .{});
+            try out.print("\"{s}\"", .{c});
+        }
+        try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "secret-scan")) {
         if (args.len < 3) {
