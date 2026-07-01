@@ -108,3 +108,165 @@ A single binary with two subcommands. `status` runs on every session open — th
 | M31 — compat-check subcommand (Module 31 M1–M3) | Zero-token session guard — detect tool version drift before the first user prompt, surface rollback advice, prevent silent 4ORMan breakage | `4orman-tools compat-check` compares current tool versions (zig, git, gh, homebrew, node, python3, foreman_tools) against `~/.4orman/compat-baseline.json`; returns `{"ok", "baselineAge", "drifted": [{"tool", "was", "now", "risk", "rollback"}], "advice"}`; `ok: true` → all tools match baseline; `ok: false` → advice string contains specific rollback commands; `--baseline` flag snapshots current versions; `--update-baseline` flag promotes current versions to new baseline + optionally pushes verified compat matrix to `4orman-env` repo; zero Claude tokens — advice is pre-computed Zig output, not a prompt |
 | M32 — plugin-run subcommand (Module 11 M1) ← IMPLEMENT NEXT | Execute a user-defined plugin in one call — extends 4orman-tools without recompiling Zig | `4orman-tools plugin-run <name> [args...]` loads `~/.4orman/plugins/<name>/plugin.json`, validates required fields (`name`, `lang`, `entry`), executes the entry script via the `worker-run` runtime for `lang`, passes `args` through, returns the script's JSON stdout verbatim; exits 1 with `{"error": "plugin not found"}` if directory missing, `{"error": "invalid manifest: <reason>"}` if manifest malformed, or `{"error": "worker failed: <stderr>"}` if the script itself crashes; `route` and `capability-check` treat installed plugins as first-class capabilities alongside native subcommands |
 | M33 — plugin-list subcommand (Module 11 M2) | Discover all installed plugins in one call — `capability-check` and `route` pick these up automatically | `4orman-tools plugin-list` walks `~/.4orman/plugins/`, reads each `plugin.json`, returns `{"plugins": [{"name", "lang", "description", "args", "entry"}], "count": N}`; same shape as `worker-list`; skips subdirectories with missing or unparseable manifests (logs path in a `"skipped"` array); `capability-check <query>` and `route <task>` merge plugin results with native subcommands so Claude gets a single unified capability map |
+| M34 — context-gate subcommand (Module 12/13 evolution) — NOT YET BUILT | One task-aware call that composes the existing context primitives into a single Compact Context Manifest, instead of Claude chaining 4+ separate calls | `4orman-tools context-gate <path> --task "<description>" [--test-cmd "<cmd>"]` internally calls the already-shipped `context-scan` (M21), `context-rank` (M24), `context-changed` (M23), `context-evidence` (M22), and `secret-scan` (M19-M1) rather than reimplementing file walking or scanning; returns `{"task", "token_estimate", "risk", "include": {"files": [...], "errors": [...], "diff": bool}, "exclude": {"dirs": [...], "large_files": bool, "secrets": bool}, "next_action": {"send_to_ai": bool, "reason": string}}`; JSON to stdout only, no filesystem writes |
+| M35 — context-budget subcommand (Module 13 evolution) — NOT YET BUILT | Token estimate + risk classification for a given file/diff set, callable standalone or from `context-gate` | `4orman-tools context-budget <path...>` sums byte counts, estimates tokens (bytes/4 heuristic), classifies risk low/medium/high against fixed thresholds; returns `{"token_estimate", "risk", "breakdown": [{"path", "bytes", "tokens"}]}` |
+| M36 — context-classifier subcommand (Module 13 evolution) — NOT YET BUILT | Task-type detection from a free-text description, so `context-gate` fetches different context for a compile error vs. an architecture refactor | `4orman-tools context-classifier "<task description>"` returns `{"task_type": "compile_error"\|"architecture_refactor"\|"bug_fix"\|"feature"\|"other", "confidence": float, "signals": [string]}`; keyword/pattern-based, no ML |
+| M37 — context-dependency-graph subcommand (Module 6 evolution) — NOT YET BUILT | Import/module graph for a file or package, reusing `outline`'s (M26) per-language detection | `4orman-tools context-dependency-graph <path>` returns `{"root", "imports": [...], "importedBy": [...]}`; feeds `context-gate` so refactor-type tasks get the graph instead of just the changed file |
+| M38 — context-compressor subcommand (Module 12 evolution) — NOT YET BUILT | Summarize/truncate large files or diffs before inclusion in a manifest | `4orman-tools context-compressor <path> [--max-lines N]` returns `{"path", "originalLines", "compressedLines", "summary"}` |
+
+---
+
+## Zig Context Translator — Phase Roadmap & ROI
+
+```
+Zig Context Translator
+        │
+        ▼
+Phase 1: Context Optimization → Phase 2: Context Intelligence → Phase 3: Verified Context Learning → Phase 4: Model Profiles + Routing → Phase 5: Self-Improving Context Translator
+```
+
+**Confirmed — Phase 1 and Phase 2 are Highest ROI, build them next. Phase 3 is Highest ROI to *design* now (the safeguards below are cheap to write down and prevent rework) but stays Low ROI to *implement* until Phase 1+2 are live and producing real interaction data — the safeguards make Phase 3 safe to build, they don't remove the sequencing dependency.**
+
+### Phase 1 — Context Optimization (MVP)
+
+Goal: deliver the smallest correct context to any AI. Output: a Compact Context Manifest (JSON to stdout — same convention as every other subcommand, no filesystem writes).
+
+**Most of Phase 1 already shipped as separate subcommands** — M21 `context-scan`, M22 `context-evidence`, M23 `context-changed`, M24 `context-rank`, and M19 `secret-scan` already exist (see Milestones table above and `knowledge/decisions.md`). The remaining Phase 1 gap is the *orchestrator*, not new primitives:
+
+| Module | Maps to | ROI | Why |
+|--------|---------|-----|-----|
+| context_gate | M34 (new) | **Highest** | The only missing piece — composes 5 already-shipped subcommands into one task-aware call instead of Claude chaining them itself. Directly targets the spec.md 60–80% token-overhead metric. |
+| context_scout | M21 `context-scan` + M24 `context-rank` (done) | — | Already shipped. No new build. |
+| context_ranker | M24 `context-rank` (done) | — | Already shipped. No new build. |
+| context_manifest | M34's output shape (new) | **Highest** | Delivered as part of M34 — the JSON blob itself is the manifest. |
+| context_budget | M35 (new) | Medium | Cheap utility (bytes/4 heuristic); useful guardrail, not a primary lever on its own. |
+| token_estimator | Folded into M35 | Medium | Same reasoning as context_budget — not a separate build. |
+| context_redactor | M19 `secret-scan` (done) | — | Already shipped — wire its output into M34's `exclude.secrets` field. |
+
+Practical effect: Phase 1's real remaining cost is ~2 new subcommands (M34, M35), not 7 — the ROI here is unusually high because most of the "MVP" is reuse.
+
+### Phase 2 — Context Intelligence
+
+Goal: make the translator task-aware (a compile error and an architecture refactor need different context) instead of treating every request the same.
+
+| Module | Maps to | ROI | Why |
+|--------|---------|-----|-----|
+| context_classifier | M36 (new) | **Highest** | The mechanism that prevents over-fetching once Phase 1 ships — biggest lever after the MVP lands. |
+| context_dependency_graph | M37 (new) | **Highest** | Reused by nearly every task type (compile-error *and* refactor both need it); also unblocks deeper `symbol-find` (M6-M2) and `delta-context` (M13-M2) work already in the decision log. |
+| context_compressor | M38 (new) | **Highest** | Attacks the other half of the token equation — large diffs/files — with high-frequency benefit. |
+| context_quality_score | Not yet spec'd | Medium | Diagnostic/observability signal; doesn't reduce tokens by itself. Sequence after M36–M38. |
+| context_gap_detector | Not yet spec'd | Medium | Depends on context_classifier + context_dependency_graph existing first. |
+| context_expander | Not yet spec'd | Medium | Likely a thin wrapper over `context-evidence`/`context-rank` with broader parameters rather than a new primitive — re-evaluate scope once M36–M38 ship. |
+
+### Phase 3 — Verified Context Learning
+
+Goal: after every interaction, extract what context was actually needed vs. wasted, and store it as a reusable rule — safely.
+
+**ROI: Low right now, Highest eventually.** Nothing to learn from until Phase 1 + 2 are live in production generating real interaction data — building it early means guessing at a schema instead of deriving one from evidence (the project's own "Mathematical proof" / measure-first guardrail applies directly). Revisit once Phase 2 has shipped and accumulated sessions.
+
+**Safeguards — ranked by build priority once Phase 3 starts (not by abstract importance; everything here is required eventually, this is *sequencing*):**
+
+| Safeguard | Priority | Why this position |
+|-----------|----------|--------------------|
+| Secret redaction always first | **Highest — day 0, non-negotiable** | Must run before any storage, no exceptions. Reuses M19 `secret-scan`, already shipped. Not ROI-ranked like the others — it's a hard gate. |
+| Evidence log | **Highest** | Nothing else can be trusted without proof-linking. Directly extends the existing `ledger` subcommand (M-unnumbered, v0.57.0, `~/.foreman/ledger.json`) — reuse its storage + scoring pattern rather than building a second evidence store. |
+| Negative memory | **Highest** | Symmetric with evidence log — without storing failures the rule set overfits to survivorship bias. Build alongside evidence log, same storage. |
+| Scope control | **Highest** | Tag every rule with task_type/repo/lang/framework/version *from day one* — retrofitting scope tags onto existing rules later is expensive. Reuses M36's `context_classifier` output directly. |
+| Human approval gate | **Highest** | Blocks the promotion path before any rule reaches Trusted/Core. Cheap to enforce (a boolean gate), matches the framework's existing "ask first" guardrail pattern for consequential actions. |
+| Rollback | **Highest** | Extends the already-shipped `rollback` subcommand pattern (snapshot/list/revert) — reuse, don't rebuild. |
+| Expiry / decay | **Highest** | Direct precedent already exists: `ledger check-stale` uses 365-day staleness today. Apply the same mechanism to learned rules. |
+| Conflict resolver | Medium | Only matters once there are enough rules to conflict — depends on evidence log + negative memory existing first. |
+| A/B testing | Medium | Valuable rigor but expensive to run; can piggyback on the existing ledger "Claude vs. Zig" scoring protocol rather than building a fresh comparison harness. |
+| Drift audit | Medium | Reporting/observability (Module 26 — Telemetry, already ranked Low in Wave 4). Good hygiene, not blocking. |
+
+**Anti-drift law (governs all of Phase 3):**
+
+```
+Observe → Verify → Store → Promote slowly → Roll back fast
+```
+
+**Accepted design:** insert a **Reflection Engine** between the AI and the knowledge base rather than coupling learning logic to Claude specifically:
+
+```
+Claude/Codex → Reflection Engine → Knowledge Base
+                 ├── Extract reusable lessons
+                 ├── Compare expected vs actual context
+                 ├── Measure token efficiency
+                 ├── Update context rules
+                 └── Update model profiles
+```
+
+Why: keeps the translator model-agnostic. Lessons come from whichever model is in the seat today; tomorrow they could come from another. The Reflection Engine standardizes lessons into reusable knowledge instead of hard-coding "how Claude teaches Zig."
+
+### Phase 4 — Model Profiles + Model Routing
+
+Purpose: make the translator model-agnostic — Claude, Codex, GPT, Gemini each get the context shape they perform best with.
+
+```
+Task → Zig identifies task type → checks model profiles → chooses best model/context format
+     → sends optimized context → tracks result → updates profile only after verification
+```
+
+**ROI: Medium — upgraded from a prior "Low" assessment.** 4ORMan already has a real 2-model surface today (Claude Code `.claude/commands/` + Codex `.codex/commands/` both exist in the sibling `foreman-codex` workspace) — this isn't speculative GPT/Gemini work, routing between models actually in use has an immediate payoff. Still sequenced after Phase 1–3 because `task_type` (Phase 2) and `success_rate`/`avg_tokens` (Phase 3's evidence log) are required inputs — Phase 4 has nothing to route on until those exist.
+
+| Module | ROI within Phase 4 | Why |
+|--------|--------------------|-----|
+| model_profile.zig | **Highest** | Foundational schema/struct everything else reads and writes. |
+| profile_registry.zig | **Highest** | Index/lookup, needed immediately alongside model_profile. |
+| model_router.zig | **Highest** | The actual decision-maker — without it, profiles are inert data. |
+| success_tracker.zig | Medium | Feeds `success_rate`/`confidence` into profiles — reuse Phase 3's evidence log rather than rebuilding a second tracker. |
+| cost_tracker.zig | Medium | Per-call cost isn't trivially exposed from inside a Claude Code session — start with rough estimates. |
+| latency_tracker.zig | Medium | Same caveat as cost_tracker; moderate build cost, moderate payoff. |
+| prompt_adapter.zig | Medium | Only pays off once ≥2 models are actually routed through Zig regularly — depends on model_router. |
+| context_formatter.zig | Medium | Formats the manifest per model's `preferred_order` — depends on model_router existing first. |
+
+Profile example (illustrative shape, not yet built):
+
+```
+model = "claude_code"
+task_type = "compile_error"
+preferred_order = ["task", "error", "relevant_files", "constraints", "success_criteria"]
+max_context_tokens = 8000
+prefers_diff = true
+prefers_full_file = false
+prefers_tests = true
+success_rate = 0.94
+avg_tokens = 3200
+avg_latency = "medium"
+cost_rank = "high"
+confidence = 0.88
+```
+
+**Phase 4 rule:** do not optimize for one AI — learn which AI works best for which task, and only from measured, verified results (same "no assumptions, only measurements" rule as the rest of this codebase's Mathematical Proof guardrail).
+
+### Phase 5 — Self-Improving Context Translator
+
+**ROI: Low near-term, Highest long-term (compounding).** Depends on Phase 3's data pipeline and Phase 4's model spread to be meaningful — premature before Phase 1–2 have proven out real token savings. Tracked metrics once this phase is live: Token Efficiency, Reasoning Success Rate, Missing Context Rate, Over-Context Rate, Retry Rate, Execution Success Rate, Verification Pass Rate, Average Cost, Average Latency — feeding back into the Capability Registry (Module 2).
+
+### Final architecture (target)
+
+```
+You → Context Translator
+        ├── Context Gate
+        ├── Context Scout
+        ├── Context Optimizer
+        ├── Token Budget
+        ├── Manifest Builder
+        ├── Model Adapter
+        ├── Reflection Engine
+        ├── Learning Engine
+        ├── Rule Generator
+        └── Profile Manager
+      → Claude / Codex / GPT / Gemini
+      → Execution + Verification
+      → Knowledge Feedback → Capability Registry
+```
+
+### Build order (highest ROI first)
+
+1. M34 `context-gate` + M35 `context-budget` — the only new Phase 1 primitives; everything else in Phase 1 is already shipped (M19, M21–M24).
+2. M36 `context-classifier`, M37 `context-dependency-graph`, M38 `context-compressor` (Phase 2 Highest tier) once Phase 1 is live and measured.
+3. Phase 2 Medium tier (`context_quality_score`, `context_gap_detector`, `context_expander`) after the Phase 2 core lands and scope is re-evaluated.
+4. Phase 3 safeguards, in the priority order in the table above — secret redaction and evidence log first, conflict resolver / A/B testing / drift audit last — only after Phase 1+2 have live sessions to learn from.
+5. Phase 4 `model_profile.zig` / `profile_registry.zig` / `model_router.zig` once Phase 2 (task_type) and Phase 3 (success_rate) exist to feed them.
+6. Phase 5 — revisit trigger only, not scheduled work.
