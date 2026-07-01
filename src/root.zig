@@ -3066,6 +3066,137 @@ pub fn computeContextEvidence(gpa: std.mem.Allocator, io: std.Io, file_path: []c
     };
 }
 
+// --- context-budget subcommand (M35) ---
+
+pub const BudgetEntry = struct {
+    path: []u8, // owned
+    bytes: u64,
+    tokens: u64,
+};
+
+pub const ContextBudgetResult = struct {
+    tokenEstimate: u64,
+    risk: []const u8, // static: "low"|"medium"|"high"
+    breakdown: []BudgetEntry, // owned; each .path is owned
+};
+
+const BUDGET_RISK_LOW_MAX: u64 = 2000;
+const BUDGET_RISK_MEDIUM_MAX: u64 = 8000;
+
+fn classifyBudgetRisk(token_estimate: u64) []const u8 {
+    if (token_estimate < BUDGET_RISK_LOW_MAX) return "low";
+    if (token_estimate < BUDGET_RISK_MEDIUM_MAX) return "medium";
+    return "high";
+}
+
+pub fn computeContextBudget(gpa: std.mem.Allocator, io: std.Io, paths: []const []const u8) !ContextBudgetResult {
+    const entries = try gpa.alloc(BudgetEntry, paths.len);
+    errdefer {
+        for (entries) |e| gpa.free(e.path);
+        gpa.free(entries);
+    }
+
+    var total_bytes: u64 = 0;
+    for (paths, 0..) |p, i| {
+        const stats = computeFileStats(gpa, io, p) catch FileStatsResult{ .path = p, .lines = 0, .bytes = 0 };
+        const tokens = stats.bytes / 4;
+        entries[i] = .{ .path = try gpa.dupe(u8, p), .bytes = stats.bytes, .tokens = tokens };
+        total_bytes += stats.bytes;
+    }
+
+    const token_estimate = total_bytes / 4;
+    return .{
+        .tokenEstimate = token_estimate,
+        .risk = classifyBudgetRisk(token_estimate),
+        .breakdown = entries,
+    };
+}
+
+// --- context-gate subcommand (M34) ---
+// Composes context-rank (relevant files), context-changed (working-tree diff),
+// and secret-scan (redaction gate) into one Compact Context Manifest instead of
+// Claude chaining the three calls itself.
+
+pub const ContextGateResult = struct {
+    task: []u8, // owned
+    tokenEstimate: u64,
+    risk: []const u8, // static: "low"|"medium"|"high"
+    includeFiles: [][]u8, // owned; each entry owned
+    includeDiff: bool,
+    excludeSecrets: bool, // true = potential secrets found, caller must redact before sending
+    sendToAi: bool,
+    reason: []u8, // owned
+};
+
+const CONTEXT_GATE_MAX_FILES: usize = 8;
+
+pub fn computeContextGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8, task: []const u8) !ContextGateResult {
+    const rank = try computeContextRank(gpa, io, path, task);
+    defer {
+        gpa.free(rank.root);
+        gpa.free(rank.query);
+        for (rank.ranked) |f| gpa.free(f.path);
+        gpa.free(rank.ranked);
+    }
+
+    const changed: ?ContextChangedResult = computeContextChanged(gpa, io, path, "") catch null;
+    defer if (changed) |c| {
+        for (c.files) |f| {
+            gpa.free(f.path);
+            gpa.free(f.diff);
+        }
+        gpa.free(c.files);
+    };
+
+    const secrets = computeSecretScan(gpa, io, path) catch SecretScanResult{ .findings = &.{}, .truncated = false };
+    defer {
+        for (secrets.findings) |f| gpa.free(f.file);
+        gpa.free(secrets.findings);
+    }
+
+    const file_count = @min(CONTEXT_GATE_MAX_FILES, rank.ranked.len);
+    const include_files = try gpa.alloc([]u8, file_count);
+    errdefer {
+        for (include_files) |f| gpa.free(f);
+        gpa.free(include_files);
+    }
+    var total_bytes: u64 = 0;
+    for (0..file_count) |i| {
+        include_files[i] = try gpa.dupe(u8, rank.ranked[i].path);
+        total_bytes += rank.ranked[i].bytes;
+    }
+
+    var diff_bytes: u64 = 0;
+    var has_diff = false;
+    if (changed) |c| {
+        has_diff = c.files.len > 0;
+        for (c.files) |f| diff_bytes += f.diff.len;
+    }
+
+    const token_estimate = (total_bytes + diff_bytes) / 4;
+    const risk = classifyBudgetRisk(token_estimate);
+    const has_secrets = secrets.findings.len > 0;
+    const send_to_ai = !has_secrets and !std.mem.eql(u8, risk, "high");
+
+    const reason = if (has_secrets)
+        try std.fmt.allocPrint(gpa, "{d} potential secret(s) found in {s} — redact before sending", .{ secrets.findings.len, path })
+    else if (std.mem.eql(u8, risk, "high"))
+        try std.fmt.allocPrint(gpa, "Estimated {d} tokens — narrow the task or split into smaller requests", .{token_estimate})
+    else
+        try gpa.dupe(u8, "Context is small, relevant, and safe.");
+
+    return .{
+        .task = try gpa.dupe(u8, task),
+        .tokenEstimate = token_estimate,
+        .risk = risk,
+        .includeFiles = include_files,
+        .includeDiff = has_diff,
+        .excludeSecrets = has_secrets,
+        .sendToAi = send_to_ai,
+        .reason = reason,
+    };
+}
+
 // --- outline subcommand ---
 
 pub const Symbol = struct {
