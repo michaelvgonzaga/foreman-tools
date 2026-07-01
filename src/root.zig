@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const VERSION = "0.57.0";
+pub const VERSION = "0.58.0";
 
 pub const StatusResult = struct {
     upToDate: bool,
@@ -7017,6 +7017,7 @@ pub fn computeRegistry() RegistryResult {
         .{ .name = "plugin-list", .description = "list all installed plugins with name, lang, description, args, and entry point", .args = "" },
         .{ .name = "context-slice", .description = "focused project slice — top 8 files by relevance + excerpts; use before handing context to a subagent", .args = "<abs-path> <focus-query>" },
         .{ .name = "state-merge", .description = "merge two JSON objects — array fields concatenated, non-array fields v2 wins; use to combine multi-agent partial results", .args = "<file1> <file2>" },
+        .{ .name = "tui", .description = "interactive project dashboard — j/k navigate, q quit, r reload", .args = "[<foreman-root>]" },
     };
     return .{ .version = VERSION, .subcommands = cmds };
 }
@@ -8918,6 +8919,254 @@ pub fn computeLedgerScore(gpa: std.mem.Allocator, io: std.Io, question: []const 
         .winner = winner, .void_round = false, .reason = reason,
         .zig_entry_found = zig_entry_found, .zig_entry_stale = zig_entry_stale,
     };
+}
+
+// --- tui subcommand ---
+
+const TUI_SCRIPT = @embedFile("tui.py");
+
+pub fn computeTui(gpa: std.mem.Allocator, io: std.Io, foreman_root: []const u8) !void {
+    // ── 1. Get GitHub username ──────────────────────────────────────────────
+    const user: []const u8 = blk: {
+        const r = std.process.run(gpa, io, .{
+            .argv = &.{ "gh", "api", "user", "--jq", ".login" },
+        }) catch break :blk try gpa.dupe(u8, "unknown");
+        defer gpa.free(r.stderr);
+        switch (r.term) {
+            .exited => |c| if (c != 0) {
+                gpa.free(r.stdout);
+                break :blk try gpa.dupe(u8, "unknown");
+            },
+            else => {
+                gpa.free(r.stdout);
+                break :blk try gpa.dupe(u8, "unknown");
+            },
+        }
+        const trimmed = std.mem.trim(u8, r.stdout, " \n\r\t");
+        const dup = try gpa.dupe(u8, trimmed);
+        gpa.free(r.stdout);
+        break :blk dup;
+    };
+    defer gpa.free(user);
+
+    // ── 2. List GitHub repos (name, url, isPrivate, description) ───────────
+    const gh_repos_raw: []u8 = blk: {
+        const r = std.process.run(gpa, io, .{
+            .argv = &.{
+                "gh", "repo", "list",
+                "--json", "name,url,isPrivate,description",
+                "--limit", "100",
+            },
+        }) catch break :blk try gpa.dupe(u8, "[]");
+        defer gpa.free(r.stderr);
+        switch (r.term) {
+            .exited => |c| if (c != 0) {
+                gpa.free(r.stdout);
+                break :blk try gpa.dupe(u8, "[]");
+            },
+            else => {
+                gpa.free(r.stdout);
+                break :blk try gpa.dupe(u8, "[]");
+            },
+        }
+        break :blk r.stdout;
+    };
+    defer gpa.free(gh_repos_raw);
+
+    // ── 3. Build project list JSON ─────────────────────────────────────────
+    var projects_json: std.ArrayList(u8) = .empty;
+    defer projects_json.deinit(gpa);
+
+    try projects_json.appendSlice(gpa, "[\n");
+
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, gh_repos_raw, .{}) catch null;
+    defer if (parsed) |p| p.deinit();
+
+    var first_entry = true;
+
+    if (parsed) |p| {
+        if (p.value == .array) {
+            for (p.value.array.items) |repo| {
+                if (repo != .object) continue;
+                const name_val = repo.object.get("name") orelse continue;
+                if (name_val != .string) continue;
+                const name = name_val.string;
+
+                // skip framework repos
+                if (isFrameworkRepo(name)) continue;
+
+                const url_val = repo.object.get("url") orelse continue;
+                const url = if (url_val == .string) url_val.string else "";
+                const is_priv = if (repo.object.get("isPrivate")) |v| v == .bool and v.bool else false;
+                const desc = if (repo.object.get("description")) |v| if (v == .string) v.string else "" else "";
+
+                // local path
+                const local_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ foreman_root, name });
+                defer gpa.free(local_path);
+                const is_local = fileExists(io, local_path);
+
+                // git metadata (only if local)
+                var latest_tag: ?[]u8 = null;
+                var commits_since: u32 = 0;
+                var is_dirty = false;
+                var has_spec = false;
+                var has_claude_md = false;
+
+                if (is_local) {
+                    const spec_path = try std.fmt.allocPrint(gpa, "{s}/spec.md", .{local_path});
+                    defer gpa.free(spec_path);
+                    has_spec = fileExists(io, spec_path);
+
+                    const claude_path = try std.fmt.allocPrint(gpa, "{s}/CLAUDE.md", .{local_path});
+                    defer gpa.free(claude_path);
+                    has_claude_md = fileExists(io, claude_path);
+
+                    // latest tag
+                    if (runGit(gpa, io, local_path, &.{ "describe", "--tags", "--abbrev=0" })) |tag_raw| {
+                        defer gpa.free(tag_raw);
+                        const tag = std.mem.trim(u8, tag_raw, " \n\r\t");
+                        if (tag.len > 0) {
+                            latest_tag = try gpa.dupe(u8, tag);
+                        }
+                    } else |_| {}
+
+                    // commits since tag
+                    if (latest_tag) |lt| {
+                        const range = try std.fmt.allocPrint(gpa, "{s}..HEAD", .{lt});
+                        defer gpa.free(range);
+                        if (runGit(gpa, io, local_path, &.{ "log", range, "--oneline" })) |log_raw| {
+                            defer gpa.free(log_raw);
+                            var line_count: u32 = 0;
+                            var it = std.mem.splitScalar(u8, log_raw, '\n');
+                            while (it.next()) |line| {
+                                if (line.len > 0) line_count += 1;
+                            }
+                            commits_since = line_count;
+                        } else |_| {}
+                    }
+
+                    // dirty state
+                    if (runGit(gpa, io, local_path, &.{ "status", "--porcelain" })) |st_raw| {
+                        defer gpa.free(st_raw);
+                        is_dirty = std.mem.trim(u8, st_raw, " \n\r\t").len > 0;
+                    } else |_| {}
+                }
+                defer if (latest_tag) |lt| gpa.free(lt);
+
+                const tag_str: []const u8 = if (latest_tag) |lt| lt else "";
+                const name_esc = try allocJsonEscape(gpa, name);
+                defer gpa.free(name_esc);
+                const url_esc = try allocJsonEscape(gpa, url);
+                defer gpa.free(url_esc);
+                const path_esc = try allocJsonEscape(gpa, local_path);
+                defer gpa.free(path_esc);
+                const desc_esc = try allocJsonEscape(gpa, desc);
+                defer gpa.free(desc_esc);
+                const tag_esc = try allocJsonEscape(gpa, tag_str);
+                defer gpa.free(tag_esc);
+
+                if (!first_entry) try projects_json.appendSlice(gpa, ",\n");
+                first_entry = false;
+
+                const entry = try std.fmt.allocPrint(gpa,
+                    \\  {{
+                    \\    "name": "{s}",
+                    \\    "url": "{s}",
+                    \\    "path": "{s}",
+                    \\    "description": "{s}",
+                    \\    "is_local": {s},
+                    \\    "is_private": {s},
+                    \\    "latest_tag": "{s}",
+                    \\    "commits_since": {d},
+                    \\    "is_dirty": {s},
+                    \\    "has_spec": {s},
+                    \\    "has_claude_md": {s}
+                    \\  }}
+                , .{
+                    name_esc,
+                    url_esc,
+                    path_esc,
+                    desc_esc,
+                    if (is_local) "true" else "false",
+                    if (is_priv) "true" else "false",
+                    tag_esc,
+                    commits_since,
+                    if (is_dirty) "true" else "false",
+                    if (has_spec) "true" else "false",
+                    if (has_claude_md) "true" else "false",
+                });
+                defer gpa.free(entry);
+                try projects_json.appendSlice(gpa, entry);
+            }
+        }
+    }
+
+    try projects_json.appendSlice(gpa, "\n]");
+
+    // ── 4. Build full data JSON ────────────────────────────────────────────
+    const user_esc = try allocJsonEscape(gpa, user);
+    defer gpa.free(user_esc);
+
+    const data_json = try std.fmt.allocPrint(gpa,
+        \\{{
+        \\  "user": "{s}",
+        \\  "projects": {s}
+        \\}}
+    , .{ user_esc, projects_json.items });
+    defer gpa.free(data_json);
+
+    // ── 5. Write data + script to temp files ──────────────────────────────
+    const pid = std.c.getpid();
+    const data_path = try std.fmt.allocPrint(gpa, "/tmp/foreman-tui-{d}.json", .{pid});
+    defer gpa.free(data_path);
+    const script_path = try std.fmt.allocPrint(gpa, "/tmp/foreman-tui-{d}.py", .{pid});
+    defer gpa.free(script_path);
+
+    {
+        const df = try std.Io.Dir.createFileAbsolute(io, data_path, .{});
+        var dbuf: [4096]u8 = undefined;
+        var dw = df.writerStreaming(io, &dbuf);
+        try dw.interface.writeAll(data_json);
+        try dw.interface.flush();
+        df.close(io);
+    }
+
+    {
+        const sf = try std.Io.Dir.createFileAbsolute(io, script_path, .{});
+        var sbuf: [4096]u8 = undefined;
+        var sw = sf.writerStreaming(io, &sbuf);
+        try sw.interface.writeAll(TUI_SCRIPT);
+        try sw.interface.flush();
+        sf.close(io);
+    }
+
+    // ── 6. Spawn python3 with inherited stdio (interactive TUI) ───────────
+    const python_candidates = [_][]const u8{ "/usr/bin/python3", "python3", "python" };
+    for (python_candidates) |python| {
+        var child = std.process.spawn(io, .{
+            .argv = &.{ python, script_path, data_path },
+            .stdin  = .inherit,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        }) catch |e| switch (e) {
+            error.FileNotFound, error.AccessDenied, error.InvalidExe => continue,
+            else => return e,
+        };
+        const term = try child.wait(io);
+        const exit_code: u8 = switch (term) {
+            .exited => |c| @truncate(c),
+            else => 1,
+        };
+        std.process.exit(exit_code);
+    }
+
+    // If we reach here, no python was found
+    const err_io = std.Io.File.stderr();
+    var errbuf: [256]u8 = undefined;
+    var errw = err_io.writerStreaming(io, &errbuf);
+    try errw.interface.writeAll("error: python3 not found — install Python 3 to use `tui`\n");
+    try errw.interface.flush();
+    std.process.exit(1);
 }
 
 // --- Tests ---

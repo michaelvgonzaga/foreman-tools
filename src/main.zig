@@ -84,6 +84,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  plugin-list\n", .{});
         try err.print("  context-slice <abs-path> <focus-query>\n", .{});
         try err.print("  state-merge <file1> <file2>\n", .{});
+        try err.print("  tui [<foreman-root>]\n", .{});
         try err.flush();
         std.process.exit(1);
     }
@@ -2349,6 +2350,17 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(json);
         try out.print("{s}\n", .{json});
         try out.flush();
+    } else if (std.mem.eql(u8, args[1], "tui")) {
+        const foreman_root = if (args.len >= 3) args[2] else blk: {
+            const home_ptr = std.c.getenv("HOME") orelse {
+                try err.print("error: HOME not set\n", .{});
+                try err.flush();
+                std.process.exit(1);
+            };
+            const home = std.mem.sliceTo(home_ptr, 0);
+            break :blk try std.fmt.allocPrint(gpa, "{s}/foreman", .{home});
+        };
+        try root.computeTui(gpa, io, foreman_root);
     } else if (std.mem.eql(u8, args[1], "registry")) {
         const result = root.computeRegistry();
         try out.print("{{\n  \"version\": \"{s}\",\n  \"subcommands\": [\n", .{result.version});
