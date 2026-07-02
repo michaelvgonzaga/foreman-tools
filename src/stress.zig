@@ -564,6 +564,18 @@ pub fn main(init: std.process.Init) !void {
     ctx.smokeIn("report . (relative)", repo, &.{ "report", "." });
     ctx.badIn("deps . (relative, no manifest) → exit 1, not a crash", repo, &.{ "deps", "." }, 1);
 
+    // ----------------------------------------------------------------
+    // Tier 5: update / field-reports (M39, Field Reports #1-3)
+    // ----------------------------------------------------------------
+    ctx.header("Tier 5: update / field-reports (M39)");
+    ctx.smoke("update repo (absolute)", &.{ "update", repo });
+    ctx.smokeIn("update . (relative)", repo, &.{ "update", "." });
+    ctx.checkBool("update: verifyPassed present", &.{ "update", repo }, "verifyPassed", true);
+    ctx.checkStr("update: status=idle on passing quality-gate", &.{ "update", repo }, "status", "idle");
+    ctx.checkStrContains("update: fieldReportPath under ~/.4orman/field-reports", &.{ "update", repo }, "fieldReportPath", ".4orman/field-reports");
+    ctx.bad("update nonexistent path → exit 1, not a crash", &.{ "update", "/nonexistent/stress-update-xyz" }, 1);
+    ctx.bad("update no args → exit 1", &.{"update"}, 1);
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }
