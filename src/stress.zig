@@ -613,6 +613,33 @@ pub fn main(init: std.process.Init) !void {
     ctx.checkArrayLen("solutions-list: solutions array present", &.{"solutions-list"}, "solutions", 0);
     ctx.checkArrayLen("ledger show: entries untouched by solutions writes", &.{ "ledger", "show" }, "entries", 0);
 
+    // ----------------------------------------------------------------
+    // Tier 9: full context-gate family, relative-path regression
+    // (2026-07-02) — context-rank, context-evidence, context-budget,
+    // context-gate, context-dependency-graph, context-compressor, and
+    // context-slice were never covered by the original Tier 4 fix (they
+    // didn't exist yet, or were added after M34) and all shared the exact
+    // same *Absolute-vs-relative-path bug rediscovered while wiring Phase 2
+    // into context-gate. context-changed is deliberately not tested here —
+    // it shells out to `git -C`, never calls a *Absolute API directly, and
+    // was confirmed unaffected.
+    // ----------------------------------------------------------------
+    ctx.header("Tier 9: context-gate family, relative paths (Phase 2 wiring)");
+    ctx.smokeIn("context-rank . zig (relative)", repo, &.{ "context-rank", ".", "zig" });
+    ctx.smokeIn("context-evidence src/root.zig (relative)", repo, &.{ "context-evidence", "src/root.zig", "computeContextGate" });
+    ctx.smokeIn("context-budget src/root.zig (relative)", repo, &.{ "context-budget", "src/root.zig" });
+    ctx.smokeIn("context-gate . --task compile error (relative)", repo, &.{ "context-gate", ".", "--task", "fix compile error" });
+    ctx.smokeIn("context-gate . --task refactor (relative)", repo, &.{ "context-gate", ".", "--task", "refactor and decouple this module" });
+    ctx.smokeIn("context-dependency-graph . src/root.zig (relative)", repo, &.{ "context-dependency-graph", ".", "src/root.zig" });
+    ctx.smokeIn("context-compressor src/root.zig (relative)", repo, &.{ "context-compressor", "src/root.zig" });
+    ctx.smokeIn("context-slice . focus (relative)", repo, &.{ "context-slice", ".", "context-gate" });
+
+    // Phase 2 field-level assertions: architecture_refactor must classify
+    // correctly, compile_error must classify correctly — confirms the
+    // task-aware wiring, not just "didn't crash".
+    ctx.checkStr("context-gate: architecture_refactor classified", &.{ "context-gate", repo, "--task", "refactor and decouple this module" }, "taskType", "architecture_refactor");
+    ctx.checkStr("context-gate: compile_error classified", &.{ "context-gate", repo, "--task", "fix compile error in parser" }, "taskType", "compile_error");
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }

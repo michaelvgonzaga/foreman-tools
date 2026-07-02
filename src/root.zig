@@ -3134,25 +3134,38 @@ pub fn computeContextBudget(gpa: std.mem.Allocator, io: std.Io, paths: []const [
     };
 }
 
-// --- context-gate subcommand (M34) ---
+// --- context-gate subcommand (M34, Phase 2 wired 2026-07-02) ---
 // Composes context-rank (relevant files), context-changed (working-tree diff),
-// and secret-scan (redaction gate) into one Compact Context Manifest instead of
-// Claude chaining the three calls itself.
+// secret-scan (redaction gate), context-classifier (task type), and — for
+// architecture_refactor tasks only — context-dependency-graph (blast radius),
+// plus context-compressor for any oversized included file, into one Compact
+// Context Manifest instead of Claude chaining five calls itself. This closes
+// Wave 5 Phase 2 (task-aware context): a compile-error task and an
+// architecture-refactor task now genuinely pull different context, not just
+// the same rank+diff every time.
 
 pub const ContextGateResult = struct {
     task: []u8, // owned
+    taskType: []const u8, // static — from context-classifier
+    classifierConfidence: f64,
     tokenEstimate: u64,
     risk: []const u8, // static: "low"|"medium"|"high"
     includeFiles: [][]u8, // owned; each entry owned
     includeDiff: bool,
+    compressedFiles: u32, // count of included files that were over the compression threshold
     excludeSecrets: bool, // true = potential secrets found, caller must redact before sending
     sendToAi: bool,
     reason: []u8, // owned
 };
 
 const CONTEXT_GATE_MAX_FILES: usize = 8;
+const CONTEXT_GATE_MAX_DEP_FILES: usize = 4; // extra importedBy files added for architecture_refactor tasks
+const CONTEXT_GATE_COMPRESS_THRESHOLD: u64 = 8 * 1024; // bytes — matches context-rank's own per-file read cap
 
 pub fn computeContextGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8, task: []const u8) !ContextGateResult {
+    const classification = try computeContextClassifier(gpa, task);
+    defer gpa.free(classification.signals);
+
     const rank = try computeContextRank(gpa, io, path, task);
     defer {
         gpa.free(rank.root);
@@ -3177,15 +3190,75 @@ pub fn computeContextGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8, 
     }
 
     const file_count = @min(CONTEXT_GATE_MAX_FILES, rank.ranked.len);
-    const include_files = try gpa.alloc([]u8, file_count);
+    var include_files: std.ArrayList([]u8) = .empty;
     errdefer {
-        for (include_files) |f| gpa.free(f);
-        gpa.free(include_files);
+        for (include_files.items) |f| gpa.free(f);
+        include_files.deinit(gpa);
     }
     var total_bytes: u64 = 0;
+    var compressed_count: u32 = 0;
+
+    // compile_error tasks need the top-ranked (most relevant) file at full
+    // fidelity — compressing it away is exactly wrong for a task that needs
+    // exact line content. Every other file, and every other task type, is
+    // fair game for compression when oversized.
+    const is_compile_error = std.mem.eql(u8, classification.taskType, "compile_error");
+
     for (0..file_count) |i| {
-        include_files[i] = try gpa.dupe(u8, rank.ranked[i].path);
-        total_bytes += rank.ranked[i].bytes;
+        const rel_path = rank.ranked[i].path;
+        var bytes = rank.ranked[i].bytes;
+        const skip_compression = is_compile_error and i == 0;
+        if (!skip_compression and bytes > CONTEXT_GATE_COMPRESS_THRESHOLD) {
+            const abs_file = try std.fs.path.join(gpa, &.{ path, rel_path });
+            defer gpa.free(abs_file);
+            if (computeContextCompressor(gpa, io, abs_file, 200)) |comp| {
+                defer {
+                    gpa.free(comp.path);
+                    gpa.free(comp.summary);
+                }
+                bytes = comp.summary.len;
+                compressed_count += 1;
+            } else |_| {}
+        }
+        try include_files.append(gpa, try gpa.dupe(u8, rel_path));
+        total_bytes += bytes;
+    }
+
+    // architecture_refactor: pull in files that import the top-ranked file
+    // (the blast radius) — the exact context that task type needs and the
+    // other types don't. Not applied to compile_error/bug_fix/feature: their
+    // relevant context is what changed (context-changed) and what's
+    // ranked, not who else depends on it.
+    if (rank.ranked.len > 0 and std.mem.eql(u8, classification.taskType, "architecture_refactor")) {
+        const dep = computeContextDependencyGraph(gpa, io, path, rank.ranked[0].path) catch null;
+        if (dep) |d| {
+            defer {
+                gpa.free(d.root);
+                for (d.imports) |imp| gpa.free(imp);
+                gpa.free(d.imports);
+                for (d.importedBy) |ib| gpa.free(ib);
+                gpa.free(d.importedBy);
+            }
+            var added: usize = 0;
+            for (d.importedBy) |ib| {
+                if (added >= CONTEXT_GATE_MAX_DEP_FILES) break;
+                var already_included = false;
+                for (include_files.items) |existing| {
+                    if (std.mem.eql(u8, existing, ib)) {
+                        already_included = true;
+                        break;
+                    }
+                }
+                if (already_included) continue;
+                try include_files.append(gpa, try gpa.dupe(u8, ib));
+                added += 1;
+                // Byte size unknown without a stat call here; the token
+                // estimate below stays a slight underestimate for these
+                // extra dependency-graph files — acceptable, risk
+                // classification already errs toward "high" on ambiguity
+                // via context-rank's own file set.
+            }
+        }
     }
 
     var diff_bytes: u64 = 0;
@@ -3209,10 +3282,13 @@ pub fn computeContextGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8, 
 
     return .{
         .task = try gpa.dupe(u8, task),
+        .taskType = classification.taskType,
+        .classifierConfidence = classification.confidence,
         .tokenEstimate = token_estimate,
         .risk = risk,
-        .includeFiles = include_files,
+        .includeFiles = try include_files.toOwnedSlice(gpa),
         .includeDiff = has_diff,
+        .compressedFiles = compressed_count,
         .excludeSecrets = has_secrets,
         .sendToAi = send_to_ai,
         .reason = reason,
