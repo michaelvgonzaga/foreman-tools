@@ -316,7 +316,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeScan(gpa, io, args[2]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeScan(gpa, io, abs_path) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -971,7 +978,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeContextScan(gpa, io, args[2]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeContextScan(gpa, io, abs_path) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1451,7 +1465,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeOutline(gpa, io, args[2]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeOutline(gpa, io, abs_path) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1485,7 +1506,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeDeps(gpa, io, args[2]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeDeps(gpa, io, abs_path) catch |e| {
             switch (e) {
                 error.NoManifestFound => try err.print("error: no supported manifest found in: {s}\n", .{args[2]}),
                 error.InvalidJson => try err.print("error: invalid JSON in package.json: {s}\n", .{args[2]}),
@@ -1613,7 +1641,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeRunTests(gpa, io, args[2]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeRunTests(gpa, io, abs_path) catch |e| {
             switch (e) {
                 error.NoTestFramework => try err.print("error: no supported test framework found in: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1708,7 +1743,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeEnvInspect(gpa, io, args[2]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeEnvInspect(gpa, io, abs_path) catch |e| {
             try err.print("error: {}\n", .{e});
             try err.flush();
             std.process.exit(1);
@@ -1769,7 +1811,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeBuild(gpa, io, args[2]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeBuild(gpa, io, abs_path) catch |e| {
             switch (e) {
                 error.NoBuildSystem => try err.print("error: no supported build system found in: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1839,7 +1888,14 @@ pub fn main(init: std.process.Init) !void {
             try err.flush();
             std.process.exit(1);
         }
-        const result = root.computeSecretScan(gpa, io, args[2]) catch |e| switch (e) {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeSecretScan(gpa, io, abs_path) catch |e| switch (e) {
             error.RootNotFound => {
                 try err.print("error: path not found: {s}\n", .{args[2]});
                 try err.flush();
@@ -1938,7 +1994,14 @@ pub fn main(init: std.process.Init) !void {
             try err.flush();
             std.process.exit(1);
         }
-        const result = try root.computeProdReady(gpa, io, args[2]);
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = try root.computeProdReady(gpa, io, abs_path);
         try out.print("{{\n  \"ready\": {s},\n  \"blockers\": [", .{if (result.ready) "true" else "false"});
         for (result.blockers, 0..) |b, i| {
             if (i > 0) try out.print(",", .{});
@@ -2012,7 +2075,14 @@ pub fn main(init: std.process.Init) !void {
             try err.flush();
             std.process.exit(1);
         }
-        const result = try root.computeQualityGate(gpa, io, args[2]);
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = try root.computeQualityGate(gpa, io, abs_path);
         // Helper to print a findings array
         try out.print("{{\n  \"verdict\": \"{s}\",\n", .{result.verdict});
         const levels = [_]struct { name: []const u8, items: []const root.QualityFinding }{
@@ -2322,7 +2392,14 @@ pub fn main(init: std.process.Init) !void {
             try err.flush();
             std.process.exit(1);
         }
-        const result = try root.computeReport(gpa, io, args[2]);
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = try root.computeReport(gpa, io, abs_path);
         const path_esc = try root.allocJsonEscape(gpa, result.path);
         defer gpa.free(path_esc);
         const branch_esc = try root.allocJsonEscape(gpa, result.git_branch);

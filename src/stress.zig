@@ -35,6 +35,66 @@ const Ctx = struct {
         };
     }
 
+    // Same as run, but executes with the given cwd — needed to exercise
+    // relative-path args ("." etc.) the way a real user actually invokes
+    // this tool. `run` above always passes absolute paths, which is exactly
+    // why the 2026-07-02 *Absolute-API-vs-relative-path bug shipped
+    // undetected — no test ever ran a subcommand from inside a project dir.
+    fn runIn(ctx: *Ctx, cwd: []const u8, argv: []const []const u8) !RunResult {
+        var full: std.ArrayList([]const u8) = .empty;
+        defer full.deinit(ctx.gpa);
+        try full.append(ctx.gpa, ctx.binary);
+        for (argv) |a| try full.append(ctx.gpa, a);
+        const r = try std.process.run(ctx.gpa, ctx.io, .{ .argv = full.items, .cwd = .{ .path = cwd } });
+        return .{
+            .stdout = r.stdout,
+            .stderr = r.stderr,
+            .exit = switch (r.term) {
+                .exited => |c| c,
+                else => -1,
+            },
+        };
+    }
+
+    // Tier 4: relative-path regression — expect exit 0 + valid JSON, same as smoke
+    fn smokeIn(ctx: *Ctx, label: []const u8, cwd: []const u8, argv: []const []const u8) void {
+        const r = ctx.runIn(cwd, argv) catch |e| {
+            std.debug.print("[FAIL] {s}: spawn error {s}\n", .{ label, @errorName(e) });
+            ctx.fail += 1;
+            return;
+        };
+        defer ctx.gpa.free(r.stderr);
+        defer ctx.gpa.free(r.stdout);
+        if (r.exit != 0) {
+            std.debug.print("[FAIL] {s}: exit {d} (expected 0) stderr={s}\n", .{ label, r.exit, r.stderr });
+            ctx.fail += 1;
+            return;
+        }
+        const parsed = ctx.parseJson(label, r.stdout) orelse return;
+        parsed.deinit();
+        std.debug.print("[PASS] {s}\n", .{label});
+        ctx.pass += 1;
+    }
+
+    // Tier 4: relative-path regression — expect a clean exit code, not a crash
+    // (crash = process killed by signal, term != .exited, caught by `else => -1`)
+    fn badIn(ctx: *Ctx, label: []const u8, cwd: []const u8, argv: []const []const u8, want_exit: i32) void {
+        const r = ctx.runIn(cwd, argv) catch |e| {
+            std.debug.print("[FAIL] {s}: spawn error {s}\n", .{ label, @errorName(e) });
+            ctx.fail += 1;
+            return;
+        };
+        defer ctx.gpa.free(r.stdout);
+        defer ctx.gpa.free(r.stderr);
+        if (r.exit != want_exit) {
+            std.debug.print("[FAIL] {s}: exit {d} (expected {d})\n", .{ label, r.exit, want_exit });
+            ctx.fail += 1;
+            return;
+        }
+        std.debug.print("[PASS] {s}\n", .{label});
+        ctx.pass += 1;
+    }
+
     fn parseJson(ctx: *Ctx, label: []const u8, stdout: []const u8) ?std.json.Parsed(std.json.Value) {
         const trimmed = std.mem.trim(u8, stdout, " \t\n\r");
         return std.json.parseFromSlice(std.json.Value, ctx.gpa, trimmed, .{}) catch {
@@ -481,6 +541,28 @@ pub fn main(init: std.process.Init) !void {
     ctx.bad("state-merge no args → exit 1", &.{"state-merge"}, 1);
     ctx.bad("state-merge nonexistent file → exit 1", &.{ "state-merge", "/nonexistent/a.json", sm_file2 }, 1);
     ctx.bad("state-merge bad JSON → exit 1", &.{ "state-merge", sh_script, sm_file2 }, 1);
+
+    // ----------------------------------------------------------------
+    // Tier 4: Relative-path regression (2026-07-02)
+    // Every *Absolute std.Io.Dir API is UB on a relative path — confirmed
+    // as allocator corruption (panic: reached unreachable code), not a
+    // clean error, on `4orman-tools build .` and 10 other subcommands.
+    // Fixed via root.resolveAbsolutePath wired into main.zig before each
+    // compute* call. This tier exercises "." the way a real invocation
+    // from inside a project directory actually looks.
+    // ----------------------------------------------------------------
+    ctx.header("Tier 4: Relative-path regression (path args as \".\")");
+    ctx.smokeIn("scan . (relative)", repo, &.{ "scan", "." });
+    ctx.smokeIn("context-scan . (relative)", repo, &.{ "context-scan", "." });
+    ctx.smokeIn("outline src/root.zig (relative file)", repo, &.{ "outline", "src/root.zig" });
+    ctx.smokeIn("env-inspect . (relative)", repo, &.{ "env-inspect", "." });
+    ctx.smokeIn("secret-scan . (relative)", repo, &.{ "secret-scan", "." });
+    ctx.smokeIn("build . (relative)", repo, &.{ "build", "." });
+    ctx.smokeIn("run-tests . (relative)", repo, &.{ "run-tests", "." });
+    ctx.smokeIn("quality-gate . (relative)", repo, &.{ "quality-gate", "." });
+    ctx.smokeIn("prod-ready . (relative)", repo, &.{ "prod-ready", "." });
+    ctx.smokeIn("report . (relative)", repo, &.{ "report", "." });
+    ctx.badIn("deps . (relative, no manifest) → exit 1, not a crash", repo, &.{ "deps", "." }, 1);
 
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
