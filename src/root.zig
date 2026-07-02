@@ -4055,6 +4055,204 @@ pub fn computeReviewFieldReports(gpa: std.mem.Allocator, io: std.Io) !ReviewFiel
     return .{ .blockers = items, .projectsScanned = scanned };
 }
 
+// --- shared solutions ledger (Field Reports #7) ---
+// Stored at ~/.4orman/solutions.json — same ~/.4orman/ root and JSON-lines
+// append-only convention as attempts.log/verification.log, and reuses
+// ledgerWordOverlapScore (the exact matching function `ledger`'s own
+// findLedgerPrecedent uses) for dedup rather than a new scorer. Deliberately
+// NOT merged into ledger.json's `entries` array: that schema and its five
+// existing construction/parse/write call sites back the framework's
+// Claude-vs-Zig scoring protocol (CLAUDE.md's guardrails depend on it) —
+// widening LedgerEntry with solution-specific fields risked that working
+// system for a Medium-priority feature. A sibling file in the same
+// directory, reusing the same matching algorithm, is the lower-risk
+// interpretation of "extend, don't duplicate" here.
+
+pub const SolutionEntry = struct {
+    id: []u8, // owned
+    date: []u8, // owned
+    recordedTs: i64,
+    problemPattern: []u8, // owned — also the dedup/reuse-trigger match key
+    rootCause: []u8, // owned
+    fix: []u8, // owned
+    verification: []u8, // owned
+    applicableProjectTypes: []u8, // owned — comma-separated, not a nested array (avoids a second parse path for one field)
+    confidence: f64,
+    sourceProject: []u8, // owned
+};
+
+pub fn freeSolutionEntry(gpa: std.mem.Allocator, s: SolutionEntry) void {
+    gpa.free(s.id);
+    gpa.free(s.date);
+    gpa.free(s.problemPattern);
+    gpa.free(s.rootCause);
+    gpa.free(s.fix);
+    gpa.free(s.verification);
+    gpa.free(s.applicableProjectTypes);
+    gpa.free(s.sourceProject);
+}
+
+fn allocSolutionsPath(gpa: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "{s}/.4orman/solutions.json", .{home});
+}
+
+fn parseSolutionsFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, entries: *std.ArrayList(SolutionEntry)) void {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(4 * 1024 * 1024)) catch return;
+    defer gpa.free(content);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, trimmed, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const o = parsed.value.object;
+
+        const id_v = o.get("id") orelse continue;
+        const date_v = o.get("date") orelse continue;
+        const pp_v = o.get("problemPattern") orelse continue;
+        if (id_v != .string or date_v != .string or pp_v != .string) continue;
+
+        const getStr = struct {
+            fn get(obj: @TypeOf(o), key: []const u8) []const u8 {
+                if (obj.get(key)) |v| if (v == .string) return v.string;
+                return "";
+            }
+        }.get;
+        const recorded_ts: i64 = if (o.get("recordedTs")) |v| switch (v) {
+            .integer => |n| n,
+            else => 0,
+        } else 0;
+        const confidence: f64 = if (o.get("confidence")) |v| switch (v) {
+            .float => |f| f,
+            .integer => |n| @floatFromInt(n),
+            else => 0.0,
+        } else 0.0;
+
+        const entry = SolutionEntry{
+            .id = gpa.dupe(u8, id_v.string) catch continue,
+            .date = gpa.dupe(u8, date_v.string) catch continue,
+            .recordedTs = recorded_ts,
+            .problemPattern = gpa.dupe(u8, pp_v.string) catch continue,
+            .rootCause = gpa.dupe(u8, getStr(o, "rootCause")) catch continue,
+            .fix = gpa.dupe(u8, getStr(o, "fix")) catch continue,
+            .verification = gpa.dupe(u8, getStr(o, "verification")) catch continue,
+            .applicableProjectTypes = gpa.dupe(u8, getStr(o, "applicableProjectTypes")) catch continue,
+            .confidence = confidence,
+            .sourceProject = gpa.dupe(u8, getStr(o, "sourceProject")) catch continue,
+        };
+        entries.append(gpa, entry) catch continue;
+        if (entries.items.len >= LEDGER_MAX_ENTRIES) break;
+    }
+}
+
+pub const SolutionRecordParams = struct {
+    problemPattern: []const u8,
+    rootCause: []const u8,
+    fix: []const u8,
+    verification: []const u8,
+    applicableProjectTypes: []const u8,
+    confidence: f64,
+    sourceProject: []const u8,
+};
+
+pub const SolutionRecordResult = struct {
+    id: []u8, // owned
+    duplicate: bool, // true if an existing solution already covers this problem pattern (score >= 50) — not stored again
+};
+
+// "Do not store: full conversations, duplicate solutions, project-private
+// secrets, unnecessary logs" — duplicate rejection uses the exact same
+// >=50 word-overlap threshold as ledger's own findLedgerPrecedent, so
+// "what counts as a duplicate" is one definition, not two.
+pub fn computeSolutionRecord(gpa: std.mem.Allocator, io: std.Io, params: SolutionRecordParams) !SolutionRecordResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
+    defer gpa.free(foreman_dir);
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+    const path = try allocSolutionsPath(gpa, home);
+    defer gpa.free(path);
+
+    var existing: std.ArrayList(SolutionEntry) = .empty;
+    defer {
+        for (existing.items) |e| freeSolutionEntry(gpa, e);
+        existing.deinit(gpa);
+    }
+    parseSolutionsFile(gpa, io, path, &existing);
+
+    const query_lower = try gpa.alloc(u8, params.problemPattern.len);
+    defer gpa.free(query_lower);
+    for (params.problemPattern, 0..) |c, i| query_lower[i] = std.ascii.toLower(c);
+
+    for (existing.items) |e| {
+        const cand_lower = try gpa.alloc(u8, e.problemPattern.len);
+        defer gpa.free(cand_lower);
+        for (e.problemPattern, 0..) |c, i| cand_lower[i] = std.ascii.toLower(c);
+        if (ledgerWordOverlapScore(query_lower, cand_lower) >= 50) {
+            return .{ .id = try gpa.dupe(u8, e.id), .duplicate = true };
+        }
+    }
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+    const date = try tsToDateStr(gpa, @intCast(now_ts));
+    defer gpa.free(date);
+    const id_src = try std.fmt.allocPrint(gpa, "solution:{s}:{s}", .{ params.problemPattern, date });
+    defer gpa.free(id_src);
+    const hex = sha256Hex(id_src);
+    const id = try gpa.dupe(u8, hex[0..16]);
+    errdefer gpa.free(id);
+
+    const esc_pp = try allocJsonEscape(gpa, params.problemPattern);
+    defer gpa.free(esc_pp);
+    const esc_rc = try allocJsonEscape(gpa, params.rootCause);
+    defer gpa.free(esc_rc);
+    const esc_fix = try allocJsonEscape(gpa, params.fix);
+    defer gpa.free(esc_fix);
+    const esc_ver = try allocJsonEscape(gpa, params.verification);
+    defer gpa.free(esc_ver);
+    const esc_types = try allocJsonEscape(gpa, params.applicableProjectTypes);
+    defer gpa.free(esc_types);
+    const esc_src = try allocJsonEscape(gpa, params.sourceProject);
+    defer gpa.free(esc_src);
+    const esc_date = try allocJsonEscape(gpa, date);
+    defer gpa.free(esc_date);
+    const esc_id = try allocJsonEscape(gpa, id);
+    defer gpa.free(esc_id);
+
+    const line = try std.fmt.allocPrint(
+        gpa,
+        "{{\"id\": \"{s}\", \"date\": \"{s}\", \"recordedTs\": {d}, \"problemPattern\": \"{s}\", \"rootCause\": \"{s}\", \"fix\": \"{s}\", \"verification\": \"{s}\", \"applicableProjectTypes\": \"{s}\", \"confidence\": {d:.2}, \"sourceProject\": \"{s}\"}}",
+        .{ esc_id, esc_date, now_ts, esc_pp, esc_rc, esc_fix, esc_ver, esc_types, params.confidence, esc_src },
+    );
+    defer gpa.free(line);
+    appendFieldReportLog(gpa, io, foreman_dir, "solutions.json", line);
+
+    return .{ .id = id, .duplicate = false };
+}
+
+pub const SolutionsListResult = struct {
+    solutions: []SolutionEntry, // owned; each owned
+};
+
+pub fn computeSolutionsList(gpa: std.mem.Allocator, io: std.Io) !SolutionsListResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const path = try allocSolutionsPath(gpa, home);
+    defer gpa.free(path);
+
+    var entries: std.ArrayList(SolutionEntry) = .empty;
+    parseSolutionsFile(gpa, io, path, &entries);
+    return .{ .solutions = try entries.toOwnedSlice(gpa) };
+}
+
 // --- outline subcommand ---
 
 pub const Symbol = struct {

@@ -58,6 +58,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  field-report-solve <project-root>  (entry JSON from stdin: problem, solution, verification, reusable)\n", .{});
         try err.print("  field-report-block <project-root>  (entry JSON from stdin: objective, project, context, attempted, blocker, minimumHelpNeeded, suggestedNextStep)\n", .{});
         try err.print("  review-field-reports\n", .{});
+        try err.print("  solutions-record  (entry JSON from stdin: problemPattern, rootCause, fix, verification, applicableProjectTypes, confidence, sourceProject)\n", .{});
+        try err.print("  solutions-list\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -1546,6 +1548,92 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         if (result.blockers.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "solutions-record")) {
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_rdr = std.Io.File.stdin().reader(io, &stdin_buf);
+        const stdin_json = stdin_rdr.interface.allocRemaining(gpa, .limited(256 * 1024)) catch |e| {
+            try err.print("error reading stdin: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(stdin_json);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, stdin_json, .{}) catch {
+            try err.print("error: invalid JSON on stdin\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            try err.print("error: stdin JSON must be an object\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const o = parsed.value.object;
+        const getStr = struct {
+            fn get(obj: @TypeOf(o), key: []const u8) []const u8 {
+                if (obj.get(key)) |v| if (v == .string) return v.string;
+                return "";
+            }
+        }.get;
+        const confidence: f64 = if (o.get("confidence")) |v| switch (v) {
+            .float => |f| f,
+            .integer => |n| @floatFromInt(n),
+            else => 0.0,
+        } else 0.0;
+
+        const result = root.computeSolutionRecord(gpa, io, .{
+            .problemPattern = getStr(o, "problemPattern"),
+            .rootCause = getStr(o, "rootCause"),
+            .fix = getStr(o, "fix"),
+            .verification = getStr(o, "verification"),
+            .applicableProjectTypes = getStr(o, "applicableProjectTypes"),
+            .confidence = confidence,
+            .sourceProject = getStr(o, "sourceProject"),
+        }) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.id);
+
+        try out.print(
+            "{{\n  \"id\": \"{s}\",\n  \"duplicate\": {s}\n}}\n",
+            .{ result.id, if (result.duplicate) "true" else "false" },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "solutions-list")) {
+        const result = try root.computeSolutionsList(gpa, io);
+        defer {
+            for (result.solutions) |s| root.freeSolutionEntry(gpa, s);
+            gpa.free(result.solutions);
+        }
+
+        try out.print("{{\n  \"solutions\": [", .{});
+        for (result.solutions, 0..) |s, i| {
+            const esc_id = try root.allocJsonEscape(gpa, s.id);
+            defer gpa.free(esc_id);
+            const esc_pp = try root.allocJsonEscape(gpa, s.problemPattern);
+            defer gpa.free(esc_pp);
+            const esc_rc = try root.allocJsonEscape(gpa, s.rootCause);
+            defer gpa.free(esc_rc);
+            const esc_fix = try root.allocJsonEscape(gpa, s.fix);
+            defer gpa.free(esc_fix);
+            const esc_ver = try root.allocJsonEscape(gpa, s.verification);
+            defer gpa.free(esc_ver);
+            const esc_types = try root.allocJsonEscape(gpa, s.applicableProjectTypes);
+            defer gpa.free(esc_types);
+            const esc_src = try root.allocJsonEscape(gpa, s.sourceProject);
+            defer gpa.free(esc_src);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"id\": \"{s}\", \"problemPattern\": \"{s}\", \"rootCause\": \"{s}\", \"fix\": \"{s}\", \"verification\": \"{s}\", \"applicableProjectTypes\": \"{s}\", \"confidence\": {d:.2}, \"sourceProject\": \"{s}\", \"recordedTs\": {d}}}",
+                .{ esc_id, esc_pp, esc_rc, esc_fix, esc_ver, esc_types, s.confidence, esc_src, s.recordedTs },
+            );
+        }
+        if (result.solutions.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
