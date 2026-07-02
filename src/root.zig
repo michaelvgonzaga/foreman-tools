@@ -46,8 +46,19 @@ pub fn fileExists(io: std.Io, path: []const u8) bool {
 // through this before calling any compute* function — resolves "." and other
 // relative paths to their canonical absolute form; also normalizes symlinks
 // and ".." for already-absolute input.
+//
+// realPathFileAlloc returns a sentinel-terminated [:0]u8 (allocated at
+// len+1 bytes for the null terminator). Returning that directly as a plain
+// []u8 silently drops the sentinel from the type, so a caller's later
+// `gpa.free(result)` reports the wrong size to the allocator — caught live
+// as "Allocation size N+1 bytes does not match free size N" (allocator
+// corruption, not a clean error) the first time this ran against the
+// installed binary with a length that crossed a size-class boundary.
+// Dupe into a fresh, correctly-sized plain allocation instead.
 pub fn resolveAbsolutePath(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().realPathFileAlloc(io, path, gpa);
+    const z = try std.Io.Dir.cwd().realPathFileAlloc(io, path, gpa);
+    defer gpa.free(z);
+    return gpa.dupe(u8, z);
 }
 
 // One-time, non-destructive migration from the pre-rename state/cache dirs
@@ -5185,7 +5196,9 @@ pub fn computeRunTests(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Ru
     const fw_candidates = try detectTestFrameworkCandidates(gpa, io, path);
     defer gpa.free(fw_candidates);
     if (fw_candidates.len == 0) return error.NoTestFramework;
-    const fw_question = try std.fmt.allocPrint(gpa, "which test framework for {s}: candidates are {s}", .{ path, std.mem.join(gpa, ", ", fw_candidates) catch "" });
+    const fw_joined = std.mem.join(gpa, ", ", fw_candidates) catch "";
+    defer if (fw_joined.len > 0) gpa.free(fw_joined);
+    const fw_question = try std.fmt.allocPrint(gpa, "which test framework for {s}: candidates are {s}", .{ path, fw_joined });
     defer gpa.free(fw_question);
     const fw_resolution = try resolveCandidateViaLedger(gpa, io, fw_question, fw_candidates);
     const fw = fw_resolution.chosen;
@@ -5880,7 +5893,9 @@ pub fn computeBuild(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Build
     const tool_candidates = try detectBuildToolCandidates(gpa, io, path);
     defer gpa.free(tool_candidates);
     if (tool_candidates.len == 0) return error.NoBuildSystem;
-    const tool_question = try std.fmt.allocPrint(gpa, "which build tool for {s}: candidates are {s}", .{ path, std.mem.join(gpa, ", ", tool_candidates) catch "" });
+    const tool_joined = std.mem.join(gpa, ", ", tool_candidates) catch "";
+    defer if (tool_joined.len > 0) gpa.free(tool_joined);
+    const tool_question = try std.fmt.allocPrint(gpa, "which build tool for {s}: candidates are {s}", .{ path, tool_joined });
     defer gpa.free(tool_question);
     const tool_resolution = try resolveCandidateViaLedger(gpa, io, tool_question, tool_candidates);
     const tool = tool_resolution.chosen;
@@ -7559,6 +7574,7 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
         build_tool = br.tool;
         if (br.uncertainty_candidates.len > 0) {
             const candidates_joined = std.mem.join(gpa, ", ", br.uncertainty_candidates) catch "";
+            defer if (candidates_joined.len > 0) gpa.free(candidates_joined);
             if (std.mem.eql(u8, br.resolved_by, "ledger")) {
                 try low.append(gpa, .{
                     .source = "build",
@@ -7621,6 +7637,7 @@ pub fn computeQualityGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8) 
         tests_failed = tr.failed;
         if (tr.uncertainty_candidates.len > 0) {
             const candidates_joined = std.mem.join(gpa, ", ", tr.uncertainty_candidates) catch "";
+            defer if (candidates_joined.len > 0) gpa.free(candidates_joined);
             if (std.mem.eql(u8, tr.resolved_by, "ledger")) {
                 try low.append(gpa, .{
                     .source = "tests",
