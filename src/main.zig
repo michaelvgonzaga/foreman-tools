@@ -1058,7 +1058,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeContextRank(gpa, io, args[2], args[3]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeContextRank(gpa, io, abs_path, args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1146,7 +1153,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeContextEvidence(gpa, io, args[2], args[3]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: file not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeContextEvidence(gpa, io, abs_path, args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1189,7 +1203,20 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = try root.computeContextBudget(gpa, io, args[2..]);
+        const abs_paths = try gpa.alloc([]const u8, args.len - 2);
+        defer {
+            for (abs_paths) |p| gpa.free(p);
+            gpa.free(abs_paths);
+        }
+        for (args[2..], 0..) |p, i| {
+            abs_paths[i] = root.resolveAbsolutePath(gpa, io, p) catch {
+                try err.print("error: path not found: {s}\n", .{p});
+                try err.flush();
+                std.process.exit(1);
+            };
+        }
+
+        const result = try root.computeContextBudget(gpa, io, abs_paths);
         defer {
             for (result.breakdown) |e| gpa.free(e.path);
             gpa.free(result.breakdown);
@@ -1221,7 +1248,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeContextGate(gpa, io, args[2], task.?) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeContextGate(gpa, io, abs_path, task.?) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: path not found: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1242,8 +1276,8 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(esc_reason);
 
         try out.print(
-            "{{\n  \"task\": \"{s}\",\n  \"token_estimate\": {d},\n  \"risk\": \"{s}\",\n  \"include\": {{\n    \"files\": [",
-            .{ esc_task, result.tokenEstimate, result.risk },
+            "{{\n  \"task\": \"{s}\",\n  \"taskType\": \"{s}\",\n  \"classifierConfidence\": {d:.2},\n  \"token_estimate\": {d},\n  \"risk\": \"{s}\",\n  \"include\": {{\n    \"files\": [",
+            .{ esc_task, result.taskType, result.classifierConfidence, result.tokenEstimate, result.risk },
         );
         for (result.includeFiles, 0..) |f, fi| {
             const esc_f = try root.allocJsonEscape(gpa, f);
@@ -1252,9 +1286,10 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\"{s}\"", .{esc_f});
         }
         try out.print(
-            "],\n    \"errors\": [],\n    \"diff\": {s}\n  }},\n  \"exclude\": {{\n    \"dirs\": [\"zig-cache\", \".zig-cache\", \"zig-out\", \".git\", \"node_modules\"],\n    \"large_files\": true,\n    \"secrets\": {s}\n  }},\n  \"next_action\": {{\n    \"send_to_ai\": {s},\n    \"reason\": \"{s}\"\n  }}\n}}\n",
+            "],\n    \"errors\": [],\n    \"diff\": {s},\n    \"compressedFiles\": {d}\n  }},\n  \"exclude\": {{\n    \"dirs\": [\"zig-cache\", \".zig-cache\", \"zig-out\", \".git\", \"node_modules\"],\n    \"large_files\": true,\n    \"secrets\": {s}\n  }},\n  \"next_action\": {{\n    \"send_to_ai\": {s},\n    \"reason\": \"{s}\"\n  }}\n}}\n",
             .{
                 if (result.includeDiff) "true" else "false",
+                result.compressedFiles,
                 if (result.excludeSecrets) "true" else "false",
                 if (result.sendToAi) "true" else "false",
                 esc_reason,
@@ -1285,7 +1320,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const result = root.computeContextDependencyGraph(gpa, io, args[2], args[3]) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeContextDependencyGraph(gpa, io, abs_path, args[3]) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[3]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -1332,7 +1374,14 @@ pub fn main(init: std.process.Init) !void {
             max_lines = std.fmt.parseInt(usize, args[4], 10) catch 200;
         }
 
-        const result = root.computeContextCompressor(gpa, io, args[2], max_lines) catch |e| {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: file not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeContextCompressor(gpa, io, abs_path, max_lines) catch |e| {
             switch (e) {
                 error.FileNotFound => try err.print("error: file not found: {s}\n", .{args[2]}),
                 else => try err.print("error: {}\n", .{e}),
@@ -2855,7 +2904,14 @@ pub fn main(init: std.process.Init) !void {
             try err.flush();
             std.process.exit(1);
         }
-        const json = root.computeContextSlice(gpa, io, args[2], args[3]) catch |e| switch (e) {
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const json = root.computeContextSlice(gpa, io, abs_path, args[3]) catch |e| switch (e) {
             error.PathNotFound => {
                 try err.print("error: path not found: {s}\n", .{args[2]});
                 try err.flush();
