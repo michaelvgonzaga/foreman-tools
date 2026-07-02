@@ -360,3 +360,41 @@ Verification checklist for any new path-taking subcommand:
 ```
 
 This is exactly the shape row 14's data matrix expects: a trigger, a structural rule (not the literal fix diff), the reasoning, and a verification checklist — no prompt or conversation text stored, just the reusable engineering pattern. `reuseCount` for this pattern is already 11 (the confirmed sites) with an estimated ~34 more to go — a strong `lifetimeValue` candidate once the registry exists to score it.
+
+---
+
+## Token Savings Architecture (Knowledge Compiler)
+
+Ten proposed token-reduction ideas plus a unifying "Knowledge Compiler" concept. Rated against what's already built — several of these are already fully shipped and just need to be *used*, not built. Merging against existing rows/milestones per the "merge duplicate fixes" rule rather than listing them as new work.
+
+| # | Idea | ROI | Status | Why |
+|---|---|---|---|---|
+| 10 | Change Set (send only modified files, not the project tree) | **Highest** | **Already fully built** — `context-changed` (M23), `git-diff` (M13) | Zero new code. This is a usage/convention fix: stop calling `scan`/`context-scan` when only a diff is needed. |
+| 5 | Ledger References (send `C014`, not the full entry) | **Highest** | **Already fully built** — `ledger`'s own `id` scheme (`ledger validate <id>`, `ledger show`) | IDs already exist and are already the addressable unit. Zero new code — same usage fix as Change Set. |
+| 8 | Symbol Index (load `serve()` + deps, not the whole file) | **Highest** | **Already fully built** — `outline` (M26), `symbol-find` (Module 6 M2) | Zero new code. Usage fix: read `outline` before reading a full file. |
+| 1 | Capability Delta Loading (hash-check before reload, send only the diff) | **Highest** | **Infra already built, not yet applied to capability/recipe/template loading** — `cache-fetch`/`cache-store`/`cache-check` (M18–M20), `file-hash` | The hash-then-skip-if-unchanged mechanism already exists; this is applying it to a new data class (capabilities), not new infrastructure. |
+| — | **Knowledge Compiler** (compress project state into symbolic refs like `CAP_HTTP@84`, `DEP[SOCKET,PARSER,LOGGER]`, `ISSUE#31` before Claude ever sees it) | **Highest** | **Partially built, this is `context-gate`'s (M34) mandate taken further** — currently `context-gate` composes file lists + diffs + a risk verdict in prose-ish JSON; this proposes the *output format itself* become symbolic/compressed, not just the file-selection logic | This is the idea that unifies #4, #5, #7, #10 below — Rule IDs, Ledger References, Recipe IDs, and Change Sets are all naturally-occurring *outputs* of a Knowledge Compiler layer, not four separate features. Extending `context-gate`'s manifest to emit symbolic references (once Phase 2's `context_classifier`/`context_dependency_graph` are wired in, per Wave 5 Phase 1) is the highest-leverage next step here — see build order below. |
+| 2 | Intent Router (classify request → load only the relevant capability subset) | High | **Partially built** — `context-classifier` (M36) does the classification; the "load only 8 of 400 capabilities" routing/scoping half is Phase 4's `model_router.zig`, not started | Wave 5 already scoped this exact dependency chain (Phase 2 classifier → Phase 4 router). No new roadmap item — this is Phase 4, reprioritized here as more urgent than originally ranked given the token-savings case made here. |
+| 3 | Memory Compression (compact "attempt 1 / attempt 2 / current blocker" digest instead of raw logs) | Medium | **Storage already compact, digest renderer not built** — `attempts.log`/`verification.log` (M39) are already JSON-lines, not raw logs; what's missing is a function that renders them into the short prose digest shown in the original ask | Small, real gap: a `field-report-summary <project-root>` renderer over the already-compact log files — not a new storage format. |
+| 4 | Rule IDs (`R12` instead of restating the rule every time) | Medium | **Not built — natural extension of row 14's Prompt Pattern Registry** | A rule ID is structurally identical to a Prompt Pattern Registry `id` (row 14) applied to CLAUDE.md guardrail lines instead of prompt structures — same schema, different source material. Build after row 14 ships, don't build a second ID scheme. |
+| 7 | Recipe IDs (`REST_002` instead of restating the implementation steps) | Medium | **Not built — same reasoning as Rule IDs (#4)** | Also a Prompt Pattern Registry application — a "recipe" is a structural pattern with a fixed procedure, exactly what row 14's `structuralPattern` field is for. |
+| 6 | Planning Levels (route trivial asks to "no Claude" without a full architecture pass) | Medium | **Not built** — thin layer over `context-classifier`'s `task_type` (M36) plus a complexity heuristic | Needs new judgment logic (task_type alone doesn't imply complexity level), but the classification substrate already exists — not starting from zero. |
+| 9 | Static Knowledge Pack (teach Zig networking/SSL/filesystem/etc. once, never resend) | Low | **Largely already the job of CLAUDE.md** | The framework's guardrails file already is a "teach once" document loaded every session. Formalizing a second, domain-knowledge-specific pack risks duplicating CLAUDE.md's role for a comparatively small marginal token save — not worth building until CLAUDE.md itself is proven too large for this purpose. |
+
+### Proposed layer architecture
+
+```
+User → Intent Router → Knowledge Compiler → Capability Registry → Execution Engine → Verification → Memory/Ledgers → AI Gate (Claude only when necessary)
+```
+
+Maps onto existing modules: Intent Router = `context-classifier` + Phase 4 `model_router` (not started). Knowledge Compiler = `context-gate` extended with symbolic output (this doc's Highest-ROI item). Capability Registry = Module 2 (Wave 4, not started). Execution Engine = `build`/`run-tests`/`worker-run` (already built). Verification = `quality-gate`/`prod-ready` (already built). Memory/Ledgers = `ledger` + `solutions.json` (M42, built) + field-reports (M39–M41, built). AI Gate = the existing `FOREMAN_MODE=gate` guardrail concept, not yet enforced at the terminal-primitive layer (gap-analysis row 2).
+
+### Build order (highest ROI first)
+
+1. **Zero-build usage fixes** (rows 10, 5, 8 above) — start using `context-changed`/`ledger` IDs/`outline` instead of full-file/full-tree reads *today*. No code changes, immediate token savings.
+2. **Apply existing cache infra to capability loading** (row 1) — wire `cache-fetch`/`file-hash` into however capability/recipe/template files get loaded, once that loading code exists (depends on Wave 4 Module 2, not started).
+3. **Extend `context-gate`'s manifest toward symbolic output** (Knowledge Compiler) — once Wave 5 Phase 2 (`context-classifier`, `context-dependency-graph`, `context-compressor`) is wired into `context-gate` itself (still open from Wave 5's own build order), make the *output* compact/symbolic rather than prose-JSON.
+4. **`field-report-summary` digest renderer** (row 3) — small, self-contained, no dependencies.
+5. **Rule IDs + Recipe IDs** (rows 4, 7) — after row 14's Prompt Pattern Registry ships; both are applications of it, not separate builds.
+6. **Planning Levels** (row 6) — after `context-classifier` has enough real usage to design the complexity heuristic on measured data, not a guess (same "measure before ranking" discipline as row 14 and M41).
+7. **Static Knowledge Pack** (row 9) — revisit trigger only: build if CLAUDE.md is measured to be too large for its "teach once" role, not before.
