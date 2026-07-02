@@ -39,6 +39,17 @@ pub fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
+// Every `*Absolute` API in std.Io.Dir is undefined behavior when given a
+// relative path (confirmed: `4orman-tools build .` corrupts allocator state
+// and panics via `unreachable` inside std, not a normal error return). Every
+// subcommand whose first positional arg is a filesystem path must resolve it
+// through this before calling any compute* function — resolves "." and other
+// relative paths to their canonical absolute form; also normalizes symlinks
+// and ".." for already-absolute input.
+pub fn resolveAbsolutePath(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(io, path, gpa);
+}
+
 // One-time, non-destructive migration from the pre-rename state/cache dirs
 // (~/.foreman, ~/.cache/foreman-tools) to their 4orman equivalents. Copies,
 // never moves or deletes — the old dirs are left intact so this is safe to

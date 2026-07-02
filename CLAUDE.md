@@ -23,6 +23,8 @@ See `spec.md` for milestones and decisions. See `api-schema.md` for the locked J
 - Run `/verify-output` before marking tasks complete
 - Keep changes scoped to v1 — do not add features not in the spec
 - JSON to stdout, errors to stderr, exit 1 on failure — no exceptions
+- **Patch Integrity Gate — after every code edit, in order:** (1) `zig fmt --check` on only the files you changed, and only fail on hunks inside your own diff — this repo has pre-existing unformatted code elsewhere; never run a bare `zig fmt` and commit whatever it reformats, that turns a scoped fix into an unrelated-code diff (verify with `diff <(zig fmt --stdin < file) file` scoped to your changed lines, not a blind `zig fmt <file>`), (2) `zig build -Doptimize=ReleaseSafe`, (3) grep/read the diff for incomplete `catch`/`try` blocks or unhandled error unions, (4) run the targeted test(s) for the changed function only, (5) run the full `zig build test` suite only after the targeted pass — don't jump straight to the full suite, it hides which change broke what
+- **Path Argument Normalization — any subcommand accepting a filesystem path:** never pass the raw arg into a `std.Io.Dir` `*Absolute` API. Resolve through `root.resolveAbsolutePath(gpa, io, path)` first, then free it, before any `compute*` call. Relative paths (including `.`) into `*Absolute` APIs are undefined behavior in this Zig version — confirmed as allocator corruption, not a clean error (2026-07-02 decision log). Verify any new path-taking subcommand against: `.`, a relative subpath, an absolute path, a nonexistent path, and a symlink/`..`-containing path
 
 ### Ask first
 - Any new subcommand or output field not in the spec
