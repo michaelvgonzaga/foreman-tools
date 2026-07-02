@@ -590,6 +590,18 @@ pub fn main(init: std.process.Init) !void {
     ctx.bad("field-report-solve no args → exit 1", &.{"field-report-solve"}, 1);
     ctx.bad("field-report-block no args → exit 1", &.{"field-report-block"}, 1);
 
+    // ----------------------------------------------------------------
+    // Tier 7: review-field-reports (Field Reports #6)
+    // No args, so this always runs against whatever real ~/.4orman/
+    // field-reports/ state exists on the machine running the suite — only
+    // asserts the response shape, not specific counts/content (those are
+    // machine-state-dependent, not stable across CI/dev environments).
+    // ----------------------------------------------------------------
+    ctx.header("Tier 7: review-field-reports (M41)");
+    ctx.smoke("review-field-reports", &.{"review-field-reports"});
+    ctx.checkIntGt("review-field-reports: projectsScanned>=0", &.{"review-field-reports"}, "projectsScanned", -1);
+    ctx.checkArrayLen("review-field-reports: blockers array present", &.{"review-field-reports"}, "blockers", 0);
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }
