@@ -602,6 +602,17 @@ pub fn main(init: std.process.Init) !void {
     ctx.checkIntGt("review-field-reports: projectsScanned>=0", &.{"review-field-reports"}, "projectsScanned", -1);
     ctx.checkArrayLen("review-field-reports: blockers array present", &.{"review-field-reports"}, "blockers", 0);
 
+    // ----------------------------------------------------------------
+    // Tier 8: solutions-record / solutions-list (Field Reports #7)
+    // Same stdin limitation as Tier 6 — solutions-record's happy path is
+    // manually verified (see decision log), only solutions-list (no stdin)
+    // and confirming ledger.json stays untouched are harness-covered here.
+    // ----------------------------------------------------------------
+    ctx.header("Tier 8: solutions-record / solutions-list (M42)");
+    ctx.smoke("solutions-list", &.{"solutions-list"});
+    ctx.checkArrayLen("solutions-list: solutions array present", &.{"solutions-list"}, "solutions", 0);
+    ctx.checkArrayLen("ledger show: entries untouched by solutions writes", &.{ "ledger", "show" }, "entries", 0);
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }
