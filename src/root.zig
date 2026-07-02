@@ -3891,6 +3891,170 @@ pub fn computeFieldReportBlock(gpa: std.mem.Allocator, io: std.Io, project_root_
     return .{ .fieldReportPath = dir, .file = "blocked.toml" };
 }
 
+// --- review-field-reports (Field Reports #6) ---
+// Scans every ~/.4orman/field-reports/<project_id>/, and for each project
+// whose state.json.status is "blocked", returns its most recent
+// [[blocked]] entry — the current, unresolved blocker, not the full
+// history (older entries may already be superseded by a later solve; there
+// is no per-entry "resolved" marker yet, so state.json.status is the
+// authoritative signal for "does this project still need help").
+
+pub const BlockedRecord = struct {
+    projectId: []u8, // owned
+    objective: []u8, // owned
+    context: []u8, // owned
+    attempted: []u8, // owned
+    blocker: []u8, // owned
+    minimumHelpNeeded: []u8, // owned
+    suggestedNextStep: []u8, // owned
+    lastUpdated: i64,
+};
+
+pub fn freeBlockedRecord(gpa: std.mem.Allocator, r: BlockedRecord) void {
+    gpa.free(r.projectId);
+    gpa.free(r.objective);
+    gpa.free(r.context);
+    gpa.free(r.attempted);
+    gpa.free(r.blocker);
+    gpa.free(r.minimumHelpNeeded);
+    gpa.free(r.suggestedNextStep);
+}
+
+pub const ReviewFieldReportsResult = struct {
+    blockers: []BlockedRecord, // owned; each entry owned; sorted newest-first
+    projectsScanned: u32,
+};
+
+// Minimal line-based parser for blocked.toml's [[blocked]] array-of-tables.
+// Only extracts the fields this schema actually writes (computeFieldReportBlock)
+// — not a general TOML parser, same "cover what we produce" philosophy as
+// toml-query's line-by-line reader elsewhere in this file.
+fn parseTomlStringValue(line: []const u8) ?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const rest = std.mem.trim(u8, line[eq + 1 ..], " \t\r");
+    if (rest.len < 2 or rest[0] != '"' or rest[rest.len - 1] != '"') return null;
+    return rest[1 .. rest.len - 1];
+}
+
+fn parseLastBlockedEntry(gpa: std.mem.Allocator, content: []const u8) ?BlockedRecord {
+    var objective: []const u8 = "";
+    var context: []const u8 = "";
+    var attempted: []const u8 = "";
+    var blocker: []const u8 = "";
+    var min_help: []const u8 = "";
+    var next_step: []const u8 = "";
+    var found_any = false;
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.eql(u8, line, "[[blocked]]")) {
+            // New block starts — reset so only the LAST block survives.
+            objective = "";
+            context = "";
+            attempted = "";
+            blocker = "";
+            min_help = "";
+            next_step = "";
+            found_any = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "objective")) {
+            objective = parseTomlStringValue(line) orelse objective;
+        } else if (std.mem.startsWith(u8, line, "context")) {
+            context = parseTomlStringValue(line) orelse context;
+        } else if (std.mem.startsWith(u8, line, "attempted")) {
+            attempted = parseTomlStringValue(line) orelse attempted;
+        } else if (std.mem.startsWith(u8, line, "blocker")) {
+            blocker = parseTomlStringValue(line) orelse blocker;
+        } else if (std.mem.startsWith(u8, line, "minimum_help_needed")) {
+            min_help = parseTomlStringValue(line) orelse min_help;
+        } else if (std.mem.startsWith(u8, line, "suggested_next_step")) {
+            next_step = parseTomlStringValue(line) orelse next_step;
+        }
+    }
+    if (!found_any) return null;
+
+    return BlockedRecord{
+        .projectId = gpa.dupe(u8, "") catch return null, // filled in by caller
+        .objective = gpa.dupe(u8, objective) catch return null,
+        .context = gpa.dupe(u8, context) catch return null,
+        .attempted = gpa.dupe(u8, attempted) catch return null,
+        .blocker = gpa.dupe(u8, blocker) catch return null,
+        .minimumHelpNeeded = gpa.dupe(u8, min_help) catch return null,
+        .suggestedNextStep = gpa.dupe(u8, next_step) catch return null,
+        .lastUpdated = 0, // filled in by caller
+    };
+}
+
+pub fn computeReviewFieldReports(gpa: std.mem.Allocator, io: std.Io) !ReviewFieldReportsResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const reports_base = try std.fmt.allocPrint(gpa, "{s}/.4orman/field-reports", .{home});
+    defer gpa.free(reports_base);
+
+    var blockers: std.ArrayList(BlockedRecord) = .empty;
+    errdefer {
+        for (blockers.items) |b| freeBlockedRecord(gpa, b);
+        blockers.deinit(gpa);
+    }
+
+    const listing = computeListDir(gpa, io, reports_base) catch {
+        // No field reports yet — not an error, just nothing to review.
+        return .{ .blockers = &.{}, .projectsScanned = 0 };
+    };
+    defer {
+        for (listing.entries) |e| gpa.free(e.name);
+        gpa.free(listing.entries);
+    }
+
+    var scanned: u32 = 0;
+    for (listing.entries) |e| {
+        if (!std.mem.eql(u8, e.kind, "dir")) continue;
+        scanned += 1;
+
+        const project_dir = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ reports_base, e.name });
+        defer gpa.free(project_dir);
+
+        const state = readFieldReportState(gpa, io, project_dir) orelse continue;
+        const is_blocked = std.mem.eql(u8, state.status, "blocked");
+        const last_updated = state.last_updated;
+        freeFieldReportState(gpa, state);
+        if (!is_blocked) continue;
+
+        const blocked_path = try std.fmt.allocPrint(gpa, "{s}/blocked.toml", .{project_dir});
+        defer gpa.free(blocked_path);
+        const file = std.Io.Dir.openFileAbsolute(io, blocked_path, .{}) catch continue;
+        var read_buf: [4096]u8 = undefined;
+        var r = file.reader(io, &read_buf);
+        const content = r.interface.allocRemaining(gpa, .limited(1024 * 1024)) catch {
+            file.close(io);
+            continue;
+        };
+        file.close(io);
+        defer gpa.free(content);
+
+        var record = parseLastBlockedEntry(gpa, content) orelse continue;
+        gpa.free(record.projectId);
+        record.projectId = try gpa.dupe(u8, e.name);
+        record.lastUpdated = last_updated;
+        try blockers.append(gpa, record);
+    }
+
+    const items = try blockers.toOwnedSlice(gpa);
+    // Newest-first: most recently blocked is the freshest signal of what's
+    // actionable now. True ROI/determinism/reuse-potential scoring needs
+    // metadata this schema doesn't capture yet (see spec.md row 14 / Wave 5
+    // Phase 3 — same "measure before ranking" gap, not solved here).
+    std.mem.sort(BlockedRecord, items, {}, struct {
+        fn lessThan(_: void, a: BlockedRecord, b: BlockedRecord) bool {
+            return a.lastUpdated > b.lastUpdated;
+        }
+    }.lessThan);
+
+    return .{ .blockers = items, .projectsScanned = scanned };
+}
+
 // --- outline subcommand ---
 
 pub const Symbol = struct {

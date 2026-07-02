@@ -57,6 +57,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  update <project-root>\n", .{});
         try err.print("  field-report-solve <project-root>  (entry JSON from stdin: problem, solution, verification, reusable)\n", .{});
         try err.print("  field-report-block <project-root>  (entry JSON from stdin: objective, project, context, attempted, blocker, minimumHelpNeeded, suggestedNextStep)\n", .{});
+        try err.print("  review-field-reports\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -1510,6 +1511,42 @@ pub fn main(init: std.process.Init) !void {
         const esc_path = try root.allocJsonEscape(gpa, result.fieldReportPath);
         defer gpa.free(esc_path);
         try out.print("{{\n  \"fieldReportPath\": \"{s}\",\n  \"file\": \"{s}\"\n}}\n", .{ esc_path, result.file });
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "review-field-reports")) {
+        const result = root.computeReviewFieldReports(gpa, io) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.blockers) |b| root.freeBlockedRecord(gpa, b);
+            gpa.free(result.blockers);
+        }
+
+        try out.print("{{\n  \"projectsScanned\": {d},\n  \"blockers\": [", .{result.projectsScanned});
+        for (result.blockers, 0..) |b, i| {
+            const esc_id = try root.allocJsonEscape(gpa, b.projectId);
+            defer gpa.free(esc_id);
+            const esc_obj = try root.allocJsonEscape(gpa, b.objective);
+            defer gpa.free(esc_obj);
+            const esc_ctx = try root.allocJsonEscape(gpa, b.context);
+            defer gpa.free(esc_ctx);
+            const esc_att = try root.allocJsonEscape(gpa, b.attempted);
+            defer gpa.free(esc_att);
+            const esc_blk = try root.allocJsonEscape(gpa, b.blocker);
+            defer gpa.free(esc_blk);
+            const esc_help = try root.allocJsonEscape(gpa, b.minimumHelpNeeded);
+            defer gpa.free(esc_help);
+            const esc_next = try root.allocJsonEscape(gpa, b.suggestedNextStep);
+            defer gpa.free(esc_next);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"projectId\": \"{s}\", \"objective\": \"{s}\", \"context\": \"{s}\", \"attempted\": \"{s}\", \"blocker\": \"{s}\", \"minimumHelpNeeded\": \"{s}\", \"suggestedNextStep\": \"{s}\", \"lastUpdated\": {d}}}",
+                .{ esc_id, esc_obj, esc_ctx, esc_att, esc_blk, esc_help, esc_next, b.lastUpdated },
+            );
+        }
+        if (result.blockers.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
         if (args.len < 3) {
