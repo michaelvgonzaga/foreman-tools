@@ -55,6 +55,8 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  context-dependency-graph <root-path> <rel-file-path>\n", .{});
         try err.print("  context-compressor <file-path> [--max-lines N]\n", .{});
         try err.print("  update <project-root>\n", .{});
+        try err.print("  field-report-solve <project-root>  (entry JSON from stdin: problem, solution, verification, reusable)\n", .{});
+        try err.print("  field-report-block <project-root>  (entry JSON from stdin: objective, project, context, attempted, blocker, minimumHelpNeeded, suggestedNextStep)\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -1389,6 +1391,125 @@ pub fn main(init: std.process.Init) !void {
             "{{\n  \"projectId\": \"{s}\",\n  \"fieldReportPath\": \"{s}\",\n  \"status\": \"{s}\",\n  \"progress\": {d:.2},\n  \"discoverSummary\": \"{s}\",\n  \"verifyPassed\": {s}\n}}\n",
             .{ esc_id, esc_path, esc_status, result.progress, esc_summary, if (result.verifyPassed) "true" else "false" },
         );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "field-report-solve")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools field-report-solve <project-root>  (entry JSON from stdin)\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_rdr = std.Io.File.stdin().reader(io, &stdin_buf);
+        const stdin_json = stdin_rdr.interface.allocRemaining(gpa, .limited(256 * 1024)) catch |e| {
+            try err.print("error reading stdin: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(stdin_json);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, stdin_json, .{}) catch {
+            try err.print("error: invalid JSON on stdin\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            try err.print("error: stdin JSON must be an object\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const o = parsed.value.object;
+        const problem = if (o.get("problem")) |v| (if (v == .string) v.string else "") else "";
+        const solution = if (o.get("solution")) |v| (if (v == .string) v.string else "") else "";
+        const verification = if (o.get("verification")) |v| (if (v == .string) v.string else "") else "";
+        const reusable = if (o.get("reusable")) |v| (if (v == .bool) v.bool else false) else false;
+
+        const result = root.computeFieldReportSolve(gpa, io, abs_path, .{
+            .problem = problem,
+            .solution = solution,
+            .verification = verification,
+            .reusable = reusable,
+        }) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.fieldReportPath);
+
+        const esc_path = try root.allocJsonEscape(gpa, result.fieldReportPath);
+        defer gpa.free(esc_path);
+        try out.print("{{\n  \"fieldReportPath\": \"{s}\",\n  \"file\": \"{s}\"\n}}\n", .{ esc_path, result.file });
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "field-report-block")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools field-report-block <project-root>  (entry JSON from stdin)\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_rdr = std.Io.File.stdin().reader(io, &stdin_buf);
+        const stdin_json = stdin_rdr.interface.allocRemaining(gpa, .limited(256 * 1024)) catch |e| {
+            try err.print("error reading stdin: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(stdin_json);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, stdin_json, .{}) catch {
+            try err.print("error: invalid JSON on stdin\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            try err.print("error: stdin JSON must be an object\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const o = parsed.value.object;
+        const getStr = struct {
+            fn get(obj: @TypeOf(o), key: []const u8) []const u8 {
+                if (obj.get(key)) |v| {
+                    if (v == .string) return v.string;
+                }
+                return "";
+            }
+        }.get;
+
+        const result = root.computeFieldReportBlock(gpa, io, abs_path, .{
+            .objective = getStr(o, "objective"),
+            .project = getStr(o, "project"),
+            .context = getStr(o, "context"),
+            .attempted = getStr(o, "attempted"),
+            .blocker = getStr(o, "blocker"),
+            .minimumHelpNeeded = getStr(o, "minimumHelpNeeded"),
+            .suggestedNextStep = getStr(o, "suggestedNextStep"),
+        }) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.fieldReportPath);
+
+        const esc_path = try root.allocJsonEscape(gpa, result.fieldReportPath);
+        defer gpa.free(esc_path);
+        try out.print("{{\n  \"fieldReportPath\": \"{s}\",\n  \"file\": \"{s}\"\n}}\n", .{ esc_path, result.file });
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
         if (args.len < 3) {

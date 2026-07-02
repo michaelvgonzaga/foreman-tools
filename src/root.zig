@@ -3656,17 +3656,18 @@ fn writeFieldReportState(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, st
     atomicRenameAbsolute(tmp_path, path);
 }
 
-// Append-only JSON-lines log (attempts.log / verification.log) — one JSON
-// object per line, existing lines are never rewritten. Appends via
-// writePositionalAll at current EOF offset since this Io.File has no
-// dedicated append-mode open flag.
-fn appendFieldReportLog(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, filename: []const u8, json_line: []const u8) void {
+// Generic append-text-at-EOF helper — despite the name (first user was
+// attempts.log/verification.log, one JSON object per line), also used for
+// solved.toml/blocked.toml TOML array-of-tables blocks. Existing content is
+// never rewritten. Appends via writePositionalAll at current EOF offset
+// since this Io.File has no dedicated append-mode open flag.
+fn appendFieldReportLog(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, filename: []const u8, text_block: []const u8) void {
     const path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, filename }) catch return;
     defer gpa.free(path);
     const f = std.Io.Dir.createFileAbsolute(io, path, .{ .read = true, .truncate = false }) catch return;
     defer f.close(io);
     const st = f.stat(io) catch return;
-    const line = std.fmt.allocPrint(gpa, "{s}\n", .{json_line}) catch return;
+    const line = std.fmt.allocPrint(gpa, "{s}\n", .{text_block}) catch return;
     defer gpa.free(line);
     f.writePositionalAll(io, line, st.size) catch return;
 }
@@ -3766,6 +3767,117 @@ pub fn computeUpdate(gpa: std.mem.Allocator, io: std.Io, project_root_abs: []con
         .discoverSummary = discover_summary,
         .verifyPassed = verify_passed,
     };
+}
+
+// --- solved.toml / blocked.toml writers (Field Reports #4) ---
+// Append-only TOML array-of-tables, same directory and dedup philosophy as
+// state.json/attempts.log/verification.log — reuses appendFieldReportLog
+// (despite the name, it's a generic append-text-to-file-at-EOF helper, not
+// JSON-specific) and allocJsonEscape for string escaping (TOML basic-string
+// escapes — \" \\ \n \r \t \uXXXX — are a compatible subset of JSON's, no
+// second escaper needed).
+
+pub const SolvedEntry = struct {
+    problem: []const u8,
+    solution: []const u8,
+    verification: []const u8,
+    reusable: bool,
+};
+
+pub const BlockedEntry = struct {
+    objective: []const u8,
+    project: []const u8,
+    context: []const u8,
+    attempted: []const u8,
+    blocker: []const u8,
+    minimumHelpNeeded: []const u8,
+    suggestedNextStep: []const u8,
+};
+
+pub const FieldReportWriteResult = struct {
+    fieldReportPath: []u8, // owned
+    file: []const u8, // static: "solved.toml" | "blocked.toml"
+};
+
+pub fn computeFieldReportSolve(gpa: std.mem.Allocator, io: std.Io, project_root_abs: []const u8, entry: SolvedEntry) !FieldReportWriteResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const project_id = fieldReportProjectId(project_root_abs);
+    const dir = try allocFieldReportDir(gpa, home, project_id);
+    errdefer gpa.free(dir);
+    ensureFieldReportDir(io, home, dir);
+
+    const esc_problem = try allocJsonEscape(gpa, entry.problem);
+    defer gpa.free(esc_problem);
+    const esc_solution = try allocJsonEscape(gpa, entry.solution);
+    defer gpa.free(esc_solution);
+    const esc_verification = try allocJsonEscape(gpa, entry.verification);
+    defer gpa.free(esc_verification);
+
+    const block = try std.fmt.allocPrint(
+        gpa,
+        "[[solved]]\nproblem = \"{s}\"\nsolution = \"{s}\"\nverification = \"{s}\"\nreusable = {s}\n\n",
+        .{ esc_problem, esc_solution, esc_verification, if (entry.reusable) "true" else "false" },
+    );
+    defer gpa.free(block);
+    appendFieldReportLog(gpa, io, dir, "solved.toml", block);
+
+    return .{ .fieldReportPath = dir, .file = "solved.toml" };
+}
+
+// A blocked entry always demotes state.json's status to "blocked" and
+// points resume_point at review-field-reports — state.json stays the
+// single source of truth for "what should happen next", blocked.toml is
+// the evidence trail, not a second place callers have to check.
+pub fn computeFieldReportBlock(gpa: std.mem.Allocator, io: std.Io, project_root_abs: []const u8, entry: BlockedEntry) !FieldReportWriteResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const project_id = fieldReportProjectId(project_root_abs);
+    const dir = try allocFieldReportDir(gpa, home, project_id);
+    errdefer gpa.free(dir);
+    ensureFieldReportDir(io, home, dir);
+
+    const esc_objective = try allocJsonEscape(gpa, entry.objective);
+    defer gpa.free(esc_objective);
+    const esc_project = try allocJsonEscape(gpa, entry.project);
+    defer gpa.free(esc_project);
+    const esc_context = try allocJsonEscape(gpa, entry.context);
+    defer gpa.free(esc_context);
+    const esc_attempted = try allocJsonEscape(gpa, entry.attempted);
+    defer gpa.free(esc_attempted);
+    const esc_blocker = try allocJsonEscape(gpa, entry.blocker);
+    defer gpa.free(esc_blocker);
+    const esc_help = try allocJsonEscape(gpa, entry.minimumHelpNeeded);
+    defer gpa.free(esc_help);
+    const esc_next = try allocJsonEscape(gpa, entry.suggestedNextStep);
+    defer gpa.free(esc_next);
+
+    const block = try std.fmt.allocPrint(
+        gpa,
+        "[[blocked]]\nobjective = \"{s}\"\nproject = \"{s}\"\ncontext = \"{s}\"\nattempted = \"{s}\"\nblocker = \"{s}\"\nminimum_help_needed = \"{s}\"\nsuggested_next_step = \"{s}\"\n\n",
+        .{ esc_objective, esc_project, esc_context, esc_attempted, esc_blocker, esc_help, esc_next },
+    );
+    defer gpa.free(block);
+    appendFieldReportLog(gpa, io, dir, "blocked.toml", block);
+
+    if (readFieldReportState(gpa, io, dir)) |existing| {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        const blocked_state = FieldReportState{
+            .project = try gpa.dupe(u8, existing.project),
+            .status = try gpa.dupe(u8, "blocked"),
+            .current_task = try gpa.dupe(u8, existing.current_task),
+            .progress = existing.progress,
+            .last_checkpoint = try gpa.dupe(u8, "blocked"),
+            .resume_point = try gpa.dupe(u8, "review-field-reports"),
+            .last_updated = @intCast(ts.sec),
+        };
+        freeFieldReportState(gpa, existing);
+        defer freeFieldReportState(gpa, blocked_state);
+        writeFieldReportState(gpa, io, dir, blocked_state);
+    }
+
+    return .{ .fieldReportPath = dir, .file = "blocked.toml" };
 }
 
 // --- outline subcommand ---
