@@ -3280,19 +3280,73 @@ pub fn computeContextGate(gpa: std.mem.Allocator, io: std.Io, path: []const u8, 
     else
         try gpa.dupe(u8, "Context is small, relevant, and safe.");
 
+    const owned_files = try include_files.toOwnedSlice(gpa);
+    appendContextGateEvent(gpa, io, task, classification.taskType, owned_files, token_estimate, risk, compressed_count);
+
     return .{
         .task = try gpa.dupe(u8, task),
         .taskType = classification.taskType,
         .classifierConfidence = classification.confidence,
         .tokenEstimate = token_estimate,
         .risk = risk,
-        .includeFiles = try include_files.toOwnedSlice(gpa),
+        .includeFiles = owned_files,
         .includeDiff = has_diff,
         .compressedFiles = compressed_count,
         .excludeSecrets = has_secrets,
         .sendToAi = send_to_ai,
         .reason = reason,
     };
+}
+
+// --- context-gate usage instrumentation ---
+// Logs every context-gate call to ~/.4orman/context-gate-events.json
+// (JSON-lines, same convention as attempts.log/verification.log) so
+// `metrics` can report repeated prompts, repeated files, and token
+// estimates across real sessions — the "validate against real 4ORMan
+// development sessions" step needs this raw data to exist first.
+// Best-effort: a logging failure never fails the context-gate call itself.
+fn appendContextGateEvent(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    task: []const u8,
+    task_type: []const u8,
+    files: []const []const u8,
+    token_estimate: u64,
+    risk: []const u8,
+    compressed_files: u32,
+) void {
+    const home_ptr = std.c.getenv("HOME") orelse return;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const foreman_dir = std.fmt.allocPrint(gpa, "{s}/.4orman", .{home}) catch return;
+    defer gpa.free(foreman_dir);
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+
+    const esc_task = allocJsonEscape(gpa, task) catch return;
+    defer gpa.free(esc_task);
+
+    var files_buf: std.ArrayList(u8) = .empty;
+    defer files_buf.deinit(gpa);
+    files_buf.appendSlice(gpa, "[") catch return;
+    for (files, 0..) |f, i| {
+        const esc_f = allocJsonEscape(gpa, f) catch continue;
+        defer gpa.free(esc_f);
+        if (i > 0) files_buf.appendSlice(gpa, ", ") catch return;
+        files_buf.appendSlice(gpa, "\"") catch return;
+        files_buf.appendSlice(gpa, esc_f) catch return;
+        files_buf.appendSlice(gpa, "\"") catch return;
+    }
+    files_buf.appendSlice(gpa, "]") catch return;
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+
+    const line = std.fmt.allocPrint(
+        gpa,
+        "{{\"ts\": {d}, \"task\": \"{s}\", \"taskType\": \"{s}\", \"tokenEstimate\": {d}, \"risk\": \"{s}\", \"compressedFiles\": {d}, \"files\": {s}}}",
+        .{ @as(i64, @intCast(ts.sec)), esc_task, task_type, token_estimate, risk, compressed_files, files_buf.items },
+    ) catch return;
+    defer gpa.free(line);
+    appendFieldReportLog(gpa, io, foreman_dir, "context-gate-events.json", line);
 }
 
 // --- context-classifier subcommand (M36) ---
@@ -9114,6 +9168,11 @@ pub fn computeReport(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Repo
 
 // --- metrics ---
 
+pub const RepeatedFileCount = struct {
+    path: []u8, // owned
+    count: u32,
+};
+
 pub const MetricsResult = struct {
     cache_entries: u32,
     project_states: u32,
@@ -9122,7 +9181,131 @@ pub const MetricsResult = struct {
     device_profiled: bool,
     compat_baseline_set: bool,
     estimated_token_savings: u32,
+    // context-gate usage metrics (2026-07-02) — read from
+    // ~/.4orman/context-gate-events.json, written by appendContextGateEvent
+    // on every context-gate call.
+    context_gate_calls: u32,
+    repeated_prompt_count: u32, // distinct task strings (case-insensitive) seen 2+ times
+    avg_token_estimate: u64,
+    top_repeated_files: []RepeatedFileCount, // owned; top 10 by cross-call frequency
+    // Honest, not fabricated: context-gate does not call cache-fetch/
+    // cache-store internally yet, so there is nothing to report a hit/miss
+    // rate for. False would be misleading; omitting the field would look
+    // like an oversight. This says so explicitly.
+    context_gate_cache_wired: bool,
 };
+
+const ContextGateUsageStats = struct {
+    calls: u32,
+    repeated_prompts: u32,
+    avg_tokens: u64,
+    top_files: []RepeatedFileCount,
+};
+
+fn computeContextGateUsageStats(gpa: std.mem.Allocator, io: std.Io, home: []const u8) !ContextGateUsageStats {
+    const empty = ContextGateUsageStats{ .calls = 0, .repeated_prompts = 0, .avg_tokens = 0, .top_files = &[_]RepeatedFileCount{} };
+    const path = try std.fmt.allocPrint(gpa, "{s}/.4orman/context-gate-events.json", .{home});
+    defer gpa.free(path);
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return empty;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(8 * 1024 * 1024)) catch return empty;
+    defer gpa.free(content);
+
+    var task_counts = std.StringHashMap(u32).init(gpa);
+    defer {
+        var it = task_counts.keyIterator();
+        while (it.next()) |k| gpa.free(k.*);
+        task_counts.deinit();
+    }
+    var file_counts = std.StringHashMap(u32).init(gpa);
+    defer {
+        var it = file_counts.keyIterator();
+        while (it.next()) |k| gpa.free(k.*);
+        file_counts.deinit();
+    }
+
+    var calls: u32 = 0;
+    var total_tokens: u64 = 0;
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, trimmed, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const o = parsed.value.object;
+        calls += 1;
+
+        if (o.get("task")) |tv| {
+            if (tv == .string) {
+                const lower = try gpa.alloc(u8, tv.string.len);
+                defer gpa.free(lower);
+                for (tv.string, 0..) |c, i| lower[i] = std.ascii.toLower(c);
+                const gop = try task_counts.getOrPut(lower);
+                if (gop.found_existing) {
+                    gop.value_ptr.* += 1;
+                } else {
+                    gop.key_ptr.* = try gpa.dupe(u8, lower);
+                    gop.value_ptr.* = 1;
+                }
+            }
+        }
+
+        if (o.get("tokenEstimate")) |tev| {
+            if (tev == .integer) total_tokens += @intCast(tev.integer);
+        }
+
+        if (o.get("files")) |fv| {
+            if (fv == .array) {
+                for (fv.array.items) |fi| {
+                    if (fi != .string) continue;
+                    const gop = try file_counts.getOrPut(fi.string);
+                    if (gop.found_existing) {
+                        gop.value_ptr.* += 1;
+                    } else {
+                        gop.key_ptr.* = try gpa.dupe(u8, fi.string);
+                        gop.value_ptr.* = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    var repeated_prompts: u32 = 0;
+    {
+        var it = task_counts.valueIterator();
+        while (it.next()) |v| {
+            if (v.* >= 2) repeated_prompts += 1;
+        }
+    }
+
+    const RankedFileRef = struct { path: []const u8, count: u32 };
+    var ranked: std.ArrayList(RankedFileRef) = .empty;
+    defer ranked.deinit(gpa);
+    {
+        var it = file_counts.iterator();
+        while (it.next()) |kv| {
+            try ranked.append(gpa, .{ .path = kv.key_ptr.*, .count = kv.value_ptr.* });
+        }
+    }
+    std.mem.sort(RankedFileRef, ranked.items, {}, struct {
+        fn lessThan(_: void, a: RankedFileRef, b: RankedFileRef) bool {
+            return a.count > b.count;
+        }
+    }.lessThan);
+
+    const top_n = @min(10, ranked.items.len);
+    const top_files = try gpa.alloc(RepeatedFileCount, top_n);
+    for (0..top_n) |i| {
+        top_files[i] = .{ .path = try gpa.dupe(u8, ranked.items[i].path), .count = ranked.items[i].count };
+    }
+
+    const avg_tokens: u64 = if (calls == 0) 0 else total_tokens / calls;
+    return .{ .calls = calls, .repeated_prompts = repeated_prompts, .avg_tokens = avg_tokens, .top_files = top_files };
+}
 
 pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
@@ -9191,6 +9374,8 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     // Assuming the documented 80% cache-hit-rate target: savings = entries × 0.8 × 200 = entries × 160
     const estimated_token_savings = cache_entries *% 160;
 
+    const gate_stats = try computeContextGateUsageStats(gpa, io, home);
+
     return .{
         .cache_entries = cache_entries,
         .project_states = project_states,
@@ -9199,6 +9384,11 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
         .device_profiled = device_profiled,
         .compat_baseline_set = compat_baseline_set,
         .estimated_token_savings = estimated_token_savings,
+        .context_gate_calls = gate_stats.calls,
+        .repeated_prompt_count = gate_stats.repeated_prompts,
+        .avg_token_estimate = gate_stats.avg_tokens,
+        .top_repeated_files = gate_stats.top_files,
+        .context_gate_cache_wired = false,
     };
 }
 

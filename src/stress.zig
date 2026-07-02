@@ -640,6 +640,16 @@ pub fn main(init: std.process.Init) !void {
     ctx.checkStr("context-gate: architecture_refactor classified", &.{ "context-gate", repo, "--task", "refactor and decouple this module" }, "taskType", "architecture_refactor");
     ctx.checkStr("context-gate: compile_error classified", &.{ "context-gate", repo, "--task", "fix compile error in parser" }, "taskType", "compile_error");
 
+    // ----------------------------------------------------------------
+    // Tier 10: metrics context-gate usage instrumentation (2026-07-02)
+    // The two context-gate calls just above already generated real events
+    // in ~/.4orman/context-gate-events.json — this confirms `metrics`
+    // aggregates them into valid JSON without crashing, not the exact
+    // counts (machine-state-dependent, not stable across environments).
+    // ----------------------------------------------------------------
+    ctx.header("Tier 10: metrics context-gate instrumentation");
+    ctx.smoke("metrics (with contextGate usage stats)", &.{"metrics"});
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }

@@ -2660,10 +2660,29 @@ pub fn main(init: std.process.Init) !void {
         }
     } else if (std.mem.eql(u8, args[1], "metrics")) {
         const result = try root.computeMetrics(gpa, io);
+        defer {
+            for (result.top_repeated_files) |f| gpa.free(f.path);
+            gpa.free(result.top_repeated_files);
+        }
         try out.print(
-            "{{\n  \"cacheEntries\": {d},\n  \"projectStates\": {d},\n  \"totalDecisions\": {d},\n  \"totalPatterns\": {d},\n  \"deviceProfiled\": {s},\n  \"compatBaselineSet\": {s},\n  \"estimatedTokenSavings\": {d},\n  \"note\": \"savings estimated at 80% hit rate x 200 tokens/hit\"\n}}\n",
-            .{ result.cache_entries, result.project_states, result.total_decisions, result.total_patterns, if (result.device_profiled) "true" else "false", if (result.compat_baseline_set) "true" else "false", result.estimated_token_savings },
+            "{{\n  \"cacheEntries\": {d},\n  \"projectStates\": {d},\n  \"totalDecisions\": {d},\n  \"totalPatterns\": {d},\n  \"deviceProfiled\": {s},\n  \"compatBaselineSet\": {s},\n  \"estimatedTokenSavings\": {d},\n  \"note\": \"savings estimated at 80% hit rate x 200 tokens/hit\",\n  \"contextGate\": {{\n    \"calls\": {d},\n    \"repeatedPromptCount\": {d},\n    \"avgTokenEstimate\": {d},\n    \"cacheWired\": {s},\n    \"topRepeatedFiles\": [",
+            .{
+                result.cache_entries,          result.project_states,
+                result.total_decisions,        result.total_patterns,
+                if (result.device_profiled) "true" else "false",
+                if (result.compat_baseline_set) "true" else "false",
+                result.estimated_token_savings,
+                result.context_gate_calls,     result.repeated_prompt_count,
+                result.avg_token_estimate,     if (result.context_gate_cache_wired) "true" else "false",
+            },
         );
+        for (result.top_repeated_files, 0..) |f, i| {
+            const esc_path = try root.allocJsonEscape(gpa, f.path);
+            defer gpa.free(esc_path);
+            if (i > 0) try out.writeAll(", ");
+            try out.print("{{\"path\": \"{s}\", \"count\": {d}}}", .{ esc_path, f.count });
+        }
+        try out.writeAll("]\n  }\n}\n");
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "rollback")) {
         if (args.len < 3) {
