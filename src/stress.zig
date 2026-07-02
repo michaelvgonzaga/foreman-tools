@@ -288,6 +288,43 @@ const Ctx = struct {
         ctx.pass += 1;
     }
 
+    // Tier 2: check integer field == exact value
+    fn checkIntEq(ctx: *Ctx, label: []const u8, argv: []const []const u8, field: []const u8, want: i64) void {
+        const r = ctx.run(argv) catch |e| {
+            std.debug.print("[FAIL] {s}: spawn error {s}\n", .{ label, @errorName(e) });
+            ctx.fail += 1;
+            return;
+        };
+        defer ctx.gpa.free(r.stderr);
+        defer ctx.gpa.free(r.stdout);
+        if (r.exit != 0) {
+            std.debug.print("[FAIL] {s}: exit {d}\n", .{ label, r.exit });
+            ctx.fail += 1;
+            return;
+        }
+        const parsed = ctx.parseJson(label, r.stdout) orelse return;
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            std.debug.print("[FAIL] {s}: not a JSON object\n", .{label});
+            ctx.fail += 1;
+            return;
+        }
+        const val = parsed.value.object.get(field) orelse {
+            std.debug.print("[FAIL] {s}: missing field '{s}'\n", .{ label, field });
+            ctx.fail += 1;
+            return;
+        };
+        if (val != .integer or val.integer != want) {
+            std.debug.print("[FAIL] {s}: '{s}' = {?d}, expected {d}\n", .{
+                label, field, if (val == .integer) val.integer else null, want,
+            });
+            ctx.fail += 1;
+            return;
+        }
+        std.debug.print("[PASS] {s}\n", .{label});
+        ctx.pass += 1;
+    }
+
     // Tier 2: check array field in object has >= min_len items
     fn checkArrayLen(ctx: *Ctx, label: []const u8, argv: []const []const u8, field: []const u8, min_len: usize) void {
         const r = ctx.run(argv) catch |e| {
@@ -649,6 +686,22 @@ pub fn main(init: std.process.Init) !void {
     // ----------------------------------------------------------------
     ctx.header("Tier 10: metrics context-gate instrumentation");
     ctx.smoke("metrics (with contextGate usage stats)", &.{"metrics"});
+
+    // ----------------------------------------------------------------
+    // Tier 11: symbol-index (code index foundation, 2026-07-02)
+    // Two consecutive calls: first exercises the cache-miss path (or
+    // whatever mix already exists in ~/.cache/4orman-tools from prior
+    // runs), second must return identical fileCount/symbolCount with
+    // cacheMisses == 0 — the whole point of the index foundation is that
+    // a second call against an unchanged project is cache-hit-only.
+    // ----------------------------------------------------------------
+    ctx.header("Tier 11: symbol-index (code index foundation)");
+    ctx.smoke("symbol-index repo (absolute, first call)", &.{ "symbol-index", repo });
+    ctx.smokeIn("symbol-index . (relative)", repo, &.{ "symbol-index", "." });
+    ctx.checkIntGt("symbol-index: fileCount>0", &.{ "symbol-index", repo }, "fileCount", 0);
+    ctx.checkIntGt("symbol-index: symbolCount>0", &.{ "symbol-index", repo }, "symbolCount", 0);
+    ctx.checkIntEq("symbol-index: second call is cache-hit-only (cacheMisses==0)", &.{ "symbol-index", repo }, "cacheMisses", 0);
+    ctx.bad("symbol-index nonexistent path → exit 1, not a crash", &.{ "symbol-index", "/nonexistent/stress-symidx-xyz" }, 1);
 
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
