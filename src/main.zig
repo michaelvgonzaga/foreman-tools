@@ -54,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  context-classifier \"<task description>\"\n", .{});
         try err.print("  context-dependency-graph <root-path> <rel-file-path>\n", .{});
         try err.print("  context-compressor <file-path> [--max-lines N]\n", .{});
+        try err.print("  update <project-root>\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -1347,6 +1348,46 @@ pub fn main(init: std.process.Init) !void {
         try out.print(
             "{{\n  \"path\": \"{s}\",\n  \"originalLines\": {d},\n  \"compressedLines\": {d},\n  \"summary\": \"{s}\"\n}}\n",
             .{ esc_path, result.originalLines, result.compressedLines, esc_summary },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "update")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools update <project-root>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = root.computeUpdate(gpa, io, abs_path) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            gpa.free(result.projectId);
+            gpa.free(result.fieldReportPath);
+            gpa.free(result.status);
+            gpa.free(result.discoverSummary);
+        }
+
+        const esc_id = try root.allocJsonEscape(gpa, result.projectId);
+        defer gpa.free(esc_id);
+        const esc_path = try root.allocJsonEscape(gpa, result.fieldReportPath);
+        defer gpa.free(esc_path);
+        const esc_status = try root.allocJsonEscape(gpa, result.status);
+        defer gpa.free(esc_status);
+        const esc_summary = try root.allocJsonEscape(gpa, result.discoverSummary);
+        defer gpa.free(esc_summary);
+
+        try out.print(
+            "{{\n  \"projectId\": \"{s}\",\n  \"fieldReportPath\": \"{s}\",\n  \"status\": \"{s}\",\n  \"progress\": {d:.2},\n  \"discoverSummary\": \"{s}\",\n  \"verifyPassed\": {s}\n}}\n",
+            .{ esc_id, esc_path, esc_status, result.progress, esc_summary, if (result.verifyPassed) "true" else "false" },
         );
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {

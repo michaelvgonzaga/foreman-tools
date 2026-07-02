@@ -3532,6 +3532,242 @@ pub fn computeContextCompressor(gpa: std.mem.Allocator, io: std.Io, path: []cons
     };
 }
 
+// --- update / field-reports (4ORMan Field Reports #1-3) ---
+// Project-scoped operational memory, distinct from the global ledger.
+// Stored at ~/.4orman/field-reports/<project-id>/ — same ~/.4orman/
+// storage convention as ledger.json, not a second location. project-id
+// is the resolved project root's basename (e.g. "zig-factory").
+
+pub const FieldReportState = struct {
+    project: []u8, // owned
+    status: []u8, // owned: "running" | "idle" | "blocked" | "complete"
+    current_task: []u8, // owned
+    progress: f64,
+    last_checkpoint: []u8, // owned
+    resume_point: []u8, // owned
+    last_updated: i64,
+};
+
+pub fn freeFieldReportState(gpa: std.mem.Allocator, s: FieldReportState) void {
+    gpa.free(s.project);
+    gpa.free(s.status);
+    gpa.free(s.current_task);
+    gpa.free(s.last_checkpoint);
+    gpa.free(s.resume_point);
+}
+
+pub fn fieldReportProjectId(abs_path: []const u8) []const u8 {
+    return std.fs.path.basename(abs_path);
+}
+
+pub fn allocFieldReportDir(gpa: std.mem.Allocator, home: []const u8, project_id: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "{s}/.4orman/field-reports/{s}", .{ home, project_id });
+}
+
+fn ensureFieldReportDir(io: std.Io, home: []const u8, dir: []const u8) void {
+    var base_buf: [512]u8 = undefined;
+    if (std.fmt.bufPrint(&base_buf, "{s}/.4orman", .{home})) |base| {
+        std.Io.Dir.createDirAbsolute(io, base, .default_dir) catch {};
+    } else |_| {}
+    var reports_buf: [512]u8 = undefined;
+    if (std.fmt.bufPrint(&reports_buf, "{s}/.4orman/field-reports", .{home})) |reports| {
+        std.Io.Dir.createDirAbsolute(io, reports, .default_dir) catch {};
+    } else |_| {}
+    std.Io.Dir.createDirAbsolute(io, dir, .default_dir) catch {};
+}
+
+fn readFieldReportState(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) ?FieldReportState {
+    const path = std.fmt.allocPrint(gpa, "{s}/state.json", .{dir}) catch return null;
+    defer gpa.free(path);
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(256 * 1024)) catch return null;
+    defer gpa.free(content);
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const o = parsed.value.object;
+
+    const project_v = o.get("project") orelse return null;
+    const status_v = o.get("status") orelse return null;
+    const task_v = o.get("current_task") orelse return null;
+    const checkpoint_v = o.get("last_checkpoint") orelse return null;
+    const resume_v = o.get("resume_point") orelse return null;
+    if (project_v != .string or status_v != .string or task_v != .string or
+        checkpoint_v != .string or resume_v != .string) return null;
+
+    const progress: f64 = if (o.get("progress")) |pv| switch (pv) {
+        .float => |f| f,
+        .integer => |n| @floatFromInt(n),
+        else => 0.0,
+    } else 0.0;
+    const updated: i64 = if (o.get("last_updated")) |uv| switch (uv) {
+        .integer => |n| n,
+        else => 0,
+    } else 0;
+
+    return FieldReportState{
+        .project = gpa.dupe(u8, project_v.string) catch return null,
+        .status = gpa.dupe(u8, status_v.string) catch return null,
+        .current_task = gpa.dupe(u8, task_v.string) catch return null,
+        .progress = progress,
+        .last_checkpoint = gpa.dupe(u8, checkpoint_v.string) catch return null,
+        .resume_point = gpa.dupe(u8, resume_v.string) catch return null,
+        .last_updated = updated,
+    };
+}
+
+fn writeFieldReportState(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, state: FieldReportState) void {
+    const path = std.fmt.allocPrint(gpa, "{s}/state.json", .{dir}) catch return;
+    defer gpa.free(path);
+    const tmp_path = std.fmt.allocPrint(gpa, "{s}.tmp", .{path}) catch return;
+    defer gpa.free(tmp_path);
+
+    const esc_project = allocJsonEscape(gpa, state.project) catch return;
+    defer gpa.free(esc_project);
+    const esc_status = allocJsonEscape(gpa, state.status) catch return;
+    defer gpa.free(esc_status);
+    const esc_task = allocJsonEscape(gpa, state.current_task) catch return;
+    defer gpa.free(esc_task);
+    const esc_checkpoint = allocJsonEscape(gpa, state.last_checkpoint) catch return;
+    defer gpa.free(esc_checkpoint);
+    const esc_resume = allocJsonEscape(gpa, state.resume_point) catch return;
+    defer gpa.free(esc_resume);
+
+    const json = std.fmt.allocPrint(
+        gpa,
+        "{{\n  \"project\": \"{s}\",\n  \"status\": \"{s}\",\n  \"current_task\": \"{s}\",\n  \"progress\": {d:.2},\n  \"last_checkpoint\": \"{s}\",\n  \"resume_point\": \"{s}\",\n  \"last_updated\": {d}\n}}\n",
+        .{ esc_project, esc_status, esc_task, state.progress, esc_checkpoint, esc_resume, state.last_updated },
+    ) catch return;
+    defer gpa.free(json);
+
+    const f = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch return;
+    var wbuf: [4096]u8 = undefined;
+    var w = f.writerStreaming(io, &wbuf);
+    const ok = blk: {
+        w.interface.writeAll(json) catch break :blk false;
+        w.interface.flush() catch break :blk false;
+        break :blk true;
+    };
+    f.close(io);
+    if (!ok) return;
+    atomicRenameAbsolute(tmp_path, path);
+}
+
+// Append-only JSON-lines log (attempts.log / verification.log) — one JSON
+// object per line, existing lines are never rewritten. Appends via
+// writePositionalAll at current EOF offset since this Io.File has no
+// dedicated append-mode open flag.
+fn appendFieldReportLog(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, filename: []const u8, json_line: []const u8) void {
+    const path = std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, filename }) catch return;
+    defer gpa.free(path);
+    const f = std.Io.Dir.createFileAbsolute(io, path, .{ .read = true, .truncate = false }) catch return;
+    defer f.close(io);
+    const st = f.stat(io) catch return;
+    const line = std.fmt.allocPrint(gpa, "{s}\n", .{json_line}) catch return;
+    defer gpa.free(line);
+    f.writePositionalAll(io, line, st.size) catch return;
+}
+
+pub const UpdateResult = struct {
+    projectId: []u8, // owned
+    fieldReportPath: []u8, // owned
+    status: []u8, // owned
+    progress: f64,
+    discoverSummary: []u8, // owned — e.g. "framework=Zig, files=173"
+    verifyPassed: bool,
+};
+
+// Discover -> read metadata -> verify -> log -> resume-ready state. Does not
+// yet execute repair work (capability routing / #4+ in the priority plan) —
+// this is the scope + dispatch skeleton plus the three field-report
+// primitives (state.json, attempts.log, verification.log), not the full
+// autonomous loop.
+pub fn computeUpdate(gpa: std.mem.Allocator, io: std.Io, project_root_abs: []const u8) !UpdateResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+
+    const project_id = fieldReportProjectId(project_root_abs);
+    const dir = try allocFieldReportDir(gpa, home, project_id);
+    errdefer gpa.free(dir);
+    ensureFieldReportDir(io, home, dir);
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+
+    const existing = readFieldReportState(gpa, io, dir);
+    const resuming = existing != null;
+    if (existing) |e| freeFieldReportState(gpa, e); // read only to detect resume; state below is rebuilt fresh each run
+
+    // --- discover ---
+    const t_discover_start = now_ts;
+    const scan = try computeScan(gpa, io, project_root_abs);
+    defer {
+        for (scan.keyFiles) |f| gpa.free(f);
+        gpa.free(scan.keyFiles);
+        for (scan.dirMap) |d| gpa.free(d);
+        gpa.free(scan.dirMap);
+        if (scan.entryPoint) |ep| gpa.free(ep);
+        for (scan.files) |f| gpa.free(f.path);
+        gpa.free(scan.files);
+    }
+    const discover_summary = try std.fmt.allocPrint(gpa, "framework={s}, files={d}", .{ scan.framework, scan.fileCount });
+    errdefer gpa.free(discover_summary);
+
+    {
+        const esc_summary = allocJsonEscape(gpa, discover_summary) catch discover_summary;
+        defer if (esc_summary.ptr != discover_summary.ptr) gpa.free(esc_summary);
+        const line = std.fmt.allocPrint(
+            gpa,
+            "{{\"task\": \"discover\", \"result\": \"{s}\", \"duration_ms\": {d}, \"status\": \"success\"}}",
+            .{ esc_summary, @as(i64, 0) },
+        ) catch "";
+        defer if (line.len > 0) gpa.free(line);
+        if (line.len > 0) appendFieldReportLog(gpa, io, dir, "attempts.log", line);
+    }
+    _ = t_discover_start;
+
+    // --- verify (quality-gate is the smallest correct verification signal
+    // for #1-3; capability-specific verification arrives with #4+) ---
+    const qg = try computeQualityGate(gpa, io, project_root_abs);
+    const verify_passed = std.mem.eql(u8, qg.verdict, "pass");
+    {
+        const line = std.fmt.allocPrint(
+            gpa,
+            "{{\"test\": \"quality-gate\", \"passed\": {s}}}",
+            .{if (verify_passed) "true" else "false"},
+        ) catch "";
+        defer if (line.len > 0) gpa.free(line);
+        if (line.len > 0) appendFieldReportLog(gpa, io, dir, "verification.log", line);
+    }
+
+    const status: []const u8 = if (verify_passed) "idle" else "blocked";
+    const new_state = FieldReportState{
+        .project = try gpa.dupe(u8, project_id),
+        .status = try gpa.dupe(u8, status),
+        .current_task = try gpa.dupe(u8, "verify"),
+        .progress = 0.5,
+        .last_checkpoint = try gpa.dupe(u8, "discover+verify"),
+        .resume_point = try gpa.dupe(u8, if (verify_passed) "execute" else "review-field-reports"),
+        .last_updated = now_ts,
+    };
+    defer freeFieldReportState(gpa, new_state);
+    writeFieldReportState(gpa, io, dir, new_state);
+    _ = resuming;
+
+    return .{
+        .projectId = try gpa.dupe(u8, project_id),
+        .fieldReportPath = dir,
+        .status = try gpa.dupe(u8, status),
+        .progress = 0.5,
+        .discoverSummary = discover_summary,
+        .verifyPassed = verify_passed,
+    };
+}
+
 // --- outline subcommand ---
 
 pub const Symbol = struct {
