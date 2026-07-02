@@ -4385,6 +4385,431 @@ pub fn computeSolutionsList(gpa: std.mem.Allocator, io: std.Io) !SolutionsListRe
     return .{ .solutions = try entries.toOwnedSlice(gpa) };
 }
 
+// --- failure memory (failure-memory-v1) ---
+// Stored at ~/.4orman/failures.json — same sibling-file convention as
+// solutions.json above: append-only JSON-lines, deliberately NOT merged
+// into ledger.json's `entries` array (protects the Claude-vs-Zig scoring
+// protocol's schema and its five existing call sites). Two record types
+// share one file, distinguished by "type": a "failure" record captures
+// what went wrong; a "resolution" record references a failure's id and
+// describes the fix that worked later. Marking a fix never rewrites the
+// original failure line — it appends a new resolution line — so the file
+// stays genuinely append-only end to end, not "mostly append, sometimes
+// patch."
+
+const FAILURE_SCHEMA_VERSION: u32 = 1;
+
+pub const FailureEntry = struct {
+    id: []u8, // owned
+    date: []u8, // owned
+    recordedTs: i64,
+    schemaVersion: u32,
+    project: []u8, // owned
+    task: []u8, // owned — lookup match key, alongside errorSummary
+    command: []u8, // owned
+    errorSummary: []u8, // owned
+    filesInvolved: []u8, // owned — comma-separated, same convention as SolutionEntry.applicableProjectTypes
+};
+
+pub fn freeFailureEntry(gpa: std.mem.Allocator, f: FailureEntry) void {
+    gpa.free(f.id);
+    gpa.free(f.date);
+    gpa.free(f.project);
+    gpa.free(f.task);
+    gpa.free(f.command);
+    gpa.free(f.errorSummary);
+    gpa.free(f.filesInvolved);
+}
+
+pub const ResolutionEntry = struct {
+    id: []u8, // owned
+    date: []u8, // owned
+    recordedTs: i64,
+    schemaVersion: u32,
+    failureId: []u8, // owned — references FailureEntry.id
+    fix: []u8, // owned
+};
+
+pub fn freeResolutionEntry(gpa: std.mem.Allocator, r: ResolutionEntry) void {
+    gpa.free(r.id);
+    gpa.free(r.date);
+    gpa.free(r.failureId);
+    gpa.free(r.fix);
+}
+
+fn allocFailuresPath(gpa: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "{s}/.4orman/failures.json", .{home});
+}
+
+fn parseFailuresFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, failures: *std.ArrayList(FailureEntry), resolutions: *std.ArrayList(ResolutionEntry)) void {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return;
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = r.interface.allocRemaining(gpa, .limited(4 * 1024 * 1024)) catch return;
+    defer gpa.free(content);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, trimmed, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const o = parsed.value.object;
+
+        const getStr = struct {
+            fn get(obj: @TypeOf(o), key: []const u8) []const u8 {
+                if (obj.get(key)) |v| if (v == .string) return v.string;
+                return "";
+            }
+        }.get;
+
+        const type_v = o.get("type") orelse continue;
+        const id_v = o.get("id") orelse continue;
+        const date_v = o.get("date") orelse continue;
+        if (type_v != .string or id_v != .string or date_v != .string) continue;
+        const recorded_ts: i64 = if (o.get("recordedTs")) |v| switch (v) {
+            .integer => |n| n,
+            else => 0,
+        } else 0;
+        const schema_version: u32 = if (o.get("schemaVersion")) |v| switch (v) {
+            .integer => |n| @intCast(n),
+            else => 0,
+        } else 0;
+
+        if (std.mem.eql(u8, type_v.string, "failure")) {
+            const task_v = o.get("task") orelse continue;
+            if (task_v != .string) continue;
+            const entry = FailureEntry{
+                .id = gpa.dupe(u8, id_v.string) catch continue,
+                .date = gpa.dupe(u8, date_v.string) catch continue,
+                .recordedTs = recorded_ts,
+                .schemaVersion = schema_version,
+                .project = gpa.dupe(u8, getStr(o, "project")) catch continue,
+                .task = gpa.dupe(u8, task_v.string) catch continue,
+                .command = gpa.dupe(u8, getStr(o, "command")) catch continue,
+                .errorSummary = gpa.dupe(u8, getStr(o, "errorSummary")) catch continue,
+                .filesInvolved = gpa.dupe(u8, getStr(o, "filesInvolved")) catch continue,
+            };
+            failures.append(gpa, entry) catch continue;
+        } else if (std.mem.eql(u8, type_v.string, "resolution")) {
+            const failure_id_v = o.get("failureId") orelse continue;
+            if (failure_id_v != .string) continue;
+            const entry = ResolutionEntry{
+                .id = gpa.dupe(u8, id_v.string) catch continue,
+                .date = gpa.dupe(u8, date_v.string) catch continue,
+                .recordedTs = recorded_ts,
+                .schemaVersion = schema_version,
+                .failureId = gpa.dupe(u8, failure_id_v.string) catch continue,
+                .fix = gpa.dupe(u8, getStr(o, "fix")) catch continue,
+            };
+            resolutions.append(gpa, entry) catch continue;
+        } else continue;
+
+        if (failures.items.len + resolutions.items.len >= LEDGER_MAX_ENTRIES * 2) break;
+    }
+}
+
+pub const FailureRecordParams = struct {
+    task: []const u8,
+    command: []const u8,
+    errorSummary: []const u8,
+    filesInvolved: []const u8,
+    project: []const u8,
+};
+
+pub const FailureRecordResult = struct {
+    id: []u8, // owned
+};
+
+// No dedup on write, unlike solutions: a repeated failure is itself the
+// signal computeFailureLookup/repeatedFailureCount exist to surface —
+// rejecting the second occurrence as a "duplicate" would erase the exact
+// data this feature is for.
+pub fn computeFailureRecord(gpa: std.mem.Allocator, io: std.Io, params: FailureRecordParams) !FailureRecordResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
+    defer gpa.free(foreman_dir);
+    std.Io.Dir.createDirAbsolute(io, foreman_dir, .default_dir) catch {};
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+    const date = try tsToDateStr(gpa, @intCast(now_ts));
+    defer gpa.free(date);
+    const id_src = try std.fmt.allocPrint(gpa, "failure:{s}:{s}:{d}", .{ params.task, params.errorSummary, now_ts });
+    defer gpa.free(id_src);
+    const hex = sha256Hex(id_src);
+    const id = try gpa.dupe(u8, hex[0..16]);
+    errdefer gpa.free(id);
+
+    const esc_task = try allocJsonEscape(gpa, params.task);
+    defer gpa.free(esc_task);
+    const esc_cmd = try allocJsonEscape(gpa, params.command);
+    defer gpa.free(esc_cmd);
+    const esc_err = try allocJsonEscape(gpa, params.errorSummary);
+    defer gpa.free(esc_err);
+    const esc_files = try allocJsonEscape(gpa, params.filesInvolved);
+    defer gpa.free(esc_files);
+    const esc_project = try allocJsonEscape(gpa, params.project);
+    defer gpa.free(esc_project);
+    const esc_date = try allocJsonEscape(gpa, date);
+    defer gpa.free(esc_date);
+    const esc_id = try allocJsonEscape(gpa, id);
+    defer gpa.free(esc_id);
+
+    const line = try std.fmt.allocPrint(
+        gpa,
+        "{{\"type\": \"failure\", \"id\": \"{s}\", \"date\": \"{s}\", \"recordedTs\": {d}, \"schemaVersion\": {d}, \"project\": \"{s}\", \"task\": \"{s}\", \"command\": \"{s}\", \"errorSummary\": \"{s}\", \"filesInvolved\": \"{s}\"}}",
+        .{ esc_id, esc_date, now_ts, FAILURE_SCHEMA_VERSION, esc_project, esc_task, esc_cmd, esc_err, esc_files },
+    );
+    defer gpa.free(line);
+    appendFieldReportLog(gpa, io, foreman_dir, "failures.json", line);
+
+    return .{ .id = id };
+}
+
+pub const FailureMarkFixedParams = struct {
+    failureId: []const u8,
+    fix: []const u8,
+};
+
+pub const FailureMarkFixedResult = struct {
+    id: []u8, // owned — the new resolution record's id
+    failureFound: bool, // honest disclosure: true only if failureId matched an existing failure record
+};
+
+pub fn computeFailureMarkFixed(gpa: std.mem.Allocator, io: std.Io, params: FailureMarkFixedParams) !FailureMarkFixedResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const foreman_dir = try std.fmt.allocPrint(gpa, "{s}/.4orman", .{home});
+    defer gpa.free(foreman_dir);
+    const path = try allocFailuresPath(gpa, home);
+    defer gpa.free(path);
+
+    var failures: std.ArrayList(FailureEntry) = .empty;
+    var resolutions: std.ArrayList(ResolutionEntry) = .empty;
+    defer {
+        for (failures.items) |f| freeFailureEntry(gpa, f);
+        failures.deinit(gpa);
+        for (resolutions.items) |r| freeResolutionEntry(gpa, r);
+        resolutions.deinit(gpa);
+    }
+    parseFailuresFile(gpa, io, path, &failures, &resolutions);
+
+    var failure_found = false;
+    for (failures.items) |f| {
+        if (std.mem.eql(u8, f.id, params.failureId)) {
+            failure_found = true;
+            break;
+        }
+    }
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_ts: i64 = @intCast(ts.sec);
+    const date = try tsToDateStr(gpa, @intCast(now_ts));
+    defer gpa.free(date);
+    const id_src = try std.fmt.allocPrint(gpa, "resolution:{s}:{d}", .{ params.failureId, now_ts });
+    defer gpa.free(id_src);
+    const hex = sha256Hex(id_src);
+    const id = try gpa.dupe(u8, hex[0..16]);
+    errdefer gpa.free(id);
+
+    const esc_failure_id = try allocJsonEscape(gpa, params.failureId);
+    defer gpa.free(esc_failure_id);
+    const esc_fix = try allocJsonEscape(gpa, params.fix);
+    defer gpa.free(esc_fix);
+    const esc_date = try allocJsonEscape(gpa, date);
+    defer gpa.free(esc_date);
+    const esc_id = try allocJsonEscape(gpa, id);
+    defer gpa.free(esc_id);
+
+    const line = try std.fmt.allocPrint(
+        gpa,
+        "{{\"type\": \"resolution\", \"id\": \"{s}\", \"date\": \"{s}\", \"recordedTs\": {d}, \"schemaVersion\": {d}, \"failureId\": \"{s}\", \"fix\": \"{s}\"}}",
+        .{ esc_id, esc_date, now_ts, FAILURE_SCHEMA_VERSION, esc_failure_id, esc_fix },
+    );
+    defer gpa.free(line);
+    appendFieldReportLog(gpa, io, foreman_dir, "failures.json", line);
+
+    return .{ .id = id, .failureFound = failure_found };
+}
+
+pub const FailureLookupMatch = struct {
+    id: []u8, // owned
+    date: []u8, // owned
+    project: []u8, // owned
+    task: []u8, // owned
+    command: []u8, // owned
+    errorSummary: []u8, // owned
+    filesInvolved: []u8, // owned
+    score: u32, // ledgerWordOverlapScore(query, task+errorSummary)
+    resolved: bool,
+    fix: []u8, // owned — empty string if unresolved
+};
+
+pub fn freeFailureLookupMatch(gpa: std.mem.Allocator, m: FailureLookupMatch) void {
+    gpa.free(m.id);
+    gpa.free(m.date);
+    gpa.free(m.project);
+    gpa.free(m.task);
+    gpa.free(m.command);
+    gpa.free(m.errorSummary);
+    gpa.free(m.filesInvolved);
+    gpa.free(m.fix);
+}
+
+pub const FailureLookupResult = struct {
+    matches: []FailureLookupMatch, // owned; each owned; sorted by score desc
+};
+
+// Same >=50 word-overlap threshold as ledger's findLedgerPrecedent and
+// solutions' dedup check — "similar" is one definition across this
+// codebase, not a new scorer per feature.
+pub fn computeFailureLookup(gpa: std.mem.Allocator, io: std.Io, query: []const u8) !FailureLookupResult {
+    const home_ptr = std.c.getenv("HOME") orelse return error.NoHome;
+    const home = std.mem.sliceTo(home_ptr, 0);
+    const path = try allocFailuresPath(gpa, home);
+    defer gpa.free(path);
+
+    var failures: std.ArrayList(FailureEntry) = .empty;
+    var resolutions: std.ArrayList(ResolutionEntry) = .empty;
+    defer {
+        for (failures.items) |f| freeFailureEntry(gpa, f);
+        failures.deinit(gpa);
+        for (resolutions.items) |r| freeResolutionEntry(gpa, r);
+        resolutions.deinit(gpa);
+    }
+    parseFailuresFile(gpa, io, path, &failures, &resolutions);
+
+    const query_lower = try gpa.alloc(u8, query.len);
+    defer gpa.free(query_lower);
+    for (query, 0..) |c, i| query_lower[i] = std.ascii.toLower(c);
+
+    var matches: std.ArrayList(FailureLookupMatch) = .empty;
+    errdefer {
+        for (matches.items) |m| freeFailureLookupMatch(gpa, m);
+        matches.deinit(gpa);
+    }
+
+    for (failures.items) |f| {
+        const combined = try std.fmt.allocPrint(gpa, "{s} {s}", .{ f.task, f.errorSummary });
+        defer gpa.free(combined);
+        const cand_lower = try gpa.alloc(u8, combined.len);
+        defer gpa.free(cand_lower);
+        for (combined, 0..) |c, i| cand_lower[i] = std.ascii.toLower(c);
+        const score = ledgerWordOverlapScore(query_lower, cand_lower);
+        if (score < 50) continue;
+
+        // Latest resolution for this failure wins — append-only means a
+        // later line is more current than an earlier one for the same id.
+        var fix: []u8 = try gpa.dupe(u8, "");
+        var resolved = false;
+        for (resolutions.items) |r| {
+            if (std.mem.eql(u8, r.failureId, f.id)) {
+                gpa.free(fix);
+                fix = try gpa.dupe(u8, r.fix);
+                resolved = true;
+            }
+        }
+
+        try matches.append(gpa, .{
+            .id = try gpa.dupe(u8, f.id),
+            .date = try gpa.dupe(u8, f.date),
+            .project = try gpa.dupe(u8, f.project),
+            .task = try gpa.dupe(u8, f.task),
+            .command = try gpa.dupe(u8, f.command),
+            .errorSummary = try gpa.dupe(u8, f.errorSummary),
+            .filesInvolved = try gpa.dupe(u8, f.filesInvolved),
+            .score = score,
+            .resolved = resolved,
+            .fix = fix,
+        });
+    }
+
+    std.mem.sort(FailureLookupMatch, matches.items, {}, struct {
+        fn lessThan(_: void, a: FailureLookupMatch, b: FailureLookupMatch) bool {
+            return a.score > b.score;
+        }
+    }.lessThan);
+
+    return .{ .matches = try matches.toOwnedSlice(gpa) };
+}
+
+const FailureMemoryStats = struct {
+    total_failures: u32,
+    resolved_count: u32,
+    unresolved_count: u32,
+    repeated_failure_count: u32, // distinct (task+errorSummary, case-insensitive) seen 2+ times
+};
+
+fn computeFailureMemoryStats(gpa: std.mem.Allocator, io: std.Io, home: []const u8) !FailureMemoryStats {
+    const empty = FailureMemoryStats{ .total_failures = 0, .resolved_count = 0, .unresolved_count = 0, .repeated_failure_count = 0 };
+    const path = try allocFailuresPath(gpa, home);
+    defer gpa.free(path);
+    if (!fileExists(io, path)) return empty;
+
+    var failures: std.ArrayList(FailureEntry) = .empty;
+    var resolutions: std.ArrayList(ResolutionEntry) = .empty;
+    defer {
+        for (failures.items) |f| freeFailureEntry(gpa, f);
+        failures.deinit(gpa);
+        for (resolutions.items) |r| freeResolutionEntry(gpa, r);
+        resolutions.deinit(gpa);
+    }
+    parseFailuresFile(gpa, io, path, &failures, &resolutions);
+
+    var resolved_ids = std.StringHashMap(void).init(gpa);
+    defer resolved_ids.deinit();
+    for (resolutions.items) |r| {
+        resolved_ids.put(r.failureId, {}) catch continue;
+    }
+
+    var resolved_count: u32 = 0;
+    var key_counts = std.StringHashMap(u32).init(gpa);
+    defer {
+        var it = key_counts.keyIterator();
+        while (it.next()) |k| gpa.free(k.*);
+        key_counts.deinit();
+    }
+
+    for (failures.items) |f| {
+        if (resolved_ids.contains(f.id)) resolved_count += 1;
+
+        const combined = try std.fmt.allocPrint(gpa, "{s}\x00{s}", .{ f.task, f.errorSummary });
+        defer gpa.free(combined);
+        const lower = try gpa.alloc(u8, combined.len);
+        defer gpa.free(lower);
+        for (combined, 0..) |c, i| lower[i] = std.ascii.toLower(c);
+        const gop = try key_counts.getOrPut(lower);
+        if (gop.found_existing) {
+            gop.value_ptr.* += 1;
+        } else {
+            gop.key_ptr.* = try gpa.dupe(u8, lower);
+            gop.value_ptr.* = 1;
+        }
+    }
+
+    var repeated: u32 = 0;
+    {
+        var it = key_counts.valueIterator();
+        while (it.next()) |v| {
+            if (v.* >= 2) repeated += 1;
+        }
+    }
+
+    const total: u32 = @intCast(failures.items.len);
+    return .{
+        .total_failures = total,
+        .resolved_count = resolved_count,
+        .unresolved_count = total - resolved_count,
+        .repeated_failure_count = repeated,
+    };
+}
+
 // --- outline subcommand ---
 
 pub const Symbol = struct {
@@ -9367,6 +9792,11 @@ pub const MetricsResult = struct {
     // rate for. False would be misleading; omitting the field would look
     // like an oversight. This says so explicitly.
     context_gate_cache_wired: bool,
+    // failure-memory-v1 metrics — read from ~/.4orman/failures.json
+    failure_memory_total: u32,
+    failure_memory_resolved: u32,
+    failure_memory_unresolved: u32,
+    failure_memory_repeated: u32, // distinct task+errorSummary seen 2+ times
 };
 
 const ContextGateUsageStats = struct {
@@ -9549,6 +9979,7 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
     const estimated_token_savings = cache_entries *% 160;
 
     const gate_stats = try computeContextGateUsageStats(gpa, io, home);
+    const failure_stats = try computeFailureMemoryStats(gpa, io, home);
 
     return .{
         .cache_entries = cache_entries,
@@ -9563,6 +9994,10 @@ pub fn computeMetrics(gpa: std.mem.Allocator, io: std.Io) !MetricsResult {
         .avg_token_estimate = gate_stats.avg_tokens,
         .top_repeated_files = gate_stats.top_files,
         .context_gate_cache_wired = false,
+        .failure_memory_total = failure_stats.total_failures,
+        .failure_memory_resolved = failure_stats.resolved_count,
+        .failure_memory_unresolved = failure_stats.unresolved_count,
+        .failure_memory_repeated = failure_stats.repeated_failure_count,
     };
 }
 

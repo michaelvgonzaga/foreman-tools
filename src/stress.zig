@@ -703,6 +703,26 @@ pub fn main(init: std.process.Init) !void {
     ctx.checkIntEq("symbol-index: second call is cache-hit-only (cacheMisses==0)", &.{ "symbol-index", repo }, "cacheMisses", 0);
     ctx.bad("symbol-index nonexistent path → exit 1, not a crash", &.{ "symbol-index", "/nonexistent/stress-symidx-xyz" }, 1);
 
+    // ----------------------------------------------------------------
+    // Tier 12: failure-record / failure-mark-fixed / failure-lookup
+    // (failure-memory-v1, 2026-07-02)
+    // Same stdin limitation as Tiers 6/8 — failure-record's and
+    // failure-mark-fixed's happy paths (record → lookup finds it →
+    // mark-fixed → lookup shows resolved+fix) are manually verified (see
+    // decision log), only usage/error paths and failure-lookup (no stdin)
+    // are harness-covered here.
+    // ----------------------------------------------------------------
+    ctx.header("Tier 12: failure-record / failure-mark-fixed / failure-lookup (failure-memory-v1)");
+    ctx.bad("failure-record no stdin JSON → exit 1", &.{"failure-record"}, 1);
+    ctx.bad("failure-mark-fixed no args → exit 1", &.{"failure-mark-fixed"}, 1);
+    ctx.smoke("failure-lookup (no matches expected)", &.{ "failure-lookup", "stress-test-nonexistent-query-xyz-12345" });
+    ctx.checkArrayLen("failure-lookup: matches array present", &.{ "failure-lookup", "stress-test-nonexistent-query-xyz-12345" }, "matches", 0);
+    // checkIntGt only reads top-level fields, so this confirms metrics
+    // still parses as valid JSON with the new nested "failureMemory" object
+    // appended, not the nested values themselves (no nested-field checker
+    // exists yet in this harness).
+    ctx.checkIntGt("metrics: valid JSON with failureMemory block appended", &.{"metrics"}, "cacheEntries", -1);
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }
