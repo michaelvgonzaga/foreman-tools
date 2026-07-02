@@ -2602,30 +2602,32 @@ pub fn computeCacheFetch(gpa: std.mem.Allocator, io: std.Io, file_path: []const 
     const entry_path = try cacheEntryPath(gpa, home, file_path, sub_key);
     defer gpa.free(entry_path);
 
-    const miss = CacheFetchResult{
-        .path = try gpa.dupe(u8, file_path),
-        .subKey = try gpa.dupe(u8, sub_key),
-        .hit = false,
-        .value = null,
+    // Resolve hit/miss first, allocate .path/.subKey exactly once at the end —
+    // the previous version pre-built a "miss" result up front and then built
+    // a second, separate result on an actual hit, orphaning the first one's
+    // allocations. Real leak, not just theoretical: symbol-index calling this
+    // once per source file (mostly hits on a second run) surfaced it under
+    // the Debug build's DebugAllocator.
+    const hit_value: ?[]u8 = blk: {
+        const cf = std.Io.Dir.openFileAbsolute(io, entry_path, .{}) catch break :blk null;
+        defer cf.close(io);
+        var rbuf: [4096]u8 = undefined;
+        var r = cf.reader(io, &rbuf);
+        const content = r.interface.allocRemaining(gpa, .limited(512 * 1024)) catch break :blk null;
+        defer gpa.free(content);
+
+        const nl = std.mem.indexOfScalar(u8, content, '\n') orelse break :blk null;
+        const stored_hash = content[0..nl];
+        const stored_value = std.mem.trimEnd(u8, content[nl + 1 ..], " \t\n\r");
+        if (!std.mem.eql(u8, stored_hash, new_sha)) break :blk null;
+        break :blk try gpa.dupe(u8, stored_value);
     };
-
-    const cf = std.Io.Dir.openFileAbsolute(io, entry_path, .{}) catch return miss;
-    defer cf.close(io);
-    var rbuf: [4096]u8 = undefined;
-    var r = cf.reader(io, &rbuf);
-    const content = r.interface.allocRemaining(gpa, .limited(512 * 1024)) catch return miss;
-    defer gpa.free(content);
-
-    const nl = std.mem.indexOfScalar(u8, content, '\n') orelse return miss;
-    const stored_hash = content[0..nl];
-    const stored_value = std.mem.trimEnd(u8, content[nl + 1 ..], " \t\n\r");
-    if (!std.mem.eql(u8, stored_hash, new_sha)) return miss;
 
     return .{
         .path = try gpa.dupe(u8, file_path),
         .subKey = try gpa.dupe(u8, sub_key),
-        .hit = true,
-        .value = try gpa.dupe(u8, stored_value),
+        .hit = hit_value != null,
+        .value = hit_value,
     };
 }
 
@@ -4733,6 +4735,175 @@ pub fn computeOutline(
         .path = try gpa.dupe(u8, file_path),
         .lang = lang,
         .symbols = symbols,
+    };
+}
+
+// --- symbol-index (code index foundation, 2026-07-02) ---
+// Project-wide symbol index built entirely on existing primitives: computeScan
+// for the file list, computeOutline for per-file extraction, and the existing
+// cache-fetch/cache-store layer (M18-M20, content-hash-invalidated) so a
+// second call against an unchanged project reads cached outlines instead of
+// re-parsing every source file. This is the foundation symbol-find (Module 6
+// M2) can build on later to stop re-walking the whole project on every call —
+// not done here, symbol-find is unchanged in this pass.
+
+fn symbolKindStatic(kind: []const u8) []const u8 {
+    const kinds = [_][]const u8{ "function", "method", "class", "struct", "enum", "trait", "interface", "type", "module", "impl" };
+    for (kinds) |k| {
+        if (std.mem.eql(u8, k, kind)) return k;
+    }
+    return "function"; // unreachable in practice — only ever writes known kinds
+}
+
+fn serializeSymbolsJson(gpa: std.mem.Allocator, lang: []const u8, symbols: []const Symbol) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    const esc_lang = try allocJsonEscape(gpa, lang);
+    defer gpa.free(esc_lang);
+    try buf.appendSlice(gpa, "{\"lang\": \"");
+    try buf.appendSlice(gpa, esc_lang);
+    try buf.appendSlice(gpa, "\", \"symbols\": [");
+    for (symbols, 0..) |s, i| {
+        const esc_name = try allocJsonEscape(gpa, s.name);
+        defer gpa.free(esc_name);
+        if (i > 0) try buf.appendSlice(gpa, ", ");
+        const entry = try std.fmt.allocPrint(gpa, "{{\"name\": \"{s}\", \"kind\": \"{s}\", \"line\": {d}}}", .{ esc_name, s.kind, s.line });
+        defer gpa.free(entry);
+        try buf.appendSlice(gpa, entry);
+    }
+    try buf.appendSlice(gpa, "]}");
+    return buf.toOwnedSlice(gpa);
+}
+
+const ParsedSymbolIndex = struct { lang: []u8, symbols: []Symbol };
+
+fn parseSymbolsJson(gpa: std.mem.Allocator, json: []const u8) !ParsedSymbolIndex {
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCache;
+    const o = parsed.value.object;
+    const lang_v = o.get("lang") orelse return error.InvalidCache;
+    if (lang_v != .string) return error.InvalidCache;
+    const syms_v = o.get("symbols") orelse return error.InvalidCache;
+    if (syms_v != .array) return error.InvalidCache;
+
+    const symbols = try gpa.alloc(Symbol, syms_v.array.items.len);
+    errdefer gpa.free(symbols);
+    var n: usize = 0;
+    errdefer {
+        for (symbols[0..n]) |s| gpa.free(s.name);
+    }
+    for (syms_v.array.items) |item| {
+        if (item != .object) continue;
+        const so = item.object;
+        const name_v = so.get("name") orelse continue;
+        const kind_v = so.get("kind") orelse continue;
+        const line_v = so.get("line") orelse continue;
+        if (name_v != .string or kind_v != .string) continue;
+        const line: u32 = switch (line_v) {
+            .integer => |x| @intCast(x),
+            else => 0,
+        };
+        symbols[n] = .{ .name = try gpa.dupe(u8, name_v.string), .kind = symbolKindStatic(kind_v.string), .line = line };
+        n += 1;
+    }
+    return .{ .lang = try gpa.dupe(u8, lang_v.string), .symbols = symbols[0..n] };
+}
+
+const IndexOneFileResult = struct { lang: []u8, symbols: []Symbol, from_cache: bool };
+
+fn indexOneFile(gpa: std.mem.Allocator, io: std.Io, abs_path: []const u8) !IndexOneFileResult {
+    const fetch = computeCacheFetch(gpa, io, abs_path, "symbol-index") catch null;
+    if (fetch) |f| {
+        defer gpa.free(f.path);
+        defer gpa.free(f.subKey);
+        if (f.hit) {
+            if (f.value) |v| {
+                defer gpa.free(v);
+                if (parseSymbolsJson(gpa, v)) |parsed| {
+                    return .{ .lang = parsed.lang, .symbols = parsed.symbols, .from_cache = true };
+                } else |_| {
+                    // Corrupt/stale-shape cache entry — fall through and recompute.
+                }
+            }
+        }
+    }
+
+    const outline = try computeOutline(gpa, io, abs_path);
+    defer gpa.free(outline.path);
+    const json = try serializeSymbolsJson(gpa, outline.lang, outline.symbols);
+    defer gpa.free(json);
+    if (computeCacheStore(gpa, io, abs_path, "symbol-index", json) catch null) |store_result| {
+        gpa.free(store_result.path);
+        gpa.free(store_result.subKey);
+    }
+    return .{ .lang = try gpa.dupe(u8, outline.lang), .symbols = outline.symbols, .from_cache = false };
+}
+
+pub const IndexedFile = struct {
+    path: []u8, // owned, relative to root
+    lang: []u8, // owned
+    symbols: []Symbol, // owned; each .name owned, .kind static
+};
+
+pub const SymbolIndexResult = struct {
+    root: []u8, // owned
+    fileCount: u32,
+    symbolCount: u32,
+    cacheHits: u32,
+    cacheMisses: u32,
+    files: []IndexedFile, // owned
+};
+
+pub fn computeSymbolIndex(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !SymbolIndexResult {
+    const scan = try computeScan(gpa, io, path);
+    defer {
+        for (scan.keyFiles) |f| gpa.free(f);
+        gpa.free(scan.keyFiles);
+        for (scan.dirMap) |d| gpa.free(d);
+        gpa.free(scan.dirMap);
+        if (scan.entryPoint) |ep| gpa.free(ep);
+        for (scan.files) |f| gpa.free(f.path);
+        gpa.free(scan.files);
+    }
+
+    var files: std.ArrayList(IndexedFile) = .empty;
+    errdefer {
+        for (files.items) |f| {
+            gpa.free(f.path);
+            gpa.free(f.lang);
+            for (f.symbols) |s| gpa.free(s.name);
+            gpa.free(f.symbols);
+        }
+        files.deinit(gpa);
+    }
+
+    var symbol_count: u32 = 0;
+    var hits: u32 = 0;
+    var misses: u32 = 0;
+
+    for (scan.files) |f| {
+        if (!std.mem.eql(u8, f.kind, "source")) continue;
+        const abs_file = try std.fs.path.join(gpa, &.{ path, f.path });
+        defer gpa.free(abs_file);
+
+        const indexed = indexOneFile(gpa, io, abs_file) catch continue; // unreadable/unsupported file — skip
+        if (indexed.from_cache) hits += 1 else misses += 1;
+        symbol_count += @intCast(indexed.symbols.len);
+        try files.append(gpa, .{
+            .path = try gpa.dupe(u8, f.path),
+            .lang = indexed.lang,
+            .symbols = indexed.symbols,
+        });
+    }
+
+    return .{
+        .root = try gpa.dupe(u8, path),
+        .fileCount = @intCast(files.items.len),
+        .symbolCount = symbol_count,
+        .cacheHits = hits,
+        .cacheMisses = misses,
+        .files = try files.toOwnedSlice(gpa),
     };
 }
 
@@ -7175,7 +7346,10 @@ pub fn computeDeviceScan(gpa: std.mem.Allocator, io: std.Io) !DeviceScanResult {
                 ) catch null;
                 if (cache_json) |cj| {
                     defer gpa.free(cj);
-                    _ = computeCacheStore(gpa, io, profile_path, "device", cj) catch {};
+                    if (computeCacheStore(gpa, io, profile_path, "device", cj) catch null) |store_result| {
+                        gpa.free(store_result.path);
+                        gpa.free(store_result.subKey);
+                    }
                 }
             }
         }

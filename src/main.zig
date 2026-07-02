@@ -64,6 +64,7 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
         try err.print("  outline <file-path>\n", .{});
+        try err.print("  symbol-index <root-path>\n", .{});
         try err.print("  deps <root-path>\n", .{});
         try err.print("  compat-check [--baseline | --update-baseline]\n", .{});
         try err.print("  run-tests <path>\n", .{});
@@ -1833,6 +1834,55 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\n    {{\"name\": \"{s}\", \"kind\": \"{s}\", \"line\": {d}}}", .{ esc_name, sym.kind, sym.line });
         }
         if (result.symbols.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "symbol-index")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools symbol-index <root-path>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const abs_path = root.resolveAbsolutePath(gpa, io, args[2]) catch {
+            try err.print("error: path not found: {s}\n", .{args[2]});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(abs_path);
+
+        const result = try root.computeSymbolIndex(gpa, io, abs_path);
+        defer {
+            gpa.free(result.root);
+            for (result.files) |f| {
+                gpa.free(f.path);
+                gpa.free(f.lang);
+                for (f.symbols) |s| gpa.free(s.name);
+                gpa.free(f.symbols);
+            }
+            gpa.free(result.files);
+        }
+
+        const esc_root = try root.allocJsonEscape(gpa, result.root);
+        defer gpa.free(esc_root);
+
+        try out.print(
+            "{{\n  \"root\": \"{s}\",\n  \"fileCount\": {d},\n  \"symbolCount\": {d},\n  \"cacheHits\": {d},\n  \"cacheMisses\": {d},\n  \"files\": [",
+            .{ esc_root, result.fileCount, result.symbolCount, result.cacheHits, result.cacheMisses },
+        );
+        for (result.files, 0..) |f, fi| {
+            const esc_path = try root.allocJsonEscape(gpa, f.path);
+            defer gpa.free(esc_path);
+            if (fi > 0) try out.writeAll(",");
+            try out.print("\n    {{\"path\": \"{s}\", \"lang\": \"{s}\", \"symbols\": [", .{ esc_path, f.lang });
+            for (f.symbols, 0..) |sym, si| {
+                const esc_name = try root.allocJsonEscape(gpa, sym.name);
+                defer gpa.free(esc_name);
+                if (si > 0) try out.writeAll(", ");
+                try out.print("{{\"name\": \"{s}\", \"kind\": \"{s}\", \"line\": {d}}}", .{ esc_name, sym.kind, sym.line });
+            }
+            try out.writeAll("]}");
+        }
+        if (result.files.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "deps")) {
