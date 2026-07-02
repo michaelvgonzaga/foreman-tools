@@ -60,6 +60,9 @@ pub fn main(init: std.process.Init) !void {
         try err.print("  review-field-reports\n", .{});
         try err.print("  solutions-record  (entry JSON from stdin: problemPattern, rootCause, fix, verification, applicableProjectTypes, confidence, sourceProject)\n", .{});
         try err.print("  solutions-list\n", .{});
+        try err.print("  failure-record  (entry JSON from stdin: task, command, errorSummary, filesInvolved, project)\n", .{});
+        try err.print("  failure-mark-fixed <failure-id>  (entry JSON from stdin: fix)\n", .{});
+        try err.print("  failure-lookup <query>\n", .{});
         try err.print("  cache-check <file-path>\n", .{});
         try err.print("  cache-store <file-path> <sub-key>  (value JSON from stdin)\n", .{});
         try err.print("  cache-fetch <file-path> <sub-key>\n", .{});
@@ -1686,6 +1689,143 @@ pub fn main(init: std.process.Init) !void {
         if (result.solutions.len > 0) try out.print("\n  ", .{});
         try out.print("]\n}}\n", .{});
         try out.flush();
+    } else if (std.mem.eql(u8, args[1], "failure-record")) {
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_rdr = std.Io.File.stdin().reader(io, &stdin_buf);
+        const stdin_json = stdin_rdr.interface.allocRemaining(gpa, .limited(256 * 1024)) catch |e| {
+            try err.print("error reading stdin: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(stdin_json);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, stdin_json, .{}) catch {
+            try err.print("error: invalid JSON on stdin\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            try err.print("error: stdin JSON must be an object\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const o = parsed.value.object;
+        const getStr = struct {
+            fn get(obj: @TypeOf(o), key: []const u8) []const u8 {
+                if (obj.get(key)) |v| if (v == .string) return v.string;
+                return "";
+            }
+        }.get;
+
+        const result = root.computeFailureRecord(gpa, io, .{
+            .task = getStr(o, "task"),
+            .command = getStr(o, "command"),
+            .errorSummary = getStr(o, "errorSummary"),
+            .filesInvolved = getStr(o, "filesInvolved"),
+            .project = getStr(o, "project"),
+        }) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.id);
+
+        try out.print("{{\n  \"id\": \"{s}\"\n}}\n", .{result.id});
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "failure-mark-fixed")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools failure-mark-fixed <failure-id>  (entry JSON from stdin: fix)\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_rdr = std.Io.File.stdin().reader(io, &stdin_buf);
+        const stdin_json = stdin_rdr.interface.allocRemaining(gpa, .limited(256 * 1024)) catch |e| {
+            try err.print("error reading stdin: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(stdin_json);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, stdin_json, .{}) catch {
+            try err.print("error: invalid JSON on stdin\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            try err.print("error: stdin JSON must be an object\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+        const o = parsed.value.object;
+        const getStr = struct {
+            fn get(obj: @TypeOf(o), key: []const u8) []const u8 {
+                if (obj.get(key)) |v| if (v == .string) return v.string;
+                return "";
+            }
+        }.get;
+
+        const result = root.computeFailureMarkFixed(gpa, io, .{
+            .failureId = args[2],
+            .fix = getStr(o, "fix"),
+        }) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer gpa.free(result.id);
+
+        try out.print(
+            "{{\n  \"id\": \"{s}\",\n  \"failureFound\": {s}\n}}\n",
+            .{ result.id, if (result.failureFound) "true" else "false" },
+        );
+        try out.flush();
+    } else if (std.mem.eql(u8, args[1], "failure-lookup")) {
+        if (args.len < 3) {
+            try err.print("usage: 4orman-tools failure-lookup <query>\n", .{});
+            try err.flush();
+            std.process.exit(1);
+        }
+
+        const result = root.computeFailureLookup(gpa, io, args[2]) catch |e| {
+            try err.print("error: {}\n", .{e});
+            try err.flush();
+            std.process.exit(1);
+        };
+        defer {
+            for (result.matches) |m| root.freeFailureLookupMatch(gpa, m);
+            gpa.free(result.matches);
+        }
+
+        try out.print("{{\n  \"matches\": [", .{});
+        for (result.matches, 0..) |m, i| {
+            const esc_id = try root.allocJsonEscape(gpa, m.id);
+            defer gpa.free(esc_id);
+            const esc_date = try root.allocJsonEscape(gpa, m.date);
+            defer gpa.free(esc_date);
+            const esc_project = try root.allocJsonEscape(gpa, m.project);
+            defer gpa.free(esc_project);
+            const esc_task = try root.allocJsonEscape(gpa, m.task);
+            defer gpa.free(esc_task);
+            const esc_cmd = try root.allocJsonEscape(gpa, m.command);
+            defer gpa.free(esc_cmd);
+            const esc_err = try root.allocJsonEscape(gpa, m.errorSummary);
+            defer gpa.free(esc_err);
+            const esc_files = try root.allocJsonEscape(gpa, m.filesInvolved);
+            defer gpa.free(esc_files);
+            const esc_fix = try root.allocJsonEscape(gpa, m.fix);
+            defer gpa.free(esc_fix);
+            if (i > 0) try out.print(",", .{});
+            try out.print(
+                "\n    {{\"id\": \"{s}\", \"date\": \"{s}\", \"project\": \"{s}\", \"task\": \"{s}\", \"command\": \"{s}\", \"errorSummary\": \"{s}\", \"filesInvolved\": \"{s}\", \"score\": {d}, \"resolved\": {s}, \"fix\": \"{s}\"}}",
+                .{ esc_id, esc_date, esc_project, esc_task, esc_cmd, esc_err, esc_files, m.score, if (m.resolved) "true" else "false", esc_fix },
+            );
+        }
+        if (result.matches.len > 0) try out.print("\n  ", .{});
+        try out.print("]\n}}\n", .{});
+        try out.flush();
     } else if (std.mem.eql(u8, args[1], "cache-check")) {
         if (args.len < 3) {
             try err.print("usage: 4orman-tools cache-check <file-path>\n", .{});
@@ -2732,7 +2872,10 @@ pub fn main(init: std.process.Init) !void {
             if (i > 0) try out.writeAll(", ");
             try out.print("{{\"path\": \"{s}\", \"count\": {d}}}", .{ esc_path, f.count });
         }
-        try out.writeAll("]\n  }\n}\n");
+        try out.print(
+            "]\n  }},\n  \"failureMemory\": {{\n    \"total\": {d},\n    \"resolved\": {d},\n    \"unresolved\": {d},\n    \"repeatedFailureCount\": {d}\n  }}\n}}\n",
+            .{ result.failure_memory_total, result.failure_memory_resolved, result.failure_memory_unresolved, result.failure_memory_repeated },
+        );
         try out.flush();
     } else if (std.mem.eql(u8, args[1], "rollback")) {
         if (args.len < 3) {
