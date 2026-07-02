@@ -576,6 +576,20 @@ pub fn main(init: std.process.Init) !void {
     ctx.bad("update nonexistent path → exit 1, not a crash", &.{ "update", "/nonexistent/stress-update-xyz" }, 1);
     ctx.bad("update no args → exit 1", &.{"update"}, 1);
 
+    // ----------------------------------------------------------------
+    // Tier 6: field-report-solve / field-report-block (Field Reports #4)
+    // Only the non-stdin-dependent paths are covered here — std.process.run
+    // in this Zig version has no RunOptions field for supplying stdin
+    // content, so the JSON-body happy path is manually verified (not
+    // harness-covered): both subcommands were run against a real project
+    // with piped JSON, producing correctly-formed solved.toml/blocked.toml
+    // and the expected state.json status="blocked" transition. Disclosed
+    // gap, not silently skipped.
+    // ----------------------------------------------------------------
+    ctx.header("Tier 6: field-report-solve / field-report-block (usage/error paths only)");
+    ctx.bad("field-report-solve no args → exit 1", &.{"field-report-solve"}, 1);
+    ctx.bad("field-report-block no args → exit 1", &.{"field-report-block"}, 1);
+
     ctx.summary();
     if (ctx.fail > 0) std.process.exit(1);
 }
